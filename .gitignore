@@ -1,6 +1,0 @@
-src/*.o
-mich-kernel.bin
-kflat.bin
-bdb1.bin
-bdb2.bin
-disk.img
