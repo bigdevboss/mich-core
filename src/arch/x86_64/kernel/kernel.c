@@ -1,0 +1,1268 @@
+#include "types.h"
+#include "bootinfo.h"
+#include "version.h"
+#include "vm64.h"
+#include "elf64.h"
+#include "task.h"
+#include "arch_task.h"
+#include "scheduler.h"
+#include "service.h"
+#include "capability.h"
+#include "pmm.h"
+#include "ipc64.h"
+#include "protos.h"
+#include "runtime64.h"
+#include "gdt64.h"
+#include "idt64.h"
+#include "serial64.h"
+#include "object.h"
+#include "resource.h"
+#include "iommu.h"
+#include "acpi64.h"
+#include "vtd64.h"
+#include "amd_iommu64.h"
+#include "pci64.h"
+#include "virtio_pci.h"
+#include "virtio_abi.h"
+#include "platform64.h"
+#include "driver.h"
+#include "driver_supervisor.h"
+#include "driver_manager.h"
+#include "event.h"
+#include "endpoint.h"
+#include "bridge.h"
+#include "vector64.h"
+#include "apic64.h"
+#include "smp64.h"
+#include "msi64.h"
+#include "msix64.h"
+#include "handle_transfer.h"
+#include "panic64.h"
+#include "irq_group.h"
+#include "sg.h"
+#include "ring.h"
+#include "completion.h"
+#include "completion_abi.h"
+#include "timer_object.h"
+#include "wait_many.h"
+#include "net_buffer.h"
+#include "vnic.h"
+#include "net_interface.h"
+#include "net_interface_abi.h"
+#include "net_abi.h"
+#include "ethernet.h"
+#include "arp.h"
+#include "ipv4.h"
+#include "ipv6.h"
+#include "icmp.h"
+#include "icmpv6.h"
+#include "udpv6.h"
+#include "tcp.h"
+#include "loopback.h"
+#include "udp.h"
+#include "route.h"
+#include "socket.h"
+#include "socket_abi.h"
+#include "vfs.h"
+#include "vfs_abi.h"
+#include "firmware.h"
+#include "firmware_abi.h"
+#include "block.h"
+#include "kernel64_internal.h"
+#ifdef MICH_TEST_BUILD
+#include "tests64.h"
+#include "test_report.h"
+#endif
+
+#define MSR_EFER 0xC0000080u
+#define MSR_STAR 0xC0000081u
+#define MSR_LSTAR 0xC0000082u
+#define MSR_FMASK 0xC0000084u
+#define BOOT_MODULE_UNIT_TEST (1u << 28)
+#define BOOT_MODULE_HARDWARE_TEST (1u << 30)
+#define BOOT_MODULE_PANIC_TEST (1u << 31)
+#define IOMMU_FAULT_BATCH 8
+
+extern void syscall64_entry(void);
+extern void user64_enter(u64 rip, u64 rsp, u64 argument);
+extern u8 _bss_end;
+
+struct interrupt_frame64 {
+    u64 r15;
+    u64 r14;
+    u64 r13;
+    u64 r12;
+    u64 r11;
+    u64 r10;
+    u64 r9;
+    u64 r8;
+    u64 rbp;
+    u64 rdi;
+    u64 rsi;
+    u64 rdx;
+    u64 rcx;
+    u64 rbx;
+    u64 rax;
+    u64 rip;
+    u64 cs;
+    u64 rflags;
+    u64 rsp;
+    u64 ss;
+};
+
+struct task_context64 task_contexts[MAX_TASKS];
+u32 current_task_slot;
+u32 timer_ticks;
+#define SPAWN_IMAGE_MAX DRIVER_USER_IMAGE_MAX
+static const u8 *spawn_images[SPAWN_IMAGE_MAX];
+static u32 spawn_image_sizes[SPAWN_IMAGE_MAX];
+static u32 spawn_image_capabilities[SPAWN_IMAGE_MAX];
+static u32 spawn_image_count;
+
+static int supervisor64_spawn(const struct driver_domain *domain);
+static int supervisor64_quiesce(struct kernel_object *device);
+static int supervisor64_reset(struct kernel_object *device);
+static int supervisor64_revoke(int pid,
+    const struct driver_domain_resource *resources, u32 count);
+static int supervisor64_terminate(int pid);
+static int supervisor64_release(struct driver_domain *domain);
+static paddr_t highmem_probe;
+static struct ethernet_port runtime_loop_port;
+static struct ipv4_context runtime_loop_ipv4;
+static struct loopback_context runtime_loopback;
+static struct icmp_context runtime_icmp;
+static struct udp_context runtime_udp;
+static struct route_table runtime_routes;
+static struct kernel_object *platform_mmio[ACPI_MAX_IOAPICS + 1];
+static struct kernel_object *platform_irq[16];
+static u32 platform_mmio_count;
+// Total number of scheduler64_switch() calls since boot. Exposed for
+// benchmarking (e.g. to estimate the FPU save/load cost of the lazy-FPU
+// optimization, which saves one fxsave+fxrstor pair per switch).
+static u64 switch_count;
+u64 scheduler64_switch_count(void) {
+    return switch_count;
+}
+
+static u64 rdmsr(u32 msr) {
+    u32 lo;
+    u32 hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return ((u64)hi << 32) | lo;
+}
+
+static void wrmsr(u32 msr, u64 value) {
+    __asm__ volatile("wrmsr" : : "c"(msr), "a"((u32)value),
+                     "d"((u32)(value >> 32)));
+}
+
+static u64 network_sequence_entropy(void) {
+    u32 low;
+    u32 high;
+    __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
+    u64 value = ((u64)high << 32) | low;
+    u32 eax;
+    u32 ebx;
+    u32 ecx;
+    u32 edx;
+    __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                     : "a"(1), "c"(0));
+    if (ecx & (1u << 30)) {
+        u64 random;
+        u8 valid;
+        __asm__ volatile("rdrand %0; setc %1"
+                         : "=r"(random), "=qm"(valid));
+        if (valid) value ^= random;
+    }
+    (void)eax;
+    (void)ebx;
+    (void)edx;
+    return value ? value : 1;
+}
+
+int serial64_user_write(u64 address) {
+    if (address < VM64_PROGRAM_BASE || address >= VM64_PROGRAM_LIMIT) return -1;
+    u64 remaining = VM64_PROGRAM_LIMIT - address;
+    if (remaining > 256) remaining = 256;
+    for (u64 index = 0; index < remaining; index++) {
+        char value;
+        if (vm64_copy_from(task_pool[current_task_slot].page_dir,
+                           &value, address + index, 1))
+            return -1;
+        if (!value) return 0;
+        serial64_putc(value);
+    }
+    return -1;
+}
+
+static int platform_resource_init(void) {
+    const struct acpi_madt_info *madt = acpi64_madt();
+    if (!madt || !madt->local_apic_address ||
+        madt->ioapic_count > ACPI_MAX_IOAPICS)
+        return -1;
+    platform_mmio_count = 0;
+    platform_mmio[platform_mmio_count] =
+        mmio_resource_create(madt->local_apic_address, 4096, MMIO_CACHE_UC);
+    if (!platform_mmio[platform_mmio_count++]) return -1;
+    for (u32 index = 0; index < madt->ioapic_count; index++) {
+        platform_mmio[platform_mmio_count] =
+            mmio_resource_create(madt->ioapics[index].address, 4096,
+                                 MMIO_CACHE_UC);
+        if (!platform_mmio[platform_mmio_count++]) return -1;
+    }
+    for (u32 irq = 0; irq < 16; irq++) {
+        u32 gsi = irq;
+        u32 trigger = IRQ_TRIGGER_EDGE;
+        u32 polarity = IRQ_POLARITY_HIGH;
+        for (u32 index = 0; index < madt->iso_count; index++) {
+            const struct acpi_iso_info *override = &madt->overrides[index];
+            if (override->bus != 0 || override->source != irq) continue;
+            gsi = override->gsi;
+            if (((override->flags >> 2) & 3) == 3)
+                trigger = IRQ_TRIGGER_LEVEL;
+            if ((override->flags & 3) == 3)
+                polarity = IRQ_POLARITY_LOW;
+            break;
+        }
+        platform_irq[irq] = irq_resource_create(gsi, 0x30 + irq,
+                                                 trigger, polarity);
+        if (!platform_irq[irq]) return -1;
+    }
+    return 0;
+}
+
+struct kernel_object *platform64_irq_object(u32 irq) {
+    return irq < 16 ? platform_irq[irq] : 0;
+}
+
+void irq64_dispatch(u64 vector) {
+    if (vector >= 0x30 && vector < 0x40) {
+        for (u32 irq = 0; irq < 16; irq++) {
+            struct kernel_object *object = platform_irq[irq];
+            struct irq_resource *resource = irq_resource_get(object);
+            if (!resource || resource->vector != vector) continue;
+            irq_resource_signal(object);
+            irq_resource_set_mask(object, 1);
+            return;
+        }
+    }
+    if (vector >= SMP64_IPI_FIRST && vector <= SMP64_IPI_LAST) {
+        smp64_ipi_dispatch((u32)vector);
+        return;
+    }
+    if (vector >= VECTOR64_MSI_FIRST && vector <= VECTOR64_MSI_LAST) {
+        struct kernel_object *object =
+            (struct kernel_object *)vector64_owner((u8)vector);
+        if (object && object->active && object->type == KOBJECT_IRQ) {
+            irq_resource_signal(object);
+            irq_resource_set_mask(object, 1);
+        }
+    }
+}
+
+static int supervisor64_resource(
+    struct driver_domain *domain, const struct driver_user_request *request,
+    struct kernel_object **objects, u32 capacity) {
+    if (!domain || !request || !objects || !capacity) return -1;
+    if (request->kind == DRIVER_RESOURCE_BAR) {
+        objects[0] = pci64_bar_create(domain->device, request->index);
+        return objects[0] ? 1 : -1;
+    }
+    if (request->kind == DRIVER_RESOURCE_DMA) {
+        objects[0] = dma_resource_allocate((u32)request->amount,
+                                           (paddr_t)request->limit);
+        if (!objects[0]) return -1;
+        if (iommu_present()) {
+            if (!iommu_domain_exists(domain->id) &&
+                iommu_domain_create(domain->id, domain->device)) {
+                object_release(objects[0]);
+                objects[0] = 0;
+                return -1;
+            }
+            const struct dma_resource *dma = dma_resource_get(objects[0]);
+            u64 iova = 0;
+            if (!dma || iommu_domain_map(
+                    domain->id, dma->physical, dma->pages, &iova) ||
+                iova > request->limit ||
+                dma->pages * 4096ULL - 1 > request->limit - iova ||
+                dma_resource_bind_iommu(objects[0], domain->id, iova)) {
+                if (iova) iommu_domain_unmap(domain->id, iova, dma->pages);
+                object_release(objects[0]);
+                objects[0] = 0;
+                return -1;
+            }
+        }
+        return 1;
+    }
+    if (request->kind == DRIVER_RESOURCE_IRQ) {
+        objects[0] = platform64_irq_object(request->index);
+        return objects[0] && !object_retain(objects[0]) ? 1 : -1;
+    }
+    if (request->kind == DRIVER_RESOURCE_MSI) {
+        u32 count = (u32)request->amount;
+        return count <= capacity &&
+               !msi64_create_group(domain->device, count, objects, capacity)
+            ? (int)count : -1;
+    }
+    if (request->kind == DRIVER_RESOURCE_MSIX_TABLE) {
+        objects[0] = pci64_msix_table_create(domain->device);
+        return objects[0] ? 1 : -1;
+    }
+    if (request->kind == DRIVER_RESOURCE_MSIX_IRQ) {
+        u32 count = (u32)request->amount;
+        for (u32 index = 0; index < domain->resource_count; index++)
+            if (domain->resources[index].kind == DRIVER_RESOURCE_MSIX_TABLE)
+                return count <= capacity && !msix64_create_group(
+                    domain->resources[index].object, request->index,
+                    count, objects, capacity) ? (int)count : -1;
+    }
+    return -1;
+}
+
+static int manager64_register_virtio_net(int external_probe) {
+    if (spawn_image_count < 2) return 0;
+    struct driver_user_manifest manifest;
+    u8 *bytes = (u8 *)&manifest;
+    for (usize_t index = 0; index < sizeof(manifest); index++) bytes[index] = 0;
+    manifest.abi_version = DRIVER_USER_ABI_VERSION;
+    manifest.size = sizeof(manifest);
+    const char name[] = "virtio-net";
+    for (u32 index = 0; name[index]; index++) manifest.name[index] = name[index];
+    manifest.restart_policy = DRIVER_RESTART_ON_FAILURE;
+    manifest.max_restarts = 4;
+    manifest.backoff_ticks = 10;
+    manifest.priority = 1;
+    manifest.image_id = 1;
+    manifest.reset_policy = DRIVER_RESET_IF_SUPPORTED;
+    manifest.firmware_count = 1;
+    const char firmware_name[] = "virtio-net";
+    for (u32 index = 0; firmware_name[index]; index++)
+        manifest.firmware[0][index] = firmware_name[index];
+    manifest.argument = 0x564E4554ULL |
+        (external_probe ? 1ULL << 32 : 0);
+    manifest.match_count = 2;
+    for (u32 index = 0; index < manifest.match_count; index++) {
+        manifest.matches[index].vendor_id = 0x1AF4;
+        manifest.matches[index].device_id = index ? 0x1041 : 0x1000;
+        manifest.matches[index].class_code = 2;
+        manifest.matches[index].subclass = 0;
+        manifest.matches[index].programming_interface = 0xFF;
+    }
+    manifest.request_count = 4;
+    manifest.requests[0].kind = DRIVER_RESOURCE_PCI;
+    manifest.requests[0].rights = KRIGHT_READ | KRIGHT_CONTROL;
+    manifest.requests[1].kind = DRIVER_RESOURCE_MSIX_TABLE;
+    manifest.requests[1].rights = KRIGHT_READ | KRIGHT_CONTROL;
+    manifest.requests[2].kind = DRIVER_RESOURCE_MSIX_IRQ;
+    manifest.requests[2].rights = KRIGHT_WAIT | KRIGHT_CONTROL;
+    manifest.requests[2].amount = 3;
+    manifest.requests[3].kind = DRIVER_RESOURCE_BRIDGE;
+    manifest.requests[3].rights = KRIGHT_READ | KRIGHT_WAIT;
+    return driver_manager_register(&manifest) > 0 ? 0 : -1;
+}
+
+static int manager64_set_pci_inventory(void) {
+    struct kernel_object *devices[DRIVER_MANAGER_DEVICE_MAX];
+    u32 count = pci64_count();
+    if (count > DRIVER_MANAGER_DEVICE_MAX) return -1;
+    for (u32 index = 0; index < count; index++)
+        devices[index] = pci64_object(index);
+    return driver_manager_set_devices(devices, count) < 0 ? -1 : 0;
+}
+
+static int udp_unreachable_to_icmp(const struct ipv4_packet_view *packet,
+                                   void *context) {
+    return icmp_send_port_unreachable((struct icmp_context *)context, packet);
+}
+
+static int network_runtime_init(void) {
+    const u8 address[6] = {0x02, 0x4D, 0x49, 0x43, 0x48, 0x7E};
+    if (ethernet_port_init(&runtime_loop_port, address) ||
+        ipv4_init(&runtime_loop_ipv4, &runtime_loop_port,
+                  0x7F000001u, 0xFF000000u, 0))
+        return -1;
+    if (loopback_init(&runtime_loopback, &runtime_loop_ipv4, 32))
+        return -1;
+    if (icmp_init(&runtime_icmp, &runtime_loop_ipv4, 100, 64) ||
+        udp_init(&runtime_udp, &runtime_loop_ipv4) ||
+        udp_set_unreachable_callback(&runtime_udp,
+                                     udp_unreachable_to_icmp,
+                                     &runtime_icmp)) {
+        loopback_destroy(&runtime_loopback);
+        return -1;
+    }
+    route_init(&runtime_routes);
+    net_interface_set_entropy(network_sequence_entropy());
+    if (net_interface_init(&runtime_routes)) {
+        loopback_destroy(&runtime_loopback);
+        return -1;
+    }
+    if (route_add(&runtime_routes, 0x7F000000u, 0xFF000000u, 0,
+                  ROUTE_INTERFACE_LOOPBACK, 0) ||
+        socket_init(&runtime_udp, &runtime_routes)) {
+        loopback_destroy(&runtime_loopback);
+        return -1;
+    }
+    return 0;
+}
+
+static void highmem_probe_finish(void) {
+    if (!highmem_probe) return;
+    volatile u64 *page = (volatile u64 *)(uptr_t)highmem_probe;
+    if (page[0] != 0x4D49434848494748ULL ||
+        page[1] != 0x5048595350414745ULL)
+        panic_str("high memory identity map");
+    page[0] = 0x5245555341424C45ULL;
+    if (page[0] != 0x5245555341424C45ULL)
+        panic_str("high memory write");
+    pmm_free_page(highmem_probe);
+    highmem_probe = 0;
+    serial64_write("Mich x86_64: high memory identity pass\n");
+}
+
+static void syscall64_init(void) {
+    smp64_syscall_prepare();
+    u64 efer = rdmsr(MSR_EFER);
+    wrmsr(MSR_EFER, efer | 1 | (1ULL << 11));
+    wrmsr(MSR_STAR, (0x10ULL << 48) | (0x08ULL << 32));
+    wrmsr(MSR_LSTAR, (u64)(uptr_t)syscall64_entry);
+    wrmsr(MSR_FMASK, 0x600);
+}
+
+static void context_save(struct task_context64 *context) {
+    struct smp64_syscall *sc = smp64_syscall();
+    context->rax = 0;
+    context->rdi = sc->rdi;
+    context->rsi = sc->rsi;
+    context->rdx = sc->rdx;
+    context->r8 = sc->r8;
+    context->r9 = sc->r9;
+    context->r10 = sc->r10;
+    context->rsp = sc->rsp;
+    context->rip = sc->rip;
+    context->rflags = sc->rflags;
+    context->rbx = sc->rbx;
+    context->rbp = sc->rbp;
+    context->r12 = sc->r12;
+    context->r13 = sc->r13;
+    context->r14 = sc->r14;
+    context->r15 = sc->r15;
+}
+
+void context_load(const struct task_context64 *context) {
+    struct smp64_syscall *sc = smp64_syscall();
+    sc->rdi = context->rdi;
+    sc->rsi = context->rsi;
+    sc->rdx = context->rdx;
+    sc->r8 = context->r8;
+    sc->r9 = context->r9;
+    sc->r10 = context->r10;
+    sc->rsp = context->rsp;
+    sc->rip = context->rip;
+    sc->rflags = context->rflags;
+    sc->rbx = context->rbx;
+    sc->rbp = context->rbp;
+    sc->r12 = context->r12;
+    sc->r13 = context->r13;
+    sc->r14 = context->r14;
+    sc->r15 = context->r15;
+    vm64_activate(task_pool[current_task_slot].page_dir);
+}
+
+static void fpu64_enable(void) {
+    u64 cr0;
+    u64 cr4;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 &= ~(1ULL << 2);
+    cr0 |= 1ULL << 1;
+    __asm__ volatile("mov %0, %%cr0" : : "r"(cr0) : "memory");
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    cr4 |= (1ULL << 9) | (1ULL << 10);
+    u32 eax;
+    u32 ebx;
+    u32 ecx;
+    u32 edx;
+    __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                     : "a"(0), "c"(0));
+    if (eax >= 7) {
+        __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx),
+                         "=c"(ecx), "=d"(edx) : "a"(7), "c"(0));
+        if (ebx & (1u << 7)) cr4 |= 1ULL << 20;
+        if (ebx & (1u << 20)) cr4 |= 1ULL << 21;
+    }
+    (void)ecx;
+    (void)edx;
+    __asm__ volatile("mov %0, %%cr4" : : "r"(cr4) : "memory");
+}
+
+void fpu64_save(struct task_context64 *context) {
+    __asm__ volatile("fxsave (%0)" : : "r"(context->fxstate) : "memory");
+}
+
+void fpu64_load(const struct task_context64 *context) {
+    __asm__ volatile("fxrstor (%0)" : : "r"(context->fxstate) : "memory");
+}
+
+static void fpu64_init_context(struct task_context64 *context) {
+    u32 mxcsr = 0x1F80;
+    __asm__ volatile("fninit");
+    __asm__ volatile("ldmxcsr %0" : : "m"(mxcsr));
+    fpu64_save(context);
+}
+
+static int spawn64_image(u32 image_id, int parent_id, u32 capabilities,
+                         const char *name, u64 argument) {
+    if (image_id >= SPAWN_IMAGE_MAX || image_id >= spawn_image_count ||
+        (capabilities & ~spawn_image_capabilities[image_id]))
+        return -1;
+    struct task *task = task_alloc_slot();
+    if (!task) return -1;
+    u32 slot = (u32)(task - task_pool);
+    struct task_context64 *context = &task_contexts[slot];
+    u32 space;
+    if (vm64_create_space(&space)) {
+        task_free_slot(task);
+        return -1;
+    }
+    context->vm_space = space;
+    context->vm_valid = 1;
+    vaddr_t entry;
+    if (elf64_load(space, spawn_images[image_id],
+                   spawn_image_sizes[image_id], &entry)) {
+        task_free_slot(task);
+        return -1;
+    }
+    paddr_t stack = vm64_alloc_page();
+    if (!stack) {
+        task_free_slot(task);
+        return -1;
+    }
+    vaddr_t stack_top = VM64_STACK_TOP;
+    if (vm64_map(space, stack_top - 4096, stack, 1, 0)) {
+        vm64_free_page(stack);
+        task_free_slot(task);
+        return -1;
+    }
+    task->ring = 3;
+    task->page_dir = vm64_root(space);
+    task->parent_id = parent_id;
+    task->capabilities = capabilities;
+    task_set_name(task, name);
+    context->rdi = argument;
+    context->rsp = stack_top;
+    context->rip = entry;
+    context->rflags = 0x202;
+    fpu64_init_context(context);
+    return task->id;
+}
+
+int spawn64(int parent_id, u32 capabilities,
+                   const char *name, u64 argument) {
+    return spawn64_image(0, parent_id, capabilities, name, argument);
+}
+
+int fork64(void) {
+    struct task *parent = &task_pool[current_task_slot];
+    struct task_context64 *parent_context = &task_contexts[current_task_slot];
+    if (!parent_context->vm_valid) return -1;
+    struct task *child = task_alloc_slot();
+    if (!child) return -1;
+    u32 child_slot = (u32)(child - task_pool);
+    u32 space;
+    if (vm64_clone_space(parent_context->vm_space, &space)) {
+        task_free_slot(child);
+        return -1;
+    }
+    fpu64_save(parent_context);
+    struct task_context64 *child_context = &task_contexts[child_slot];
+    u8 *dst = (u8 *)child_context;
+    const u8 *src = (const u8 *)parent_context;
+    for (usize_t index = 0; index < sizeof(*child_context); index++)
+        dst[index] = src[index];
+    context_save(child_context);
+    child_context->vm_space = space;
+    child_context->vm_valid = 1;
+    child_context->rax = 0;
+    child->ring = 3;
+    child->page_dir = vm64_root(space);
+    child->parent_id = parent->id;
+    child->capabilities = 0;
+    task_set_name(child, parent->name);
+    return child->id;
+}
+
+int exec64(u64 path_address, u64 argument) {
+    struct task *task = &task_pool[current_task_slot];
+    struct task_context64 *context = &task_contexts[current_task_slot];
+    if (!context->vm_valid) return EINVAL;
+    char path[VFS_PATH_MAX];
+    for (u32 index = 0; index < VFS_PATH_MAX; index++) path[index] = 0;
+    u32 length = 0;
+    for (;;) {
+        char byte;
+        if (length >= VFS_PATH_MAX - 1 ||
+            vm64_copy_from(task->page_dir, &byte, path_address + length, 1))
+            return EINVAL;
+        path[length] = byte;
+        if (!byte) break;
+        length++;
+    }
+    if (!path[0] || path[0] != '/') return EINVAL;
+    struct kernel_object *node = vfs_resolve(0, path);
+    const u8 *image = 0;
+    u32 size = 0;
+    if (!node || vfs_image(node, &image, &size)) {
+        if (node) object_release(node);
+        return ENOENT;
+    }
+    u32 space;
+    if (vm64_create_space(&space)) {
+        object_release(node);
+        return ENOMEM;
+    }
+    vaddr_t entry;
+    if (elf64_load(space, image, size, &entry)) {
+        vm64_destroy_space(space);
+        object_release(node);
+        return EINVAL;
+    }
+    paddr_t stack = vm64_alloc_page();
+    if (!stack || vm64_map(space, VM64_STACK_TOP - 4096, stack, 1, 0)) {
+        if (stack) vm64_free_page(stack);
+        vm64_destroy_space(space);
+        object_release(node);
+        return ENOMEM;
+    }
+    object_release(node);
+    handle_close_all(task);
+    u32 old_space = context->vm_space;
+    context->vm_space = space;
+    context->vm_valid = 1;
+    task->page_dir = vm64_root(space);
+    vm64_destroy_space(old_space);
+    context->rax = 0;
+    context->rbx = 0;
+    context->rcx = 0;
+    context->rdx = 0;
+    context->rsi = 0;
+    context->rdi = argument;
+    context->rbp = 0;
+    context->r8 = 0;
+    context->r9 = 0;
+    context->r10 = 0;
+    context->r11 = 0;
+    context->r12 = 0;
+    context->r13 = 0;
+    context->r14 = 0;
+    context->r15 = 0;
+    context->rsp = VM64_STACK_TOP;
+    context->rip = entry;
+    context->rflags = 0x202;
+    fpu64_init_context(context);
+    task_set_name(task, path);
+    return 0;
+}
+
+u32 scheduler64_next_slot(void) {
+    int next = scheduler_pick_next((int)current_task_slot);
+    return next < 0 ? current_task_slot : (u32)next;
+}
+
+void scheduler64_set_running(u32 slot) {
+    u32 old = current_task_slot;
+    int cpu = (int)smp64_cpu_index();
+    if (old < MAX_TASKS)
+        task_pool[old].on_cpu = TASK_CPU_NONE;
+    current_task_slot = slot;
+    scheduler_set_current((int)slot);
+    scheduler_set_this_cpu(cpu);
+    smp64_set_current(slot);
+    if (slot < MAX_TASKS)
+        task_pool[slot].on_cpu = cpu;
+}
+
+void scheduler64_switch(void) {
+    switch_count++;
+    context_save(&task_contexts[current_task_slot]);
+    fpu64_save(&task_contexts[current_task_slot]);
+    scheduler64_set_running(scheduler64_next_slot());
+    fpu64_load(&task_contexts[current_task_slot]);
+    context_load(&task_contexts[current_task_slot]);
+}
+
+void task64_set_result(u32 slot, i64 result) {
+    if (slot < MAX_TASKS) task_contexts[slot].rax = (u64)result;
+}
+
+i64 task64_block_switch(void) {
+    scheduler64_switch();
+    return (i64)task_contexts[current_task_slot].rax;
+}
+
+static void interrupt_save(struct task_context64 *context,
+                           const struct interrupt_frame64 *frame) {
+    context->rax = frame->rax;
+    context->rbx = frame->rbx;
+    context->rcx = frame->rcx;
+    context->rdx = frame->rdx;
+    context->rsi = frame->rsi;
+    context->rdi = frame->rdi;
+    context->rbp = frame->rbp;
+    context->r8 = frame->r8;
+    context->r9 = frame->r9;
+    context->r10 = frame->r10;
+    context->r11 = frame->r11;
+    context->r12 = frame->r12;
+    context->r13 = frame->r13;
+    context->r14 = frame->r14;
+    context->r15 = frame->r15;
+    context->rsp = frame->rsp;
+    context->rip = frame->rip;
+    context->rflags = frame->rflags;
+}
+
+static void interrupt_load(struct interrupt_frame64 *frame,
+                           const struct task_context64 *context) {
+    u32 slot = smp64_running_slot();
+    frame->rax = context->rax;
+    frame->rbx = context->rbx;
+    frame->rcx = context->rcx;
+    frame->rdx = context->rdx;
+    frame->rsi = context->rsi;
+    frame->rdi = context->rdi;
+    frame->rbp = context->rbp;
+    frame->r8 = context->r8;
+    frame->r9 = context->r9;
+    frame->r10 = context->r10;
+    frame->r11 = context->r11;
+    frame->r12 = context->r12;
+    frame->r13 = context->r13;
+    frame->r14 = context->r14;
+    frame->r15 = context->r15;
+    frame->rsp = context->rsp;
+    frame->rip = context->rip;
+    frame->rflags = context->rflags;
+    frame->cs = 0x23;
+    frame->ss = 0x1B;
+    if (slot < MAX_TASKS)
+        vm64_activate(task_pool[slot].page_dir);
+}
+
+static int wake_waiting_parent(u32 child_slot) {
+    struct task *child = &task_pool[child_slot];
+    u32 parent_slot = PID_SLOT((u32)child->parent_id);
+    if (parent_slot == 0 || parent_slot >= (u32)task_pool_count) return -1;
+    struct task *parent = &task_pool[parent_slot];
+    if (parent->id != child->parent_id || parent->state != TASK_BLOCKED_WAIT ||
+        (parent->wait_pid != -1 && parent->wait_pid != child->id))
+        return -1;
+    int code = child->exit_code;
+    parent->wait_pid = -1;
+    parent->state = TASK_RUNNING;
+    task_contexts[parent_slot].rax = (u64)(u32)code;
+    task_free_slot(child);
+    return code;
+}
+
+static void reparent_children(int dead_pid) {
+    int adopter = service_lookup(SERVICE_INIT);
+    if (adopter == dead_pid || adopter < 0) adopter = 0;
+    for (int slot = 1; slot < task_pool_count; slot++) {
+        struct task *child = &task_pool[slot];
+        if (child->state == TASK_FREE || child->parent_id != dead_pid) continue;
+        child->parent_id = adopter;
+        if (child->state != TASK_ZOMBIE) continue;
+        if (adopter > 0) wake_waiting_parent((u32)slot);
+        else task_free_slot(child);
+    }
+}
+
+void terminate64(u32 slot, int code) {
+    struct task *task = &task_pool[slot];
+    net_interface_task_died(task->id);
+    driver_manager_task_exiting(task->id, code);
+    driver_supervisor_task_died(task->id, code, timer_ticks);
+    driver_manager_tick();
+    ipc64_task_died((u32)task->id);
+    event_cancel_task(slot, ESRCH);
+    handle_close_all(task);
+    reparent_children(task->id);
+    service_release_owner((u32)task->id);
+    task_mark_zombie(task, code);
+    wake_waiting_parent(slot);
+}
+
+static int supervisor64_spawn(const struct driver_domain *domain) {
+    if (iommu_present() && iommu_domain_exists(domain->id)) {
+        if (!iommu_enabled() && iommu_enable()) return -1;
+        if (iommu_domain_resume(domain->id)) return -1;
+    }
+    return spawn64_image(domain->image_id, 0, domain->capabilities,
+                         domain->name, domain->argument);
+}
+
+static int supervisor64_quiesce(struct kernel_object *device) {
+    return pci64_quiesce(device);
+}
+
+static int supervisor64_reset(struct kernel_object *device) {
+    return pci64_reset(device);
+}
+
+static int supervisor64_revoke(int pid,
+    const struct driver_domain_resource *resources, u32 count) {
+    u32 slot = PID_SLOT((u32)pid);
+    if (slot >= MAX_TASKS || task_pool[slot].id != pid ||
+        !task_contexts[slot].vm_valid)
+        return -1;
+    struct kernel_object *objects[DRIVER_DOMAIN_RESOURCE_MAX];
+    for (u32 index = 0; index < count; index++)
+        objects[index] = resources[index].object;
+    vm64_revoke_objects(task_contexts[slot].vm_space, objects, count);
+    struct driver_domain *domain = driver_domain_for_pid(pid);
+    if (domain && iommu_present() && iommu_domain_exists(domain->id) &&
+        iommu_domain_suspend(domain->id))
+        return -1;
+    return 0;
+}
+
+static int supervisor64_terminate(int pid) {
+    u32 slot = PID_SLOT((u32)pid);
+    if (!pid || slot == current_task_slot || slot >= (u32)task_pool_count ||
+        task_pool[slot].id != pid || task_pool[slot].state == TASK_FREE ||
+        task_pool[slot].state == TASK_ZOMBIE)
+        return -1;
+    terminate64(slot, 137);
+    return 0;
+}
+
+static int supervisor64_release(struct driver_domain *domain) {
+    if (!domain || !iommu_present() || !iommu_domain_exists(domain->id))
+        return 0;
+    return iommu_domain_destroy(domain->id);
+}
+
+static void reap_orphan_zombies(void) {
+    for (int slot = 1; slot < task_pool_count; slot++) {
+        struct task *task = &task_pool[slot];
+        if ((u32)slot != current_task_slot && task->state == TASK_ZOMBIE &&
+            task->parent_id <= 0)
+            task_free_slot(task);
+    }
+}
+
+void exception64_dispatch(struct exception_frame64 *frame) {
+        //
+    // NMI is serviceable, not fatal: the firmware still running on a
+    // secondary CPU during bring-up can raise one, and NMIs carry no
+    // error state Mich Core needs to act on. Just return.
+    //
+    u32 slot;
+    if (frame->vector == 2)
+        return;
+    if ((frame->cs & 3) != 3)
+        panic64_frame("kernel exception", frame);
+    slot = smp64_running_slot();
+    if (frame->vector == 14 && (frame->error & 7) == 7) {
+        u64 cr2;
+        __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+        if (slot < MAX_TASKS &&
+            !vm64_handle_cow(task_contexts[slot].vm_space, cr2))
+            return;
+    }
+    if (smp64_cpu_index() != 0) {
+        if (slot < MAX_TASKS)
+            terminate64(slot, 128 + (int)frame->vector);
+        smp64_set_current(SMP64_CURRENT_NONE);
+        for (;;)
+            __asm__ volatile("cli; hlt" ::: "memory");
+    }
+    serial64_write("Mich x86_64: user fault vec=");
+    serial64_hex(frame->vector);
+    serial64_write(" rip=");
+    serial64_hex(frame->rip);
+    serial64_write("\n");
+    struct task_context64 *context = &task_contexts[current_task_slot];
+    context->rax = frame->rax;
+    context->rbx = frame->rbx;
+    context->rcx = frame->rcx;
+    context->rdx = frame->rdx;
+    context->rsi = frame->rsi;
+    context->rdi = frame->rdi;
+    context->rbp = frame->rbp;
+    context->r8 = frame->r8;
+    context->r9 = frame->r9;
+    context->r10 = frame->r10;
+    context->r11 = frame->r11;
+    context->r12 = frame->r12;
+    context->r13 = frame->r13;
+    context->r14 = frame->r14;
+    context->r15 = frame->r15;
+    context->rsp = frame->rsp;
+    context->rip = frame->rip;
+    context->rflags = frame->rflags;
+    fpu64_save(context);
+    terminate64(current_task_slot, 128 + (int)frame->vector);
+    u32 next = scheduler64_next_slot();
+    if (next == current_task_slot || task_pool[next].state != TASK_RUNNING) {
+        serial64_write("Mich x86_64: no runnable task\n");
+        for (;;) __asm__ volatile("cli; hlt");
+    }
+    scheduler64_set_running(next);
+    context = &task_contexts[current_task_slot];
+    fpu64_load(context);
+    frame->rax = context->rax;
+    frame->rbx = context->rbx;
+    frame->rcx = context->rcx;
+    frame->rdx = context->rdx;
+    frame->rsi = context->rsi;
+    frame->rdi = context->rdi;
+    frame->rbp = context->rbp;
+    frame->r8 = context->r8;
+    frame->r9 = context->r9;
+    frame->r10 = context->r10;
+    frame->r11 = context->r11;
+    frame->r12 = context->r12;
+    frame->r13 = context->r13;
+    frame->r14 = context->r14;
+    frame->r15 = context->r15;
+    frame->rsp = context->rsp;
+    frame->rip = context->rip;
+    frame->rflags = context->rflags;
+    frame->cs = 0x23;
+    frame->ss = 0x1B;
+    vm64_activate(task_pool[current_task_slot].page_dir);
+    serial64_write("Mich x86_64: user exception contained\n");
+}
+
+
+static void iommu64_fault_tick(void) {
+    if (!iommu_enabled()) return;
+    for (u32 i = 0; i < IOMMU_FAULT_BATCH; i++) {
+        struct iommu_fault fault;
+        int rc = iommu_fault_poll(&fault);
+        if (rc <= 0) return;
+        serial64_write("Mich x86_64: IOMMU DMA fault sid=");
+        serial64_hex(fault.source_id);
+        serial64_write(" iova=");
+        serial64_hex(fault.address);
+        serial64_write(" reason=");
+        serial64_hex(fault.reason);
+        serial64_write("\n");
+        if (fault.owner) driver_domain_quarantine(fault.owner);
+    }
+}
+
+void timer64_dispatch(struct interrupt_frame64 *frame) {
+    if (smp64_timer_tick(frame->cs, (u64)(uptr_t)frame)) {
+        u32 slot = smp64_running_slot();
+        int next;
+        // AP user tick: save and rotate this CPU's tasks, never
+        // current_task_slot. Same-privilege hlt frames have no SS/RSP.
+        if ((frame->cs & 3) != 3 || slot >= MAX_TASKS ||
+            slot == current_task_slot)
+            return;
+        interrupt_save(&task_contexts[slot], frame);
+        smp64_note_preempt();
+        next = smp64_pick_next(slot);
+        if (next < 0 || (u32)next == slot) return;
+        smp64_set_current((u32)next);
+        interrupt_load(frame, &task_contexts[next]);
+        return;
+    }
+    if (!gdt64_stack_ok() || !smp64_syscall_ok()) {
+        serial64_write("Mich x86_64: kernel stack failure\n");
+        for (;;) __asm__ volatile("cli; hlt");
+    }
+    interrupt_save(&task_contexts[current_task_slot], frame);
+    fpu64_save(&task_contexts[current_task_slot]);
+    scheduler64_set_running(scheduler64_next_slot());
+    fpu64_load(&task_contexts[current_task_slot]);
+    interrupt_load(frame, &task_contexts[current_task_slot]);
+    timer_ticks++;
+    ipc64_tick(timer_ticks);
+    event_tick(timer_ticks, ETIMEDOUT);
+    completion_tick(timer_ticks, ETIMEDOUT);
+    timer_object_tick(timer_ticks);
+    driver_supervisor_tick(timer_ticks);
+    driver_manager_tick();
+    iommu64_fault_tick();
+    reap_orphan_zombies();
+    if (timer_ticks == 8)
+        serial64_write("Mich x86_64: preemptive scheduler pass\n");
+    if (smp64_host_note(frame->cs))
+        serial64_write("Mich x86_64: SMP dual-core userspace pass\n");
+}
+
+static int bootfs64_init(const struct bd_module *modules, u32 count) {
+    if (!modules || !count || count > VFS_BOOTFS_ENTRY_MAX) return -1;
+    struct kernel_object *root = vfs_root();
+    struct kernel_object *directory = root ?
+        vfs_create(root, "boot", VFS_NODE_DIRECTORY) : 0;
+    if (!root || !directory) {
+        if (root) object_release(root);
+        return -1;
+    }
+    struct vfs_bootfs_entry entries[VFS_BOOTFS_ENTRY_MAX];
+    for (u32 index = 0; index < count; index++) {
+        if (modules[index].cmdline < 0x1000 ||
+            modules[index].cmdline >= 0x100000) {
+            object_release(directory);
+            vfs_unlink(root, "boot");
+            object_release(root);
+            return -1;
+        }
+        entries[index].name = (const char *)(uptr_t)modules[index].cmdline;
+        entries[index].data = (const void *)(uptr_t)modules[index].start;
+        entries[index].size = modules[index].end - modules[index].start;
+    }
+    int result = vfs_mount_bootfs(directory, entries, count);
+    object_release(directory);
+    if (result) vfs_unlink(root, "boot");
+    object_release(root);
+    return result;
+}
+
+void arch_task_release(struct task *task) {
+    u32 slot = (u32)(task - task_pool);
+    if (slot >= MAX_TASKS) return;
+    if (task_contexts[slot].vm_valid)
+        vm64_destroy_space(task_contexts[slot].vm_space);
+    u8 *bytes = (u8 *)&task_contexts[slot];
+    for (usize_t i = 0; i < sizeof(task_contexts[slot]); i++) bytes[i] = 0;
+}
+
+void kernel64_main(u32 magic, struct bd_info *info) {
+    if (magic != BD_MAGIC || !info || info->magic != BD_MAGIC ||
+        (info->version != BD_VERSION && info->version != BD_VERSION_UEFI)) {
+        serial64_write("Mich x86_64: bad boot protocol\n");
+        for (;;) __asm__ volatile("cli; hlt");
+    }
+    if (info->version == BD_VERSION_UEFI)
+        acpi64_set_rsdp(info->rsdp_ptr);
+    if (!info->mmap_ptr || !info->mmap_count || info->mmap_count > 32 ||
+        info->mods_count > 8 || (info->mods_count && !info->mods_ptr)) {
+        serial64_write("Mich x86_64: invalid boot tables\n");
+        for (;;) __asm__ volatile("cli; hlt");
+    }
+    serial64_write("Mich Core " MICH_VERSION_STRING " x86_64: long mode alive\n");
+    gdt64_init();
+    serial64_write("Mich x86_64: GDT and TSS alive\n");
+    idt64_init();
+    serial64_write("Mich x86_64: IDT alive\n");
+    serial64_write("Mich x86_64: panic subsystem ready\n");
+    if (!info->mods_count) {
+        serial64_write("Mich x86_64: missing init64 module\n");
+        for (;;) __asm__ volatile("cli; hlt");
+    }
+    struct bd_module *modules = (struct bd_module *)(uptr_t)info->mods_ptr;
+    for (u32 index = 0; index < info->mods_count; index++) {
+        if (modules[index].end <= modules[index].start ||
+            modules[index].end > 0x40000000U ||
+            modules[index].end - modules[index].start > 0x100000) {
+            serial64_write("Mich x86_64: invalid boot module\n");
+            for (;;) __asm__ volatile("cli; hlt");
+        }
+    }
+    struct bd_module *init_module = &modules[0];
+    if (init_module->end <= init_module->start ||
+        init_module->end - init_module->start > 0x100000) {
+        serial64_write("Mich x86_64: invalid init64 module\n");
+        for (;;) __asm__ volatile("cli; hlt");
+    }
+    spawn_image_count = info->mods_count;
+    for (u32 index = 0; index < spawn_image_count; index++) {
+        spawn_images[index] = (const u8 *)(uptr_t)modules[index].start;
+        spawn_image_sizes[index] = modules[index].end - modules[index].start;
+        spawn_image_capabilities[index] =
+            modules[index].flags & CAP_BOOT_ALLOWED;
+    }
+    pmm_init((uptr_t)info->mmap_ptr, (usize_t)info->mmap_count * 24,
+             24, (paddr_t)(uptr_t)&_bss_end);
+    pmm_set_alloc_limit(0x40000000ULL);
+    for (u32 index = 0; index < info->mods_count; index++)
+        pmm_reserve(modules[index].start,
+                    (usize_t)(modules[index].end - modules[index].start));
+    highmem_probe = pmm_alloc_page_range(0x20000000ULL, 0x40000000ULL);
+    if (highmem_probe) {
+        volatile u64 *page = (volatile u64 *)(uptr_t)highmem_probe;
+        page[0] = 0x4D49434848494748ULL;
+        page[1] = 0x5048595350414745ULL;
+    }
+    serial64_write("Mich x86_64: E820 PMM alive\n");
+    syscall64_init();
+    serial64_write("Mich x86_64: syscall MSRs alive\n");
+    if (vm64_init()) panic_str("VM64 init");
+    service_init();
+    object_init();
+    vfs_init();
+    if (bootfs64_init(modules, info->mods_count)) panic_str("bootfs mount");
+    resource_init();
+    iommu_init();
+    if (page_resource_set_revoke_backend(vm64_revoke_object_all))
+        panic_str("page revoke backend");
+    ring_init();
+    driver_init();
+    driver_supervisor_init(supervisor64_spawn, supervisor64_quiesce,
+                           supervisor64_reset, supervisor64_revoke,
+                           supervisor64_terminate);
+    driver_manager_init(supervisor64_resource);
+    event_init(task64_set_result);
+    completion_init();
+    timer_object_init();
+    packet_pool_init();
+    vnic_init();
+    block_init();
+    endpoint_init();
+    bridge_init();
+    vector64_init();
+    virtio_pci_init();
+    ipc64_init();
+    if (acpi64_init()) panic_str("ACPI discovery");
+    if (platform_resource_init()) panic_str("platform resources");
+    serial64_write("Mich x86_64: ACPI tables pass\n");
+    serial64_write("Mich x86_64: platform MMIO objects pass\n");
+    serial64_write("Mich x86_64: PML4 address space alive\n");
+    task_pool_count = 0;
+    fpu64_enable();
+    int idle_pid = spawn64(-1, 0, "idle64", 0);
+    u32 init_capabilities = init_module->flags & CAP_BOOT_ALLOWED;
+    int init_one_pid = spawn64(0, init_capabilities, "init64-one", 1);
+    int init_two_pid = spawn64(init_one_pid, 0, "init64-two", 2);
+    if (idle_pid != 0 || init_one_pid != 1 || init_two_pid != 2) {
+        serial64_write("Mich x86_64: process spawn failure\n");
+        for (;;) __asm__ volatile("cli; hlt");
+    }
+#ifdef MICH_TEST_BUILD
+    test_report_reset();
+    struct test64_env test_env;
+    test_env.owner = &task_pool[1];
+    test_env.target = &task_pool[2];
+    test_env.owner_space = task_contexts[1].vm_space;
+    test_env.target_space = task_contexts[2].vm_space;
+    test_env.owner_slot = 1;
+    test_env.target_slot = 2;
+    test_env.target_result = &task_contexts[2].rax;
+    test_env.platform_mmio = platform_mmio[0];
+    test_env.resource_provider = supervisor64_resource;
+    test_env.spawn = supervisor64_spawn;
+    test_env.quiesce = supervisor64_quiesce;
+    test_env.reset = supervisor64_reset;
+    test_env.revoke = supervisor64_revoke;
+    test_env.terminate = supervisor64_terminate;
+    if (tests64_run(&test_env)) panic_str("independent kernel tests");
+    if (tests64_run_network(&test_env)) panic_str("independent network tests");
+#endif
+    if (network_runtime_init()) panic_str("network runtime init");
+    serial64_write("Mich x86_64: network runtime ready\n");
+    serial64_write("Mich x86_64: external ELF64 init loaded\n");
+    serial64_write("Mich x86_64: driver image registry pass\n");
+    scheduler64_set_running(1);
+    fpu64_load(&task_contexts[1]);
+    timer_ticks = 0;
+    vm64_activate(task_pool[1].page_dir);
+    if (vtd64_init()) panic_str("Intel VT-d discovery");
+    if (amd_iommu64_init()) panic_str("AMD-Vi discovery");
+    if (vtd64_present() && amd_iommu64_present())
+        panic_str("multiple IOMMU backends");
+    if (vtd64_present()) {
+        if (vtd64_register_backend() ||
+            dma_resource_set_iommu_backend(iommu_dma_release) ||
+            driver_supervisor_set_release_backend(supervisor64_release))
+            panic_str("IOMMU backend registration");
+        serial64_write("Mich x86_64: Intel VT-d discovery pass\n");
+        serial64_write("Mich x86_64: IOMMU backend registration pass\n");
+    }
+    if (amd_iommu64_present()) {
+        serial64_write("Mich x86_64: AMD-Vi discovery pass\n");
+        if (amd_iommu64_prepare() || amd_iommu64_register_backend() ||
+            dma_resource_set_iommu_backend(iommu_dma_release) ||
+            driver_supervisor_set_release_backend(supervisor64_release))
+            panic_str("AMD-Vi backend registration");
+        serial64_write("Mich x86_64: AMD-Vi device table pass\n");
+        serial64_write("Mich x86_64: IOMMU backend registration pass\n");
+        serial64_write("Mich x86_64: AMD-Vi command and event buffers pass\n");
+        serial64_write("Mich x86_64: AMD-Vi completion command pass\n");
+    }
+    if (init_module->flags & BOOT_MODULE_PANIC_TEST) {
+        serial64_write("Mich x86_64: panic profile trigger\n");
+        volatile u64 value = *(volatile u64 *)(uptr_t)0x0000000DEADBE000ULL;
+        (void)value;
+        panic_str("panic profile did not fault");
+    }
+    if (pci64_init()) panic_str("PCI enumeration");
+#ifdef MICH_TEST_BUILD
+    if (amd_iommu64_present()) {
+        if (amd_iommu64_test_domain(pci64_object(0)))
+            panic_str("AMD-Vi domain test");
+        serial64_write("Mich test64: AMD-Vi DTE and domain pass\n");
+        serial64_write("Mich test64: AMD-Vi page invalidation pass\n");
+    }
+    if (vtd64_present()) {
+        if (test_vtd64_tables(pci64_object(0)))
+            panic_str("Intel VT-d table tests");
+        serial64_write("Mich test64: Intel VT-d translation tables pass\n");
+        serial64_write("Mich test64: Intel VT-d command engine pass\n");
+        serial64_write("Mich test64: Intel VT-d revoke and resume pass\n");
+        serial64_write("Mich test64: Intel VT-d fault decode pass\n");
+        if (test_iommu64_forbidden_dma())
+            panic_str("Intel VT-d forbidden DMA test");
+        serial64_write("Mich test64: Intel VT-d forbidden DMA blocked\n");
+    }
+    if (tests64_run_driver(&test_env)) panic_str("independent driver tests");
+    {
+        int virtio_blk = test_virtio_blk64();
+        if (virtio_blk < 0 ||
+            test_report_record(TEST_ID_VIRTIO_BLK,
+                               virtio_blk < 0 ? virtio_blk : 0))
+            panic_str("independent kernel tests");
+        if (!virtio_blk) {
+            serial64_write("Mich test64: virtio-blk attach pass\n");
+            serial64_write("Mich test64: virtio-blk read and write pass\n");
+        }
+    }
+#endif
+    serial64_write("Mich x86_64: PCI enumeration pass\n");
+    if (pci64_uses_ecam())
+        serial64_write("Mich x86_64: PCIe ECAM pass\n");
+    if (platform64_interrupts_init(acpi64_madt()))
+        panic_str("APIC platform init");
+    if (msi64_init(apic64_id())) panic_str("MSI backend init");
+    if (msix64_init(apic64_id())) panic_str("MSI-X backend init");
+    if (smp64_init()) panic_str("SMP bring-up");
+#ifdef MICH_TEST_BUILD
+    if (tests64_run_smp()) panic_str("independent SMP tests");
+    int msi_test;
+    int msix_test;
+    int virtio_test;
+    int destructive = (init_module->flags & BOOT_MODULE_HARDWARE_TEST) != 0;
+    if (destructive)
+        serial64_write("Mich x86_64: hardware destructive test profile\n");
+    if (tests64_run_hardware(
+            &test_env, destructive, &msi_test, &msix_test, &virtio_test))
+        panic_str("independent hardware tests");
+#endif
+    if (manager64_register_virtio_net(
+            (init_module->flags & BOOT_MODULE_HARDWARE_TEST) != 0))
+        panic_str("virtio-net manifest");
+    if (manager64_set_pci_inventory())
+        panic_str("driver PCI inventory");
+#ifdef MICH_TEST_BUILD
+    if (tests64_run_irq(&test_env, msi_test, msix_test, virtio_test))
+        panic_str("independent IRQ tests");
+#endif
+    serial64_write("Mich x86_64: LAPIC controller pass\n");
+    serial64_write("Mich x86_64: IOAPIC routing pass\n");
+    serial64_write("Mich x86_64: legacy PIC disabled\n");
+    serial64_write("Mich x86_64: APIC timer pass\n");
+    highmem_probe_finish();
+#ifdef MICH_TEST_BUILD
+    if (init_module->flags & BOOT_MODULE_UNIT_TEST)
+        test_report_finish();
+#endif
+    if (smp64_host_start()) panic_str("SMP AP host");
+    smp64_gs_user();
+    user64_enter(task_contexts[1].rip, task_contexts[1].rsp,
+                 task_contexts[1].rdi);
+    for (;;) __asm__ volatile("cli; hlt");
+}
