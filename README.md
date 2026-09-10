@@ -1,0 +1,989 @@
+# Mich Core
+
+Mich Core is an experimental modular hybrid kernel for desktop operating systems. It is written from scratch and does not use Linux, BSD, XNU, or Windows source code.
+
+Version 0.1.0 includes an in-kernel virtual NIC with a cycle-accurate netbench and
+optimizes the VNIC packet path: the kernel now spends **224 cycles per 64-byte
+packet** and **328 cycles per 1500-byte packet** on the NIC abstraction
+(RX, KVM single-CPU, min) — a 31% to 82% reduction over the unoptimized path.
+It also includes a minimal VFS, bootfs firmware loading, graceful driver stop,
+and the networking stack (userspace `virtio-net` capsule, modern virtio
+PCI, split virtqueues, interrupt-driven RX/TX, DHCPv4, IPv4/IPv6, UDP/UDPv6,
+TCP, stream sockets).
+
+The x86-64 port is the main development target. The i386 port remains a working
+legacy and reference backend. AArch64 and RISC-V 64 are planned.
+
+Mich Core is still a development kernel. Do not use it for production systems or important data.
+
+## Design
+
+Mich keeps process management, scheduling, memory ownership, IPC, capabilities, and hardware resource control inside a small kernel core. Services and drivers may run in userspace when isolation is more valuable than a kernel-only implementation.
+
+The current rules are:
+
+- Hardware access is represented by typed kernel objects.
+- Every handle carries explicit rights.
+- New hardware drivers should start in userspace.
+- Kernel and userspace drivers use the same resource model.
+- Driver failure must not stop unrelated processes.
+- Driver teardown masks interrupts, disables bus mastering, revokes mappings, invalidates handles, and applies reset policy before restart.
+- Failed teardown quarantines the device and prevents unsafe reuse.
+- Packet hot paths use preallocated buffers and bounded queues.
+- Per-packet allocation is avoided.
+- Performance claims must distinguish QEMU measurements from real wire throughput.
+
+The long-term target is a POSIX-oriented desktop system for x86-64, AArch64, and RISC-V 64.
+
+## 0.1.0
+
+### VNIC packet-path optimization
+
+The VNIC's hot path is optimized for measured cycles per packet:
+
+- **SIMD frame copy**: the RX frame copy uses SSE2 128-bit moves (`movdqu`),
+  replacing a scalar byte loop. SSE2 is mandatory in x86-64, so no CPUID check.
+- **Cached ring resource pointer**: the VNIC caches the RX/TX ring resource
+  pointer at create, so the hot path skips the per-packet object lookup.
+- **Cached pool state**: the VNIC caches the packet pool state at create, so
+  the hot path skips the per-packet object lookup.
+
+Together these reduce the VNIC's RX cost from 1780 to 328 cycles/packet at
+1500 bytes (**−82%**) and from 326 to 224 cycles/packet at 64 bytes (**−31%**).
+
+### Measured cycles per packet (KVM, single CPU)
+
+The numbers below are the kernel-side cycles per packet (ring submission and
+consumption, pool state transitions, descriptor handling, and the frame copy),
+measured on KVM with a single CPU (native CPU, real TSC). Because the netbench
+hot path is in memory (no MMIO), KVM single-CPU is a close proxy for bare
+metal. The TCG (emulated CPU) numbers are 10–50× higher and are not shown.
+
+| Direction | 64 B (min) | 512 B (min) | 1500 B (min) |
+|-----------|-----------:|------------:|-------------:|
+| RX        | 224        | 254         | 328          |
+| TX        | 296        | 758         | 1746         |
+| Echo      | 460        | 958         | 2024         |
+
+For reference, the unoptimized path was 326 (64 B), 790 (512 B), and 1780
+(1500 B) cycles/packet on RX — the 0.1.0 optimization is a 31% to 82%
+reduction. The protocol stack (Ethernet → ARP → IP → TCP/UDP) adds on top of
+these numbers; the VNIC is the NIC abstraction the stack sits on.
+
+### Minimal VFS
+
+The x86-64 port initializes a kernel VFS on the same object and handle model as the rest of the kernel:
+
+- `KOBJECT_VNODE` and `KOBJECT_DIRECTORY` nodes, `KOBJECT_FILE` open files, `KOBJECT_MOUNT` mount points
+- Up to 64 nodes, 32 open files, and 8 mounts
+- 31-character names, 255-character paths, 32 path components
+- Regular files up to 4 KiB, I/O transfers up to 512 bytes per operation
+- Generation counters on nodes and mounts, so stale handles fail lookup
+
+The root of the tree is a ramfs directory. At boot, every boot module is published read-only under `/boot` as a bootfs mount, up to 16 modules of 1 MiB each.
+
+Path resolution accepts absolute and relative paths from any start handle. `.` and `..` are honored, `..` at the root stays at the root, and components longer than 31 characters are rejected.
+
+The userspace VFS ABI is handle based:
+
+```text
+155  root
+156  create
+157  lookup
+158  open
+159  read
+160  write
+161  truncate
+162  stat
+163  unlink
+164  resolve path
+165  create path
+166  unlink path
+```
+
+`CAP_VFS_ADMIN` gates create, unlink, and path operations. Lookup of a bootfs node also requires the capability, so a non-admin process holds the root handle without write rights and reaches boot files through the firmware interface.
+
+### Firmware loading
+
+Driver domains open firmware from the bootfs mount by name:
+
+- Each manifest carries an allowlist of up to 4 firmware names
+- Lookup is fixed to `/boot/<name>`
+- The target must be a regular read-only bootfs file
+- The driver receives a read-only file handle
+- Teardown revokes the handle, so a crashed driver cannot keep the file open
+
+### Graceful driver stop
+
+A driver manifest may set the graceful stop flag. Without the flag, the supervisor force-tears a domain down. With the flag, the sequence is:
+
+1. The supervisor sends a stop request to the driver's Driver Bridge endpoint and marks the domain STOPPING with a 32-tick grace period
+2. The driver acknowledges the stop through the stop-ack syscall once it has drained its work
+3. Teardown runs in the normal order: mask IRQs, quiesce the device, revoke mappings, apply the reset policy
+4. If the driver does not acknowledge, the timeout path force-tears the domain at the deadline, and a failed teardown quarantines the domain
+
+The in-kernel driver tests cover the acknowledged path and the timeout fallback.
+
+### Network interface objects
+
+`KOBJECT_NET_INTERFACE` represents a registered network interface with:
+
+- Stable interface ID and generation
+- Driver-domain ownership
+- Unique name
+- MAC address and MTU
+- Link state
+- IPv4 configuration
+- IPv6 link-local and SLAAC addresses
+- Waitable link events
+- Route generation
+- Automatic revoke after driver death
+
+Interface states are:
+
+```text
+CREATED
+DOWN
+UP
+QUIESCING
+REVOKED
+REMOVED
+```
+
+Routes tied to a revoked interface generation are deactivated automatically.
+
+### Packet ownership
+
+Network buffers come from preallocated packet page pools. Every buffer ID contains a generation and has one explicit owner state:
+
+```text
+FREE
+RX
+STACK
+TX
+TX_QUEUED
+DRIVER_RX
+DRIVER_TX
+```
+
+The kernel rejects stale IDs, invalid transitions, double completion, and access using the wrong ownership state.
+
+The normal packet path does not allocate physical pages or kernel objects.
+
+### Ethernet and ARP
+
+The Ethernet layer supports:
+
+- Destination MAC filtering
+- Broadcast and multicast
+- Promiscuous mode
+- VLAN header detection
+- EtherType dispatch
+- Batch receive
+- Malformed frame rejection
+
+The ARP layer provides:
+
+- Bounded neighbor cache
+- Request and reply generation
+- Expiration
+- Rate limiting
+- Conflict detection
+- Poisoning checks
+- Pending IPv4 transmit queues
+- Retry after TX ring pressure
+
+### IPv4 and ICMP
+
+IPv4 includes:
+
+- Header and checksum validation
+- IHL and option bounds
+- TTL validation
+- Source and destination filtering
+- Fragment rejection
+- Protocol dispatch
+- Header generation
+- Connected and default routing
+
+ICMPv4 includes:
+
+- Echo Request and Reply
+- Destination Unreachable
+- Time Exceeded
+- Port Unreachable generation for closed UDP ports
+- Broadcast suppression
+- Rate limiting
+
+The QEMU test performs a real external ping through `virtio-net`.
+
+### UDP and sockets
+
+UDP supports:
+
+- Mandatory IPv4 pseudo-header checksum validation when a checksum is present
+- Bounded port bindings
+- Ephemeral ports from 49152 through 65535
+- Full-MTU payloads up to 1472 bytes
+- Bounded receive queues
+- Zero-copy internal receive ownership
+- Queue overflow accounting
+- Waitable socket events
+- Loopback and external interfaces
+
+The userspace socket ABI supports:
+
+```text
+create
+bind
+send-to
+receive-from
+wait
+```
+
+External socket tests send DNS requests through QEMU networking and validate the replies.
+
+### DHCPv4
+
+The userspace `virtio-net` capsule implements:
+
+```text
+Discover
+Offer
+Request
+ACK
+```
+
+It parses and applies:
+
+- IPv4 address
+- Subnet mask
+- Default gateway
+- DNS server
+- Lease time
+- T1 renewal time
+- T2 rebinding time
+
+The lifecycle includes:
+
+- Retry timer
+- Exponential retry delay
+- Bounded retry count
+- Renewal
+- Rebinding
+- NAK handling
+- Controlled driver restart after lease failure
+
+### Modern virtio PCI
+
+The x86-64 backend supports modern virtio PCI capabilities:
+
+- Common configuration
+- Notify configuration
+- ISR configuration
+- Device configuration
+- 64-bit feature negotiation
+- `VIRTIO_F_VERSION_1`
+- Queue discovery
+- Queue enable
+- Device status lifecycle
+- Stable device configuration reads using config generation
+- PCI memory decoding and bus mastering
+
+The driver resets the whole device before releasing queue DMA. It does not write `queue_enable = 0` unless the negotiated feature set permits individual queue reset.
+
+### Split virtqueues
+
+The split virtqueue implementation provides:
+
+- Descriptor free list
+- Multi-descriptor chains
+- Atomic allocation rollback
+- Available-ring publication
+- Used-ring collection
+- 16-bit ring wrap handling
+- Release and acquire barriers
+- 48-bit chain generations
+- Stale completion rejection
+- Used-length validation
+- Queue failure state after corruption
+- Reset with outstanding chains
+- Kick suppression
+- Batched completion collection
+
+The current completion ABI returns up to 16 completions per syscall. The userspace driver uses a bounded batch budget of 8.
+
+### Userspace `virtio-net` capsule
+
+The first real userspace network driver performs:
+
+- Driver Bootstrap validation
+- PCI ownership validation
+- Virtio feature negotiation
+- Stable MAC and link status reads
+- RX queue creation
+- TX queue creation
+- MSI-X vector assignment
+- Driver Bridge IRQ binding
+- RX buffer publication
+- TX publication and completion
+- Packet pool ownership transitions
+- Interface registration
+- Link state management
+- Driver restart through the supervisor
+
+External ping, UDP, and TCP probes live in a separate module. The driver loop only pumps queues, DHCP, and IPv6 DAD.
+
+RX and TX use separate MSI-X vectors. The normal driver loop waits on both Driver Bridge IRQ events and kernel timer objects through wait-many.
+
+### Interrupt-driven and batched I/O
+
+The driver uses a hybrid model:
+
+```text
+MSI-X interrupt
+      |
+      v
+bounded RX and TX batches
+      |
+      v
+buffer refill and publication
+      |
+      v
+wait-many
+```
+
+Current batching includes:
+
+- Up to 8 RX completions per processing pass
+- Up to 8 TX submissions per pass
+- Up to 16 outstanding TX buffers
+- One RX notify after a refill batch
+- One TX notify after a publication batch
+- Cycle counters for RX and TX paths
+
+QEMU cycle measurements are diagnostic values. They are not wire-throughput claims.
+
+### IPv6
+
+The IPv6 core provides:
+
+- Fixed-header validation
+- Traffic class and flow label
+- Payload length and hop limit checks
+- Multiple local addresses
+- Link-local addresses from modified EUI-64
+- Solicited-node multicast
+- Multicast filtering
+- Bounded extension-header traversal
+- Destination Options
+- Hop-by-Hop Options
+- Authentication Header bounds
+- Fragment rejection
+- Routing Header rejection until a safe policy exists
+
+### ICMPv6 and NDP
+
+ICMPv6 supports:
+
+- IPv6 pseudo-header checksum
+- Echo Request and Reply
+- Destination Unreachable
+- Packet Too Big
+- Time Exceeded
+- Parameter Problem
+
+NDP supports:
+
+- Neighbor Solicitation
+- Neighbor Advertisement
+- Source and Target Link-Layer Address options
+- Router Solicitation
+- Router Advertisement
+- Prefix Information
+- Bounded neighbor cache
+- Neighbor aging
+- Duplicate Address Detection
+- Global SLAAC address creation
+- Preferred and valid lifetimes
+- Address deprecation
+- Router lifetime expiration
+- Repeated Router Solicitation
+
+The QEMU test performs real DAD, receives a Router Advertisement, creates a SLAAC address, answers NDP for that address, and completes an external IPv6 ping.
+
+### UDPv6 and IPv6 sockets
+
+UDPv6 includes:
+
+- Mandatory checksum
+- IPv6 pseudo-header
+- Address-specific bindings
+- Ephemeral ports
+- Bounded receive queues
+- Waitable events
+- Generation-safe binding IDs
+
+The IPv6 datagram socket ABI supports:
+
+```text
+create
+bind
+send-to
+receive-from
+wait
+```
+
+The test environment confirms external UDPv6 transmission and the ICMPv6 error path. QEMU SLIRP does not provide a usable UDPv6 DNS endpoint in the current profile, so an external UDPv6 datagram reply is not claimed.
+
+### TCP
+
+The TCP core includes:
+
+- IPv4 and IPv6 checksums
+- Header and option validation
+- MSS advertised as the retransmit and out-of-order payload bound
+- Window Scale
+- SACK Permitted, SACK blocks on ACKs, and two-block coalescing
+- Timestamps
+- Active open
+- Passive open
+- Three-way handshake
+- Bounded listen backlog
+- Accept queue
+- Sequence wrap comparisons
+- Send and receive buffers
+- Out-of-order queue and merge
+- Cumulative ACK
+- Duplicate ACK tracking
+- Fast retransmit foundation
+- Congestion window and slow-start threshold
+- RTT estimator
+- Dynamic RTO
+- Retransmission queue
+- Retry exhaustion
+- Zero-window persist timer
+- FIN, CLOSE_WAIT, CLOSING, LAST_ACK, and TIME_WAIT
+- EOF
+- Close does not FIN over undelivered data; a zero-window detach sends RST
+- RST validation
+- Blind RST rejection
+- Socket error state
+
+TCP connection state is bounded. There are up to four interface TCP contexts and up to 64 connections per context.
+
+### Stream socket ABI
+
+TCP stream sockets support:
+
+```text
+create
+connect
+listen
+accept
+send
+receive
+state
+wait
+shutdown
+SO_ERROR
+```
+
+Readiness flags include:
+
+```text
+CONNECTED
+READABLE
+WRITABLE
+ACCEPT
+HANGUP
+ERROR
+```
+
+The external QEMU tests cover:
+
+- Active connect
+- Three-way handshake
+- 32 sequential echo round trips
+- Shutdown and FIN lifecycle
+- Passive listen
+- Host-to-guest connect
+- Accept
+- Passive echo
+- Host-side payload validation
+
+TCPv6 checksum, segment generation, active handshake, and stream receive are tested internally. External TCPv6 is not claimed because the current QEMU SLIRP build rejects IPv6 guest forwarding rules.
+
+## Driver and hardware safety
+
+The x86-64 driver model includes:
+
+- PCI and PCIe ECAM discovery
+- Architecture-neutral IOMMU domain and fault interface
+- ACPI IVRS parsing and AMD-Vi unit discovery
+- AMD-Vi device table, command buffer, event log, and completion command
+- AMD-Vi DTE domains, page tables, hardware invalidation, suspend, and resume
+- AMD-Vi registration through the generic IOMMU lifecycle
+- ACPI DMAR parsing and Intel VT-d register discovery
+- VT-d root, context, domain, and second-level translation tables
+- VT-d root activation, cache invalidation, IOTLB invalidation, and translation enable
+- Per-domain coherent DMA IOVA mapping, crash revoke, and restart restore
+- VT-d fault record decoding and driver quarantine
+- Physical forbidden-DMA rejection with a QEMU EDU device
+- BAR sizing with decoding and bus mastering disabled
+- MSI and MSI-X
+- Multi-vector groups
+- IRQ binding to events or Driver Bridge endpoints
+- PCI Function Level Reset
+- Required and optional reset policy
+- Driver manifests
+- Dependency graph and cycle rejection
+- Automatic PCI binding
+- Restart limits and backoff
+- Device ownership
+- Quarantine after failed teardown
+
+MMIO and DMA mappings require:
+
+```text
+KRIGHT_READ | KRIGHT_MAP
+```
+
+A writable page-table mapping is created only if the handle also has `KRIGHT_WRITE`.
+
+The first VT-d backend reserves eight isolated domains. Each domain has a 16 MiB IOVA window and eight bounded mappings. Coherent DMA resources receive IOVA addresses when VT-d is available. Crash and timeout teardown remove their page-table entries, and restart restores the same bounded mappings. Platforms with RMRR entries remain rejected until reserved-region ownership is implemented.
+
+PCI configuration writes use native 8-bit, 16-bit, or 32-bit operations. A 16-bit write does not perform a 32-bit read-modify-write over adjacent write-one-to-clear status bits.
+
+### Handle safety
+
+Kernel handles use:
+
+```text
+8-bit slot
+24-bit generation
+```
+
+There are 32 handle slots per process. A 40000-cycle stress test verifies that an old handle does not become valid again under the previous 15-bit generation boundary.
+
+### IRQ and event synchronization
+
+Driver Bridge queues and event waiter state are protected against local interrupt races with `irq_save()` and `irq_restore()`.
+
+This prevents an MSI-X interrupt from corrupting a queue or causing a lost wakeup while userspace is reading notifications or registering a wait set.
+
+## Support matrix
+
+| Feature | i386 | x86-64 |
+| --- | --- | --- |
+| BIOS boot through BigDevBoot | Yes | Yes |
+| Ring 3 processes | Yes | Yes |
+| Timer preemption | Yes | Yes |
+| ELF userspace | ELF32 | ELF64 |
+| E820 physical memory manager | Yes | Yes |
+| PID generations | Yes | Yes |
+| Exit, wait, kill, and reparenting | Yes | Yes |
+| Fork and exec | Yes | Yes |
+| Copy-on-write fork | Yes | Yes |
+| Blocking and nonblocking IPC | Yes | Yes |
+| Service registry and capabilities | Yes | Yes |
+| Kernel objects and generated handles | Yes | Yes |
+| Shared pages, SG lists, rings, completions, and timers | Reference build | Yes |
+| ACPI, PCI, and PCIe ECAM | No | Yes |
+| Local APIC and I/O APIC | No | Yes |
+| MSI and MSI-X | No | Yes |
+| Userspace driver supervisor | No | Yes |
+| Automatic PCI driver binding | No | Yes |
+| Driver quarantine and reset policy | No | Yes |
+| Packet pools and virtual NIC | Reference build | Yes |
+| Userspace `virtio-net` driver | No | Yes |
+| VFS (ramfs and bootfs) | Reference build | Yes |
+| Block layer | No | Yes |
+| Firmware loading | Reference build | Yes |
+| Graceful driver stop | No | Yes |
+| External IPv4 | No | Yes |
+| DHCPv4 | No | Yes |
+| External IPv6 and SLAAC | No | Yes |
+| UDP and UDPv6 | Reference build | Yes |
+| TCP and stream sockets | Reference build | Yes |
+| Panic register dump | Basic | Yes |
+| FPU context switching | No | FXSAVE and FXRSTOR |
+| UEFI | No | No |
+| SMP | No | No |
+| IOMMU | No | Intel VT-d and AMD-Vi coherent DMA |
+| AArch64 | Planned | Planned |
+| RISC-V 64 | Planned | Planned |
+
+## Security model
+
+Current protections include:
+
+- Supervisor-only kernel mappings
+- NX userspace stacks
+- CR0 write protection
+- ELF bounds and overlap validation
+- W+X ELF segment rejection
+- Checked userspace pointers
+- PID generations
+- 24-bit handle generations
+- Atomic handle transfer rollback
+- IPC deadlock detection and timeouts
+- Event waiter synchronization against IRQ delivery
+- Driver Bridge queue synchronization
+- User fault containment
+- Syscall return-state validation
+- Kernel and syscall stack canaries
+- PCI bus-master shutdown during teardown
+- IRQ, MSI, and MSI-X masking before revoke
+- MMIO and DMA mapping revoke
+- PCI reset policy
+- Quarantine after teardown failure
+- Bounded packet, route, socket, neighbor, and TCP state
+- Blind TCP RST rejection
+- Bounded SYN backlog
+- TCP parser mutation stress
+
+Important limitations remain:
+
+- AMD-Vi Event Log fault decoding needs a physical fault integration test
+- VT-d RMRR ownership is not implemented
+- Devices without a supported IOMMU remain trusted for DMA
+- No SMP synchronization model
+- No SMEP or SMAP
+- No KASLR
+- No complete x86-64 kernel W^X
+- The low identity mapping remains active
+- PCI devices can DMA outside assigned buffers without an IOMMU
+- Public ABIs may change before 1.0.0
+
+Report security issues privately when possible:
+
+```text
+mich-licensing@protonmail.com
+```
+
+Do not publish an unpatched vulnerability before the maintainer has had reasonable time to investigate it.
+
+## What is not here yet
+
+Mich Core 0.1.0 does not include:
+
+- A real filesystem (only ramfs and bootfs exist, and both are bounded and in-memory)
+- A block layer or disk I/O
+- USB
+- Audio
+- A desktop or shell
+- A complete POSIX ABI
+- A complete POSIX ABI (x86-64 now has fork, exec, and copy-on-write)
+- Independently written Linux Kernel API compatibility headers
+- UEFI
+- SMP
+- IOMMU-backed DMA isolation
+- Power management
+- A higher-half kernel
+- Complete kernel W^X, SMEP, SMAP, or KASLR
+- Real high-speed NIC measurements
+- Confirmed external TCPv6 through the current QEMU backend
+
+The disk images are test systems, not installable operating systems.
+
+## Build requirements
+
+Use a Linux host with:
+
+- GNU Make
+- GCC with i386 multilib support
+- GNU binutils
+- NASM
+- Python 3
+- QEMU for x86
+- GNU coreutils
+
+On Debian or Ubuntu:
+
+```bash
+sudo apt update
+sudo apt install build-essential gcc-multilib binutils nasm python3 qemu-system-x86 coreutils
+```
+
+The build does not download dependencies.
+
+## Build
+
+```bash
+git clone https://github.com/bigdevboss/mich-core.git
+cd mich-core
+make -j2
+```
+
+Generated files are written under `bin/`.
+
+## Run
+
+```bash
+make run
+make run64
+```
+
+Both targets use the serial console for kernel logs.
+
+## Test
+
+Run normal architecture tests:
+
+```bash
+make test
+make test64
+```
+
+Run dedicated x86-64 profiles:
+
+```bash
+make test64-highmem
+make test64-hardware
+make test64-msi
+make test64-pcie
+make test64-iommu
+make test64-amd-iommu
+make test64-panic
+```
+
+Run the complete release check:
+
+```bash
+make release-check
+```
+
+The release check performs a clean build and runs:
+
+- i386 smoke test
+- x86-64 smoke test with 128 MiB
+- x86-64 high-memory test with 768 MiB
+- Hardware-destructive interrupt profile
+- MSI and MSI-X hardware programming
+- Modern virtio PCI tests
+- Real userspace `virtio-net`
+- DHCP, IPv4, IPv6, UDP, TCP, and socket integration
+- PCIe ECAM on Q35
+- ACPI DMAR and Intel VT-d register discovery
+- ACPI IVRS and AMD-Vi register discovery
+- AMD-Vi device table, command processing, DTE, and page-table lifecycle
+- VT-d context and second-level translation table lifecycle
+- VT-d root activation, invalidation, and translation enable
+- Production driver IOVA assignment and revoke lifecycle
+- VT-d fault decode and quarantine routing
+- Physical forbidden-DMA rejection through QEMU EDU
+- Intentional kernel panic profile
+- Version and formatting checks
+
+The normal boot profile does not program discovered MSI or MSI-X devices. Destructive hardware tests require an explicit hardware profile.
+
+## Test coverage
+
+The suites cover:
+
+- ELF32 and ELF64 validation
+- Address-space and physical-page accounting
+- High-memory identity-map regression
+- Process lifecycle and PID generations
+- IPC modes, timeout, deadlock, and death notification
+- Handle rights, transfer, revoke, and generation stress
+- VFS nodes, mounts, paths, unlink-open semantics, and root escape protection
+- Firmware allowlist, lookup, and crash handle revocation
+- Graceful driver stop, stop timeout fallback, and stop-ack path
+- Event and Driver Bridge IRQ race protection
+- PCI and PCIe discovery
+- MSI and MSI-X programming
+- Driver manifests, dependency cycles, fallback, and restart
+- Driver teardown, reset, quarantine, and resource accounting
+- Shared pages, SG rollback, rings, completions, timers, and wait-many
+- Packet-pool exhaustion and stale IDs
+- Ethernet, ARP, IPv4, ICMP, UDP, and routing
+- DHCP retry, renewal, rebinding, and lease state
+- IPv6 extension bounds, DAD, NDP, RA, SLAAC, and ICMPv6
+- UDPv6 checksum and binding state
+- TCP options, checksum, sequence handling, and wrap comparisons
+- TCP retransmission, RTT, RTO, persist, FIN, CLOSING, EOF, and TIME_WAIT
+- Active and passive stream sockets
+- External active and passive TCP echo
+- TCP connection churn
+- Bounded SYN flood handling
+- 4096 TCP parser mutations
+- Network parser mutations
+- Netbench baseline report: rx, tx, and echo at 64, 512, and 1500 bytes
+- Panic diagnostics
+
+## Repository layout
+
+```text
+LICENSE
+Makefile
+README.md
+mkboot.py
+mkboot64.py
+scripts/
+src/
+```
+
+Important source modules:
+
+```text
+src/core/                 types, boot info, serial API, and page memory
+src/process/              tasks, scheduler, fork/exec, IPC, capabilities
+src/objects/              kernel objects, resources, events, rings, completions
+src/net/                  full protocol stack (ARP through TCP, sockets)
+src/driver/               driver domains, supervisor, manager, virtio ABI
+src/fs/                   VFS and firmware loading
+src/objects/object.c      kernel objects and handle tables
+src/objects/resource.c    MMIO, IRQ, DMA, PCI, pages, and SG resources
+src/objects/iommu.c       architecture-neutral IOMMU lifecycle
+src/arch/x86_64/platform/vtd64.c   Intel VT-d translation backend
+src/arch/x86_64/platform/amd_iommu64.c   AMD-Vi discovery backend
+src/driver/driver.c       kernel driver module core
+src/driver/driver_supervisor.c   userspace driver domains and crash recovery
+src/driver/driver_manager.c   manifests, dependencies, matching, and binding
+src/objects/bridge.c      Driver Bridge notifications
+src/objects/event.c       events and wait-many
+src/objects/ring.c        shared descriptor rings
+src/objects/completion.c  asynchronous completion objects
+src/net/net_buffer.c      packet page pools
+src/net/vnic.c            virtual benchmark NIC
+src/net/net_interface.c   interface registry and external transports
+src/net/ethernet.c        Ethernet parser and dispatch
+src/net/arp.c             ARP neighbor cache
+src/net/ipv4.c            IPv4 parser and dispatch
+src/net/icmp.c            ICMPv4
+src/net/udp.c             UDPv4
+src/net/ipv6.c            IPv6 parser and address state
+src/net/icmpv6.c          ICMPv6 and NDP
+src/net/udpv6.c           UDPv6
+src/net/tcp.c             TCP transport core
+src/net/socket.c          datagram and stream socket objects
+src/fs/vfs.c              VFS nodes, mounts, and path resolution
+src/fs/firmware.c         driver firmware loading from bootfs
+src/arch/x86_64/drivers/virtio_pci.c modern virtio PCI and split virtqueues
+src/user64/virtio_net/    userspace virtio-net capsule
+```
+
+## Roadmap
+
+### 0.6.0
+
+- Graceful driver stop protocol
+- Userspace driver capsules
+- Minimal VFS (ramfs and bootfs)
+- Firmware loading from bootfs
+- Independently written compatibility headers for a supported Linux Kernel API subset (carried over, not yet present)
+
+### 0.1.0 (current)
+
+- In-kernel virtual NIC (`KOBJECT_VNIC`) with a cycle-accurate netbench
+- VNIC packet-path optimization: SIMD frame copy, cached ring resource
+  pointer, cached pool state (224 cycles/64 B, 328 cycles/1500 B on RX, KVM
+  single-CPU, min — 31% to 82% reduction)
+- SSE2 on x86-64 for payload and checksum paths
+- Batched driver RX and TX handoff
+- SACK-based recovery and BBR congestion control
+- Per-connection TCP timer deadlines
+- Adaptive interrupt moderation in the virtio-net capsule
+
+### After 0.1.0
+
+- Block layer
+- Asynchronous block I/O
+- Page cache
+- First in-kernel filesystem on the VFS
+
+### Later 0.x
+
+- UEFI
+- SMP and per-CPU storage
+- IOMMU-backed DMA
+- Higher-half kernel and complete W^X
+- SMEP, SMAP, guard pages, and KASLR
+- RSS and multiple network queue pairs
+- NUMA-aware packet memory
+- AArch64
+- RISC-V 64
+- Desktop services
+- Stable POSIX and driver-facing ABIs
+
+### 1.0.0
+
+Mich Core 1.0.0 is planned to support x86-64, AArch64, and RISC-V 64 with a shared process, object, capability, IPC, VFS, and driver model.
+
+Architecture support does not imply support for every board or peripheral.
+
+## Network performance direction
+
+The performance goal is measured cycles per packet, not unsupported throughput claims.
+
+The hot path should avoid:
+
+- Per-packet allocation
+- Global locks
+- Payload copies
+- Shared writable counters
+- Unnecessary callbacks
+- Cross-core cache-line movement
+
+Future real-hardware testing should report:
+
+- Packet size
+- Packets per second
+- Gbit/s
+- Packet loss
+- p50 and p99 latency
+- CPU model and frequency
+- Core count
+- NIC model
+- PCIe generation
+- NUMA placement
+- Queue count
+- RSS configuration
+- Offload settings
+
+QEMU cycle measurements are useful for regressions. They are not wire-rate results.
+
+### Netbench baseline
+
+The test build includes a netbench baseline on the virtual benchmark NIC. It measures the kernel ring and pool paths for three directions (rx, tx, and echo) at 64, 512, and 1500 byte frames. Each direction and size runs 512 warmup packets, then 4096 sampled packets timed per packet with rdtsc, and reports min, average, p50, and p99 cycles per packet on the serial console.
+
+The vnic harness measures the kernel-side path: ring submission and consumption, pool state transitions, and descriptor handling. Frame copies model the DMA payload transfer. p99 values include any tick or scheduler interference that lands during a run.
+
+After the 0.1.0 packet-path optimization (SIMD frame copy, cached ring resource
+pointer, cached pool state), the netbench reports the following min cycles per
+packet on KVM with a single CPU (native CPU, real TSC — a close proxy for bare
+metal because the hot path is in memory, no MMIO):
+
+| Direction | 64 B | 512 B | 1500 B |
+|-----------|-----:|------:|-------:|
+| RX        | 224  | 254   | 328    |
+| TX        | 296  | 758   | 1746   |
+| Echo      | 460  | 958   | 2024   |
+
+The unoptimized RX baseline was 326 / 790 / 1780 cycles per packet at 64 / 512
+/ 1500 bytes — a 31% / 68% / 82% reduction. TCG (emulated CPU) numbers are
+10–50× higher and are reported only for relative regressions.
+
+## Versioning
+
+Mich Core uses semantic versioning for public releases.
+
+The ABI may change during the `0.x` series. Version 1.0.0 will mark the first release intended to provide stable public kernel interfaces on supported architectures.
+
+## Contributions
+
+Bug reports, test results, design discussion, and documentation fixes are welcome.
+
+Discuss large changes before opening a pull request. Do not submit proprietary code, leaked material, or code with an incompatible license.
+
+Contributions are accepted under GPLv3.
+
+## License
+
+Mich Core is licensed under the [GNU General Public License v3.0](LICENSE).
+
+See [LICENSE](LICENSE) for the full terms.
+
+The bitmap glyph data in `src/arch/x86/i386/font.h` is derived from Terminus Font 4.39 and remains under the SIL Open Font License 1.1. It is not licensed under GPLv3.
