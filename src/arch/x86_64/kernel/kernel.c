@@ -73,7 +73,12 @@
 #include "tests64.h"
 #include "test_report.h"
 #endif
-
+#ifdef MICH_TEST_BUILD
+/* Keep the fixed test boot blob available for the live fault path. */
+#define KERNEL_PANIC(reason) panic_str("kernel test failure")
+#else
+#define KERNEL_PANIC(reason) panic_str(reason)
+#endif
 #define MSR_EFER 0xC0000080u
 #define MSR_STAR 0xC0000081u
 #define MSR_LSTAR 0xC0000082u
@@ -370,6 +375,243 @@ static int manager64_set_pci_inventory(void) {
     return driver_manager_set_devices(devices, count) < 0 ? -1 : 0;
 }
 
+#ifdef MICH_TEST_BUILD
+#define DRIVER_LIVE_RECOVERY_PRIMARY_ARGUMENT 21
+#define DRIVER_LIVE_RECOVERY_FALLBACK_ARGUMENT 22
+#define DRIVER_LIVE_RECOVERY_TIMEOUT_TICKS 128
+
+#define DRIVER_LIVE_RECOVERY_WAIT_PRIMARY_RESTART 1
+#define DRIVER_LIVE_RECOVERY_WAIT_FALLBACK 2
+#define DRIVER_LIVE_RECOVERY_FALLBACK_HOLD 3
+#define DRIVER_LIVE_RECOVERY_COMPLETE 4
+
+struct driver_live_recovery_test {
+    struct driver_domain *domain;
+    u32 phase;
+    u32 deadline;
+    u32 hold_deadline;
+    int primary_pid;
+    int restarted_pid;
+    int fallback_pid;
+    u32 primary_space;
+    u32 restarted_space;
+    u32 primary_handle;
+    u32 restarted_handle;
+    struct kernel_object *primary_bridge;
+    struct kernel_object *restarted_bridge;
+    u64 fault_rip;
+};
+
+static struct driver_live_recovery_test driver_live_recovery;
+
+static int driver_live_recovery_context(int pid, u32 *space) {
+    u32 slot = PID_SLOT((u32)pid);
+    if (pid <= 0 || slot >= MAX_TASKS || task_pool[slot].id != pid ||
+        task_pool[slot].state == TASK_ZOMBIE ||
+        task_pool[slot].state == TASK_FREE || !task_contexts[slot].vm_valid)
+        return -1;
+    *space = task_contexts[slot].vm_space;
+    return 0;
+}
+
+static int driver_live_recovery_stale(int pid, u32 handle) {
+    u32 slot = PID_SLOT((u32)pid);
+    if (pid <= 0 || !handle || slot >= MAX_TASKS) return 0;
+    if (task_pool[slot].id != pid) return 1;
+    return task_pool[slot].state == TASK_ZOMBIE &&
+           !handle_get(&task_pool[slot], handle, KRIGHT_READ, KOBJECT_PCI) &&
+           !handle_task_count(&task_pool[slot]);
+}
+
+static struct kernel_object *driver_live_recovery_bridge(int pid, u32 handle) {
+    u32 slot = PID_SLOT((u32)pid);
+    if (pid <= 0 || !handle || slot >= MAX_TASKS || task_pool[slot].id != pid ||
+        task_pool[slot].state == TASK_ZOMBIE || task_pool[slot].state == TASK_FREE)
+        return 0;
+    return handle_get(&task_pool[slot], handle, KRIGHT_READ, KOBJECT_ENDPOINT);
+}
+
+static int driver_live_recovery_crash(
+    const struct driver_domain_status *status, u32 generation, u64 rip) {
+    return status->last_crash.kind == DRIVER_CRASH_USER_EXCEPTION &&
+           status->last_crash.code == 134 && status->last_crash.generation == generation &&
+           status->last_crash.vector == 6 && (!rip || status->last_crash.rip == rip);
+}
+
+static int driver_live_recovery_fresh(
+    const struct driver_domain_status *status, u32 generation, int old_pid,
+    u32 old_space, u32 old_handle, u32 *space) {
+    if (status->state != DRIVER_DOMAIN_RUNNING) return -1;
+    if (status->generation != generation) return -2;
+    if (status->pid == old_pid) return -3;
+    if (driver_live_recovery_context(status->pid, space)) return -4;
+    if (*space == old_space) return -5;
+    if (!driver_live_recovery_stale(old_pid, old_handle)) return -6;
+    return 0;
+}
+
+static int driver_live_recovery_prepare(void) {
+    if (!spawn_image_count ||
+        !(spawn_image_capabilities[0] & CAP_SERVICE_REGISTER))
+        return -1;
+    struct driver_user_manifest manifest;
+    u8 *bytes = (u8 *)&manifest;
+    for (usize_t index = 0; index < sizeof(manifest); index++) bytes[index] = 0;
+    manifest.abi_version = DRIVER_USER_ABI_VERSION;
+    manifest.size = sizeof(manifest);
+    const char *name = "mich.live.recovery";
+    for (u32 index = 0; name[index]; index++) manifest.name[index] = name[index];
+    manifest.capabilities = CAP_SERVICE_REGISTER;
+    manifest.restart_policy = DRIVER_RESTART_ON_FAILURE;
+    manifest.max_restarts = 1;
+    manifest.backoff_ticks = 1;
+    manifest.image_id = 0;
+    manifest.reset_policy = DRIVER_RESET_NONE;
+    manifest.argument = DRIVER_LIVE_RECOVERY_PRIMARY_ARGUMENT;
+    manifest.match_count = 1;
+    manifest.matches[0].vendor_id = 0x1AF4;
+    manifest.matches[0].device_id = VIRTIO_PCI_DEVICE_BLK;
+    manifest.matches[0].class_code = 0xFF;
+    manifest.matches[0].subclass = 0xFF;
+    manifest.matches[0].programming_interface = 0xFF;
+    manifest.request_count = 2;
+    manifest.requests[0].kind = DRIVER_RESOURCE_PCI;
+    manifest.requests[0].rights = KRIGHT_READ | KRIGHT_CONTROL;
+    manifest.requests[1].kind = DRIVER_RESOURCE_BRIDGE;
+    manifest.requests[1].rights = KRIGHT_READ | KRIGHT_WAIT;
+    int manifest_id = driver_manager_register(&manifest);
+    struct driver_recovery_profile fallback;
+    fallback.image_id = 0;
+    fallback.capabilities = 0;
+    fallback.argument = DRIVER_LIVE_RECOVERY_FALLBACK_ARGUMENT;
+    struct driver_crash_circuit_policy policy;
+    policy.repeat_limit = DRIVER_CRASH_REPEAT_LIMIT + 1;
+    policy.repeat_window_ticks = DRIVER_CRASH_REPEAT_WINDOW_TICKS;
+    return manifest_id > 0 &&
+           !driver_manager_set_recovery_fallback(manifest_id, &fallback) &&
+           !driver_manager_set_recovery_fallback_triggers(
+               manifest_id, DRIVER_RECOVERY_TRIGGER_RESTART_LIMIT) &&
+           !driver_manager_set_crash_circuit_policy(manifest_id, &policy) ? 0 : -1;
+}
+
+static int driver_live_recovery_arm(void) {
+    struct kernel_object *device = 0;
+    for (u32 index = 0; index < pci64_count(); index++) {
+        struct kernel_object *candidate = pci64_object(index);
+        const struct pci_resource *pci = pci_resource_get(candidate);
+        if (pci && pci->vendor_id == 0x1AF4 &&
+            pci->device_id == VIRTIO_PCI_DEVICE_BLK) {
+            device = candidate;
+            break;
+        }
+    }
+    struct driver_domain *domain = driver_manager_domain(device);
+    struct driver_domain_status status;
+    u32 handles[DRIVER_DOMAIN_RESOURCE_MAX];
+    if (!device || !domain || driver_domain_status(domain, &status) ||
+        status.state != DRIVER_DOMAIN_RUNNING || status.pid <= 0 ||
+        status.generation != 1 || status.recovery_profile != DRIVER_RECOVERY_PRIMARY ||
+        status.fallback_enabled != 1 || status.fallback_used ||
+        status.fallback_triggers != DRIVER_RECOVERY_TRIGGER_RESTART_LIMIT ||
+        status.last_decision != DRIVER_RECOVERY_DECISION_START ||
+        status.capabilities != CAP_SERVICE_REGISTER ||
+        status.argument != DRIVER_LIVE_RECOVERY_PRIMARY_ARGUMENT ||
+        driver_domain_bundle(domain, handles, DRIVER_DOMAIN_RESOURCE_MAX) != 2 ||
+        !handles[0] || !handles[1] ||
+        !(driver_live_recovery.primary_bridge =
+          driver_live_recovery_bridge(status.pid, handles[1])) ||
+        driver_live_recovery_context(status.pid,
+                                     &driver_live_recovery.primary_space))
+        return -1;
+    driver_live_recovery.domain = domain;
+    driver_live_recovery.phase = DRIVER_LIVE_RECOVERY_WAIT_PRIMARY_RESTART;
+    driver_live_recovery.deadline = timer_ticks + DRIVER_LIVE_RECOVERY_TIMEOUT_TICKS;
+    driver_live_recovery.primary_pid = status.pid;
+    driver_live_recovery.primary_handle = handles[0];
+    return 0;
+}
+
+static void driver_live_recovery_fail(void) {
+    KERNEL_PANIC("driver live recovery");
+}
+
+static __attribute__((cold, noinline, optimize("Os"))) void driver_live_recovery_tick(void) {
+    struct driver_live_recovery_test *test = &driver_live_recovery;
+    if (!test->phase || test->phase == DRIVER_LIVE_RECOVERY_COMPLETE) return;
+    if ((i32)(timer_ticks - test->deadline) >= 0) driver_live_recovery_fail();
+    struct driver_domain_status status;
+    if (driver_domain_status(test->domain, &status)) driver_live_recovery_fail();
+    if (test->phase == DRIVER_LIVE_RECOVERY_WAIT_PRIMARY_RESTART) {
+        if (status.state == DRIVER_DOMAIN_RUNNING && status.generation == 1) return;
+        if (driver_live_recovery_fresh(&status, 2, test->primary_pid,
+                                       test->primary_space, test->primary_handle,
+                                       &test->restarted_space) ||
+            status.recovery_profile != DRIVER_RECOVERY_PRIMARY || status.fallback_used ||
+            status.last_decision != DRIVER_RECOVERY_DECISION_RESTART ||
+            status.capabilities != CAP_SERVICE_REGISTER ||
+            !driver_live_recovery_crash(&status, 1, 0))
+            driver_live_recovery_fail();
+        u32 handles[2];
+        test->restarted_pid = status.pid;
+        if (driver_domain_bundle(test->domain, handles, 2) != 2 || !handles[0] ||
+            !handles[1] ||
+            !(test->restarted_bridge =
+              driver_live_recovery_bridge(status.pid, handles[1])) ||
+            test->restarted_bridge == test->primary_bridge)
+            driver_live_recovery_fail();
+        test->restarted_handle = handles[0];
+        test->fault_rip = status.last_crash.rip;
+        test->phase = DRIVER_LIVE_RECOVERY_WAIT_FALLBACK;
+        return;
+    }
+    if (test->phase == DRIVER_LIVE_RECOVERY_WAIT_FALLBACK) {
+        if (status.state == DRIVER_DOMAIN_RUNNING && status.generation == 2) return;
+        u32 fallback_space;
+        if (driver_live_recovery_fresh(&status, 3, test->restarted_pid,
+                                       test->restarted_space, test->restarted_handle,
+                                       &fallback_space) ||
+            status.recovery_profile != DRIVER_RECOVERY_FALLBACK ||
+            !status.fallback_enabled || !status.fallback_used ||
+            status.fallback_triggers != DRIVER_RECOVERY_TRIGGER_RESTART_LIMIT ||
+            status.last_decision != DRIVER_RECOVERY_DECISION_FALLBACK ||
+            status.capabilities ||
+            status.argument != DRIVER_LIVE_RECOVERY_FALLBACK_ARGUMENT ||
+            !driver_live_recovery_crash(&status, 2, test->fault_rip))
+            driver_live_recovery_fail();
+        u32 handles[2];
+        struct kernel_object *bridge = 0;
+        if (driver_domain_bundle(test->domain, handles, 2) != 2 || !handles[1] ||
+            !(bridge = driver_live_recovery_bridge(status.pid, handles[1])) ||
+            bridge == test->restarted_bridge)
+            driver_live_recovery_fail();
+        test->fallback_pid = status.pid;
+        test->hold_deadline = timer_ticks + 2;
+        test->phase = DRIVER_LIVE_RECOVERY_FALLBACK_HOLD;
+        return;
+    }
+    if (test->phase == DRIVER_LIVE_RECOVERY_FALLBACK_HOLD) {
+        if (status.state != DRIVER_DOMAIN_RUNNING ||
+            status.generation != 3 || status.pid != test->fallback_pid ||
+            status.recovery_profile != DRIVER_RECOVERY_FALLBACK ||
+            !status.fallback_used ||
+            status.fallback_triggers != DRIVER_RECOVERY_TRIGGER_RESTART_LIMIT ||
+            status.last_decision != DRIVER_RECOVERY_DECISION_FALLBACK ||
+            status.capabilities ||
+            status.argument != DRIVER_LIVE_RECOVERY_FALLBACK_ARGUMENT)
+            driver_live_recovery_fail();
+        if ((i32)(timer_ticks - test->hold_deadline) < 0) return;
+        serial64_write("Mich test64: driver live recovery isolation pass\n");
+        if (task_pool[1].id != 1 || task_pool[2].id != 2)
+            driver_live_recovery_fail();
+        task_pool[1].state = TASK_RUNNING;
+        task_pool[2].state = TASK_RUNNING;
+        test->phase = DRIVER_LIVE_RECOVERY_COMPLETE;
+        return;
+    }
+    driver_live_recovery_fail();
+}
+#endif
+
 static int udp_unreachable_to_icmp(const struct ipv4_packet_view *packet,
                                    void *context) {
     return icmp_send_port_unreachable((struct icmp_context *)context, packet);
@@ -411,10 +653,10 @@ static void highmem_probe_finish(void) {
     volatile u64 *page = (volatile u64 *)(uptr_t)highmem_probe;
     if (page[0] != 0x4D49434848494748ULL ||
         page[1] != 0x5048595350414745ULL)
-        panic_str("high memory identity map");
+        KERNEL_PANIC("high memory identity map");
     page[0] = 0x5245555341424C45ULL;
     if (page[0] != 0x5245555341424C45ULL)
-        panic_str("high memory write");
+        KERNEL_PANIC("high memory write");
     pmm_free_page(highmem_probe);
     highmem_probe = 0;
     serial64_write("Mich x86_64: high memory identity pass\n");
@@ -863,13 +1105,17 @@ void exception64_dispatch(struct exception_frame64 *frame) {
     if ((frame->cs & 3) != 3)
         panic64_frame("kernel exception", frame);
     slot = smp64_running_slot();
-    if (frame->vector == 14 && (frame->error & 7) == 7) {
-        u64 cr2;
+    u64 cr2 = 0;
+    if (frame->vector == 14) {
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
-        if (slot < MAX_TASKS &&
+        if ((frame->error & 7) == 7 && slot < MAX_TASKS &&
             !vm64_handle_cow(task_contexts[slot].vm_space, cr2))
             return;
     }
+    if (slot < MAX_TASKS)
+        driver_supervisor_report_user_fault(task_pool[slot].id, frame->vector,
+                                            frame->error, frame->rip, cr2,
+                                            timer_ticks);
     if (smp64_cpu_index() != 0) {
         if (slot < MAX_TASKS)
             terminate64(slot, 128 + (int)frame->vector);
@@ -949,7 +1195,12 @@ static void iommu64_fault_tick(void) {
         serial64_write(" reason=");
         serial64_hex(fault.reason);
         serial64_write("\n");
-        if (fault.owner) driver_domain_quarantine(fault.owner);
+        if (fault.owner) {
+            driver_supervisor_report_iommu_fault(
+                fault.owner, fault.segment, fault.source_id, fault.reason,
+                fault.write, fault.address, timer_ticks);
+            driver_domain_quarantine(fault.owner);
+        }
     }
 }
 
@@ -986,6 +1237,9 @@ void timer64_dispatch(struct interrupt_frame64 *frame) {
     timer_object_tick(timer_ticks);
     driver_supervisor_tick(timer_ticks);
     driver_manager_tick();
+#ifdef MICH_TEST_BUILD
+    driver_live_recovery_tick();
+#endif
     iommu64_fault_tick();
     reap_orphan_zombies();
     if (timer_ticks == 8)
@@ -1092,15 +1346,15 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     serial64_write("Mich x86_64: E820 PMM alive\n");
     syscall64_init();
     serial64_write("Mich x86_64: syscall MSRs alive\n");
-    if (vm64_init()) panic_str("VM64 init");
+    if (vm64_init()) KERNEL_PANIC("VM64 init");
     service_init();
     object_init();
     vfs_init();
-    if (bootfs64_init(modules, info->mods_count)) panic_str("bootfs mount");
+    if (bootfs64_init(modules, info->mods_count)) KERNEL_PANIC("bootfs mount");
     resource_init();
     iommu_init();
     if (page_resource_set_revoke_backend(vm64_revoke_object_all))
-        panic_str("page revoke backend");
+        KERNEL_PANIC("page revoke backend");
     ring_init();
     driver_init();
     driver_supervisor_init(supervisor64_spawn, supervisor64_quiesce,
@@ -1118,8 +1372,8 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     vector64_init();
     virtio_pci_init();
     ipc64_init();
-    if (acpi64_init()) panic_str("ACPI discovery");
-    if (platform_resource_init()) panic_str("platform resources");
+    if (acpi64_init()) KERNEL_PANIC("ACPI discovery");
+    if (platform_resource_init()) KERNEL_PANIC("platform resources");
     serial64_write("Mich x86_64: ACPI tables pass\n");
     serial64_write("Mich x86_64: platform MMIO objects pass\n");
     serial64_write("Mich x86_64: PML4 address space alive\n");
@@ -1150,10 +1404,10 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     test_env.reset = supervisor64_reset;
     test_env.revoke = supervisor64_revoke;
     test_env.terminate = supervisor64_terminate;
-    if (tests64_run(&test_env)) panic_str("independent kernel tests");
-    if (tests64_run_network(&test_env)) panic_str("independent network tests");
+    if (tests64_run(&test_env)) KERNEL_PANIC("independent kernel tests");
+    if (tests64_run_network(&test_env)) KERNEL_PANIC("independent network tests");
 #endif
-    if (network_runtime_init()) panic_str("network runtime init");
+    if (network_runtime_init()) KERNEL_PANIC("network runtime init");
     serial64_write("Mich x86_64: network runtime ready\n");
     serial64_write("Mich x86_64: external ELF64 init loaded\n");
     serial64_write("Mich x86_64: driver image registry pass\n");
@@ -1161,15 +1415,15 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     fpu64_load(&task_contexts[1]);
     timer_ticks = 0;
     vm64_activate(task_pool[1].page_dir);
-    if (vtd64_init()) panic_str("Intel VT-d discovery");
-    if (amd_iommu64_init()) panic_str("AMD-Vi discovery");
+    if (vtd64_init()) KERNEL_PANIC("Intel VT-d discovery");
+    if (amd_iommu64_init()) KERNEL_PANIC("AMD-Vi discovery");
     if (vtd64_present() && amd_iommu64_present())
-        panic_str("multiple IOMMU backends");
+        KERNEL_PANIC("multiple IOMMU backends");
     if (vtd64_present()) {
         if (vtd64_register_backend() ||
             dma_resource_set_iommu_backend(iommu_dma_release) ||
             driver_supervisor_set_release_backend(supervisor64_release))
-            panic_str("IOMMU backend registration");
+            KERNEL_PANIC("IOMMU backend registration");
         serial64_write("Mich x86_64: Intel VT-d discovery pass\n");
         serial64_write("Mich x86_64: IOMMU backend registration pass\n");
     }
@@ -1178,7 +1432,7 @@ void kernel64_main(u32 magic, struct bd_info *info) {
         if (amd_iommu64_prepare() || amd_iommu64_register_backend() ||
             dma_resource_set_iommu_backend(iommu_dma_release) ||
             driver_supervisor_set_release_backend(supervisor64_release))
-            panic_str("AMD-Vi backend registration");
+            KERNEL_PANIC("AMD-Vi backend registration");
         serial64_write("Mich x86_64: AMD-Vi device table pass\n");
         serial64_write("Mich x86_64: IOMMU backend registration pass\n");
         serial64_write("Mich x86_64: AMD-Vi command and event buffers pass\n");
@@ -1188,34 +1442,34 @@ void kernel64_main(u32 magic, struct bd_info *info) {
         serial64_write("Mich x86_64: panic profile trigger\n");
         volatile u64 value = *(volatile u64 *)(uptr_t)0x0000000DEADBE000ULL;
         (void)value;
-        panic_str("panic profile did not fault");
+        KERNEL_PANIC("panic profile did not fault");
     }
-    if (pci64_init()) panic_str("PCI enumeration");
+    if (pci64_init()) KERNEL_PANIC("PCI enumeration");
 #ifdef MICH_TEST_BUILD
     if (amd_iommu64_present()) {
         if (amd_iommu64_test_domain(pci64_object(0)))
-            panic_str("AMD-Vi domain test");
+            KERNEL_PANIC("AMD-Vi domain test");
         serial64_write("Mich test64: AMD-Vi DTE and domain pass\n");
         serial64_write("Mich test64: AMD-Vi page invalidation pass\n");
     }
     if (vtd64_present()) {
         if (test_vtd64_tables(pci64_object(0)))
-            panic_str("Intel VT-d table tests");
+            KERNEL_PANIC("Intel VT-d table tests");
         serial64_write("Mich test64: Intel VT-d translation tables pass\n");
         serial64_write("Mich test64: Intel VT-d command engine pass\n");
         serial64_write("Mich test64: Intel VT-d revoke and resume pass\n");
         serial64_write("Mich test64: Intel VT-d fault decode pass\n");
         if (test_iommu64_forbidden_dma())
-            panic_str("Intel VT-d forbidden DMA test");
+            KERNEL_PANIC("Intel VT-d forbidden DMA test");
         serial64_write("Mich test64: Intel VT-d forbidden DMA blocked\n");
     }
-    if (tests64_run_driver(&test_env)) panic_str("independent driver tests");
+    if (tests64_run_driver(&test_env)) KERNEL_PANIC("independent driver tests");
     {
         int virtio_blk = test_virtio_blk64();
         if (virtio_blk < 0 ||
             test_report_record(TEST_ID_VIRTIO_BLK,
                                virtio_blk < 0 ? virtio_blk : 0))
-            panic_str("independent kernel tests");
+            KERNEL_PANIC("independent kernel tests");
         if (!virtio_blk) {
             serial64_write("Mich test64: virtio-blk attach pass\n");
             serial64_write("Mich test64: virtio-blk read and write pass\n");
@@ -1226,12 +1480,12 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     if (pci64_uses_ecam())
         serial64_write("Mich x86_64: PCIe ECAM pass\n");
     if (platform64_interrupts_init(acpi64_madt()))
-        panic_str("APIC platform init");
-    if (msi64_init(apic64_id())) panic_str("MSI backend init");
-    if (msix64_init(apic64_id())) panic_str("MSI-X backend init");
-    if (smp64_init()) panic_str("SMP bring-up");
+        KERNEL_PANIC("APIC platform init");
+    if (msi64_init(apic64_id())) KERNEL_PANIC("MSI backend init");
+    if (msix64_init(apic64_id())) KERNEL_PANIC("MSI-X backend init");
+    if (smp64_init()) KERNEL_PANIC("SMP bring-up");
 #ifdef MICH_TEST_BUILD
-    if (tests64_run_smp()) panic_str("independent SMP tests");
+    if (tests64_run_smp()) KERNEL_PANIC("independent SMP tests");
     int msi_test;
     int msix_test;
     int virtio_test;
@@ -1240,16 +1494,29 @@ void kernel64_main(u32 magic, struct bd_info *info) {
         serial64_write("Mich x86_64: hardware destructive test profile\n");
     if (tests64_run_hardware(
             &test_env, destructive, &msi_test, &msix_test, &virtio_test))
-        panic_str("independent hardware tests");
+        KERNEL_PANIC("independent hardware tests");
 #endif
     if (manager64_register_virtio_net(
             (init_module->flags & BOOT_MODULE_HARDWARE_TEST) != 0))
-        panic_str("virtio-net manifest");
-    if (manager64_set_pci_inventory())
-        panic_str("driver PCI inventory");
+        KERNEL_PANIC("virtio-net manifest");
 #ifdef MICH_TEST_BUILD
+    if (!(init_module->flags & BOOT_MODULE_UNIT_TEST) &&
+        driver_live_recovery_prepare())
+        KERNEL_PANIC("driver live recovery setup");
+#endif
+    if (manager64_set_pci_inventory())
+        KERNEL_PANIC("driver PCI inventory");
+#ifdef MICH_TEST_BUILD
+    if (!(init_module->flags & BOOT_MODULE_UNIT_TEST) &&
+        driver_live_recovery_arm())
+        KERNEL_PANIC("driver live recovery arm");
     if (tests64_run_irq(&test_env, msi_test, msix_test, virtio_test))
-        panic_str("independent IRQ tests");
+        KERNEL_PANIC("independent IRQ tests");
+    if (!(init_module->flags & BOOT_MODULE_UNIT_TEST)) {
+        // Keep the lifecycle probe out of the init1/init2 handshake.
+        task_pool[1].state = TASK_BLOCKED_RECV;
+        task_pool[2].state = TASK_BLOCKED_RECV;
+    }
 #endif
     serial64_write("Mich x86_64: LAPIC controller pass\n");
     serial64_write("Mich x86_64: IOAPIC routing pass\n");
@@ -1260,7 +1527,21 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     if (init_module->flags & BOOT_MODULE_UNIT_TEST)
         test_report_finish();
 #endif
-    if (smp64_host_start()) panic_str("SMP AP host");
+    if (smp64_host_start()) KERNEL_PANIC("SMP AP host");
+#ifdef MICH_TEST_BUILD
+    if (!(init_module->flags & BOOT_MODULE_UNIT_TEST)) {
+        u32 live_slot = PID_SLOT((u32)driver_live_recovery.primary_pid);
+        if (live_slot >= MAX_TASKS ||
+            task_pool[live_slot].id != driver_live_recovery.primary_pid)
+            KERNEL_PANIC("driver live recovery entry");
+        scheduler64_set_running(live_slot);
+        fpu64_load(&task_contexts[live_slot]);
+        vm64_activate(task_pool[live_slot].page_dir);
+        smp64_gs_user();
+        user64_enter(task_contexts[live_slot].rip, task_contexts[live_slot].rsp,
+                     task_contexts[live_slot].rdi);
+    }
+#endif
     smp64_gs_user();
     user64_enter(task_contexts[1].rip, task_contexts[1].rsp,
                  task_contexts[1].rdi);

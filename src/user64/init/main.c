@@ -137,6 +137,30 @@ int main(u64 role) {
         *(volatile unsigned int *)0x110000000ULL = 0x4D494348u;
         return 11;
     }
+    if (role == 21 || role == 22) {
+        struct mich_driver_bootstrap_info bootstrap;
+        if (mich_driver_bootstrap(&bootstrap) != 0 ||
+            bootstrap.abi_version != MICH_DRIVER_ABI_VERSION ||
+            bootstrap.size != sizeof(bootstrap) ||
+            bootstrap.pid != (unsigned int)pid || bootstrap.image_id != 0 ||
+            bootstrap.resource_count != 2)
+            stop();
+        if (role == 21) {
+            if (!bootstrap.generation || bootstrap.generation > 2 ||
+                mich_cap_get() != MICH_CAP_SERVICE_REGISTER)
+                stop();
+            mich_write("Mich test64: driver live primary bootstrap pass\n");
+        } else {
+            if (bootstrap.generation != 3 || mich_cap_get() != 0)
+                stop();
+            mich_write("Mich test64: driver live fallback bootstrap pass\n");
+            struct mich_message message;
+            mich_recv(&message);
+            stop();
+        }
+        __asm__ volatile("ud2");
+        return (int)role;
+    }
     if (role == 15) {
         int child = mich_spawn(9);
         if (child <= 0) return 1;
