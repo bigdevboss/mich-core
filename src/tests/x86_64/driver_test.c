@@ -36,7 +36,7 @@ static void stress_irq_release(u32 source) {
 }
 
 static int supervisor_test_spawn(const struct driver_domain *d) {
-    if (!test_env || !d || d->image_id) return -1;
+    if (!test_env || !d || (d->image_id && d->image_id != 7)) return -1;
     return d->argument == 20 ? test_env->owner->id : test_env->target->id;
 }
 
@@ -390,6 +390,468 @@ static int driver_crash_stress_self_test(struct kernel_object *device) {
     return valid ? 0 : -1;
 }
 
+static struct driver_domain *driver_passport_domain(
+    struct kernel_object *device, const struct driver_user_manifest *source,
+    const struct driver_recovery_profile *fallback, u32 triggers,
+    const struct driver_crash_circuit_policy *policy, u32 max_restarts) {
+    struct driver_user_manifest manifest = *source;
+    manifest.max_restarts = max_restarts;
+    manifest.backoff_ticks = 1;
+    struct driver_domain *domain = driver_domain_create_user(&manifest, device);
+    if (!domain || (fallback &&
+                    (driver_domain_set_recovery_fallback(domain, fallback) ||
+                     driver_domain_set_recovery_fallback_triggers(domain,
+                                                                  triggers))) ||
+        (policy && driver_domain_set_crash_circuit_policy(domain, policy)) ||
+        driver_domain_apply_manifest(domain, &manifest,
+                                     test_env->resource_provider) ||
+        driver_domain_start(domain)) {
+        if (domain) driver_domain_destroy(domain);
+        return 0;
+    }
+    return domain;
+}
+
+static int driver_crash_passport_self_test(
+    struct kernel_object *device, const struct driver_user_manifest *manifest) {
+    struct driver_domain *domain = driver_passport_domain(device, manifest, 0, 0, 0, 8);
+    if (!domain) return -1;
+    int pid = domain->pid;
+    driver_supervisor_report_user_fault(pid, 14, 7, 0x400100, 0xDEAD000,
+                                        100);
+    driver_supervisor_task_died(pid, 142, 100);
+    struct driver_domain_status status;
+    int passport_ok = !driver_domain_status(domain, &status) &&
+        status.id == domain->id && status.state == DRIVER_DOMAIN_BACKOFF &&
+        status.pid == -1 && status.generation == 1 &&
+        status.image_id == manifest->image_id &&
+        status.capabilities == manifest->capabilities &&
+        status.argument == manifest->argument &&
+        status.recovery_profile == DRIVER_RECOVERY_PRIMARY &&
+        !status.fallback_enabled && !status.fallback_used &&
+        status.restart_count == 1 &&
+        status.restart_deadline == domain->restart_deadline &&
+        status.crash_repeat_count == 1 &&
+        status.crash_repeat_deadline == 100 + DRIVER_CRASH_REPEAT_WINDOW_TICKS &&
+        status.crash_policy.repeat_limit == DRIVER_CRASH_REPEAT_LIMIT &&
+        status.crash_policy.repeat_window_ticks ==
+            DRIVER_CRASH_REPEAT_WINDOW_TICKS &&
+        status.terminal_reason == DRIVER_TERMINAL_NONE &&
+        status.last_decision == DRIVER_RECOVERY_DECISION_RESTART &&
+        status.last_crash.kind == DRIVER_CRASH_USER_EXCEPTION &&
+        status.last_crash.code == 142 && status.last_crash.generation == 1 &&
+        status.last_crash.ticks == 100 && status.last_crash.vector == 14 &&
+        status.last_crash.error == 7 && status.last_crash.rip == 0x400100 &&
+        status.last_crash.address == 0xDEAD000;
+    driver_supervisor_tick(domain->restart_deadline);
+    pid = domain->pid;
+    driver_supervisor_report_user_fault(pid, 14, 7, 0x400100, 0xDEAD000,
+                                        102);
+    driver_supervisor_task_died(pid, 142, 102);
+    int circuit_ok = !driver_domain_status(domain, &status) &&
+        status.state == DRIVER_DOMAIN_FAILED && status.pid == -1 &&
+        status.generation == 2 && status.restart_count == 1 &&
+        status.crash_repeat_count == DRIVER_CRASH_REPEAT_LIMIT &&
+        !status.restart_deadline &&
+        status.terminal_reason == DRIVER_TERMINAL_CRASH_CIRCUIT &&
+        status.last_decision == DRIVER_RECOVERY_DECISION_CRASH_CIRCUIT;
+    driver_supervisor_tick(1000);
+    circuit_ok = circuit_ok && domain->state == DRIVER_DOMAIN_FAILED;
+    driver_domain_destroy(domain);
+    if (!passport_ok || !circuit_ok) return -1;
+
+    domain = driver_passport_domain(device, manifest, 0, 0, 0, 8);
+    if (!domain) return -1;
+    pid = domain->pid;
+    driver_supervisor_report_user_fault(pid, 13, 0, 0x400200, 0, 200);
+    driver_supervisor_task_died(pid, 141, 200);
+    driver_supervisor_tick(domain->restart_deadline);
+    pid = domain->pid;
+    driver_supervisor_report_user_fault(
+        pid, 13, 0, 0x400200, 0, 200 + DRIVER_CRASH_REPEAT_WINDOW_TICKS);
+    driver_supervisor_task_died(pid, 141,
+                                200 + DRIVER_CRASH_REPEAT_WINDOW_TICKS);
+    int window_ok = domain->state == DRIVER_DOMAIN_BACKOFF &&
+        domain->crash_repeat_count == 1;
+    driver_supervisor_tick(domain->restart_deadline);
+    pid = domain->pid;
+    driver_supervisor_report_user_fault(pid, 13, 0, 0x400201, 0, 267);
+    driver_supervisor_task_died(pid, 141, 267);
+    int exact_ok = domain->state == DRIVER_DOMAIN_BACKOFF &&
+        domain->last_crash.rip == 0x400201 && domain->crash_repeat_count == 1;
+    driver_domain_destroy(domain);
+    if (!window_ok || !exact_ok) return -1;
+
+    struct driver_recovery_profile iommu_fallback;
+    iommu_fallback.image_id = 7;
+    iommu_fallback.capabilities = 0;
+    iommu_fallback.argument = 0xFA11BACULL;
+    domain = driver_passport_domain(device, manifest, &iommu_fallback,
+                                     DRIVER_RECOVERY_TRIGGER_ALL, 0, 8);
+    if (!domain) return -1;
+    u32 id = domain->id;
+    driver_supervisor_report_iommu_fault(id, 2, 0x1234, 5, 1,
+                                         0x12345000, 300);
+    int iommu_ok = !driver_domain_quarantine(id) &&
+        !driver_domain_status(domain, &status) &&
+        status.state == DRIVER_DOMAIN_QUARANTINED && status.pid == -1 &&
+        status.terminal_reason == DRIVER_TERMINAL_IOMMU_FAULT &&
+        status.last_decision == DRIVER_RECOVERY_DECISION_IOMMU_QUARANTINE &&
+        status.last_crash.kind == DRIVER_CRASH_IOMMU &&
+        status.last_crash.generation == 1 && status.last_crash.ticks == 300 &&
+        status.last_crash.segment == 2 && status.last_crash.source_id == 0x1234 &&
+        status.last_crash.reason == 5 && status.last_crash.write == 1 &&
+        status.last_crash.address == 0x12345000 &&
+        status.fallback_enabled && !status.fallback_used &&
+        status.fallback_triggers == DRIVER_RECOVERY_TRIGGER_ALL &&
+        status.image_id == manifest->image_id &&
+        !status.crash_repeat_count && !status.crash_repeat_deadline;
+    int released = !driver_domain_admin_release(domain);
+    domain = driver_passport_domain(device, manifest, 0, 0, 0, 8);
+    if (!domain) return -1;
+    u32 manual_id = domain->id;
+    int manual_ok = !driver_domain_quarantine(manual_id) &&
+        !driver_domain_status(domain, &status) &&
+        status.state == DRIVER_DOMAIN_QUARANTINED && status.pid == -1 &&
+        status.terminal_reason == DRIVER_TERMINAL_QUARANTINE &&
+        status.last_decision == DRIVER_RECOVERY_DECISION_MANUAL_QUARANTINE;
+    int manual_released = !driver_domain_admin_release(domain);
+    return iommu_ok && released && manual_ok && manual_released ? 0 : -1;
+}
+
+static int driver_crash_policy_self_test(
+    struct kernel_object *device, const struct driver_user_manifest *source) {
+    struct driver_user_manifest manifest = *source;
+    manifest.max_restarts = 8;
+    manifest.backoff_ticks = 1;
+    struct driver_crash_circuit_policy policy;
+    policy.repeat_limit = 3;
+    policy.repeat_window_ticks = 8;
+    struct driver_crash_circuit_policy zero_limit = policy;
+    struct driver_crash_circuit_policy large_limit = policy;
+    struct driver_crash_circuit_policy zero_window = policy;
+    zero_limit.repeat_limit = 0;
+    large_limit.repeat_limit = DRIVER_CRASH_REPEAT_LIMIT_MAX + 1;
+    zero_window.repeat_window_ticks = 0;
+    struct driver_domain *domain = driver_domain_create_user(&manifest, device);
+    if (!domain || driver_crash_circuit_policy_validate(&policy) ||
+        !driver_crash_circuit_policy_validate(&zero_limit) ||
+        !driver_crash_circuit_policy_validate(&large_limit) ||
+        !driver_crash_circuit_policy_validate(&zero_window) ||
+        driver_domain_set_crash_circuit_policy(domain, &zero_limit) >= 0 ||
+        driver_domain_set_crash_circuit_policy(domain, &large_limit) >= 0 ||
+        driver_domain_set_crash_circuit_policy(domain, &zero_window) >= 0 ||
+        driver_domain_set_crash_circuit_policy(domain, &policy) ||
+        driver_domain_apply_manifest(domain, &manifest,
+                                     test_env->resource_provider) ||
+        driver_domain_start(domain)) {
+        if (domain) driver_domain_destroy(domain);
+        return -1;
+    }
+    struct driver_domain_status status;
+    int valid = !driver_domain_status(domain, &status) &&
+        status.crash_policy.repeat_limit == policy.repeat_limit &&
+        status.crash_policy.repeat_window_ticks == policy.repeat_window_ticks &&
+        driver_domain_set_crash_circuit_policy(domain, &policy) < 0;
+    int pid = domain->pid;
+    driver_supervisor_report_user_fault(pid, 6, 0, 0x400500, 0, 100);
+    driver_supervisor_task_died(pid, 134, 100);
+    valid = valid && domain->state == DRIVER_DOMAIN_BACKOFF &&
+            domain->crash_repeat_count == 1 &&
+            domain->crash_repeat_deadline == 108;
+    driver_supervisor_tick(domain->restart_deadline);
+    pid = domain->pid;
+    driver_supervisor_report_user_fault(pid, 6, 0, 0x400500, 0, 102);
+    driver_supervisor_task_died(pid, 134, 102);
+    valid = valid && domain->state == DRIVER_DOMAIN_BACKOFF &&
+            domain->generation == 2 && domain->crash_repeat_count == 2 &&
+            domain->crash_repeat_deadline == 108;
+    driver_supervisor_tick(domain->restart_deadline);
+    pid = domain->pid;
+    driver_supervisor_report_user_fault(pid, 6, 0, 0x400500, 0, 105);
+    driver_supervisor_task_died(pid, 134, 105);
+    valid = valid && !driver_domain_status(domain, &status) &&
+            status.state == DRIVER_DOMAIN_FAILED && status.pid == -1 &&
+            status.generation == 3 && status.crash_repeat_count == 3 &&
+            status.crash_repeat_deadline == 108 && !status.restart_deadline &&
+            status.terminal_reason == DRIVER_TERMINAL_CRASH_CIRCUIT &&
+            status.last_decision == DRIVER_RECOVERY_DECISION_CRASH_CIRCUIT &&
+            status.crash_policy.repeat_limit == policy.repeat_limit &&
+            status.crash_policy.repeat_window_ticks == policy.repeat_window_ticks;
+    driver_supervisor_tick(1000);
+    valid = valid && domain->state == DRIVER_DOMAIN_FAILED;
+    driver_domain_destroy(domain);
+    return valid ? 0 : -1;
+}
+
+static int driver_recovery_launch_decision_self_test(
+    struct kernel_object *device, const struct driver_user_manifest *source) {
+    struct driver_user_manifest manifest = *source;
+    manifest.image_id = 15;
+    struct driver_domain *domain = driver_domain_create_user(&manifest, device);
+    if (!domain || driver_domain_apply_manifest(domain, &manifest,
+                                                 test_env->resource_provider)) {
+        if (domain) driver_domain_destroy(domain);
+        return -1;
+    }
+    struct driver_domain_status status;
+    int valid = driver_domain_start(domain) < 0 &&
+        !driver_domain_status(domain, &status) &&
+        status.state == DRIVER_DOMAIN_FAILED && status.pid == -1 &&
+        status.terminal_reason == DRIVER_TERMINAL_LAUNCH_FAILURE &&
+        status.last_decision == DRIVER_RECOVERY_DECISION_LAUNCH_FAILURE;
+    driver_domain_destroy(domain);
+    return valid ? 0 : -1;
+}
+
+static int driver_recovery_fallback_self_test(
+    struct kernel_object *device, const struct driver_user_manifest *manifest) {
+    struct driver_recovery_profile profile;
+    profile.image_id = 7;
+    profile.capabilities = 0;
+    profile.argument = 0xFA11BACULL;
+    struct driver_recovery_profile invalid_image = profile;
+    invalid_image.image_id = DRIVER_USER_IMAGE_MAX;
+    struct driver_recovery_profile invalid_capabilities = profile;
+    invalid_capabilities.capabilities = 1;
+    struct driver_domain *invalid_domain =
+        driver_domain_create_user(manifest, device);
+    int invalid_rejected = invalid_domain &&
+        driver_recovery_fallback_triggers_validate(0) < 0 &&
+        driver_recovery_fallback_triggers_validate(
+            DRIVER_RECOVERY_TRIGGER_ALL + 1) < 0 &&
+        driver_domain_set_recovery_fallback_triggers(
+            invalid_domain, DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT) < 0 &&
+        driver_domain_set_recovery_fallback(invalid_domain, &invalid_image) < 0 &&
+        driver_domain_set_recovery_fallback(invalid_domain,
+                                            &invalid_capabilities) < 0 &&
+        !driver_domain_set_recovery_fallback(invalid_domain, &profile) &&
+        driver_domain_set_recovery_fallback_triggers(invalid_domain, 0) < 0 &&
+        driver_domain_set_recovery_fallback_triggers(
+            invalid_domain, DRIVER_RECOVERY_TRIGGER_ALL + 1) < 0;
+    if (invalid_domain) driver_domain_destroy(invalid_domain);
+    if (!invalid_rejected) return -1;
+
+    struct driver_domain *domain =
+        driver_passport_domain(device, manifest, &profile,
+                                DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT, 0, 8);
+    if (!domain) return -1;
+    int pid = domain->pid;
+    driver_supervisor_report_user_fault(pid, 6, 0, 0x400300, 0, 400);
+    driver_supervisor_task_died(pid, 134, 400);
+    driver_supervisor_tick(domain->restart_deadline);
+    int primary_restart = domain->state == DRIVER_DOMAIN_RUNNING &&
+        domain->generation == 2 && domain->image_id == manifest->image_id &&
+        domain->recovery_profile == DRIVER_RECOVERY_PRIMARY &&
+        !domain->fallback_used;
+    pid = domain->pid;
+    driver_supervisor_report_user_fault(pid, 6, 0, 0x400300, 0, 402);
+    driver_supervisor_task_died(pid, 134, 402);
+    int fallback_pending = domain->state == DRIVER_DOMAIN_BACKOFF &&
+        domain->generation == 2 && domain->image_id == profile.image_id &&
+        domain->capabilities == profile.capabilities &&
+        domain->argument == profile.argument &&
+        domain->recovery_profile == DRIVER_RECOVERY_FALLBACK &&
+        domain->fallback_enabled && domain->fallback_used &&
+        domain->fallback_triggers == DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT &&
+        domain->last_decision == DRIVER_RECOVERY_DECISION_FALLBACK &&
+        !domain->crash_repeat_count && !domain->crash_repeat_deadline &&
+        domain->restart_deadline == 403;
+    driver_supervisor_tick(domain->restart_deadline);
+    int fallback_started = domain->state == DRIVER_DOMAIN_RUNNING &&
+        domain->generation == 3 && domain->image_id == profile.image_id &&
+        driver_domain_set_recovery_fallback(domain, &profile) < 0 &&
+        driver_domain_set_recovery_fallback_triggers(
+            domain, DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT) < 0;
+    pid = domain->pid;
+    driver_supervisor_report_user_fault(pid, 6, 0, 0x400300, 0, 404);
+    driver_supervisor_task_died(pid, 134, 404);
+    driver_supervisor_tick(domain->restart_deadline);
+    pid = domain->pid;
+    driver_supervisor_report_user_fault(pid, 6, 0, 0x400300, 0, 407);
+    driver_supervisor_task_died(pid, 134, 407);
+    struct driver_domain_status status;
+    int fallback_exhausted = !driver_domain_status(domain, &status) &&
+        status.state == DRIVER_DOMAIN_FAILED && status.pid == -1 &&
+        status.generation == 4 && status.recovery_profile == DRIVER_RECOVERY_FALLBACK &&
+        status.fallback_enabled && status.fallback_used &&
+        status.crash_repeat_count == DRIVER_CRASH_REPEAT_LIMIT &&
+        !status.restart_deadline &&
+        status.terminal_reason == DRIVER_TERMINAL_CRASH_CIRCUIT &&
+        status.last_decision == DRIVER_RECOVERY_DECISION_CRASH_CIRCUIT;
+    driver_domain_destroy(domain);
+
+    struct driver_crash_circuit_policy circuit_policy;
+    circuit_policy.repeat_limit = DRIVER_CRASH_REPEAT_LIMIT;
+    circuit_policy.repeat_window_ticks = 8;
+    domain = driver_passport_domain(
+        device, manifest, &profile, DRIVER_RECOVERY_TRIGGER_RESTART_LIMIT,
+        &circuit_policy, 8);
+    if (!domain) return -1;
+    pid = domain->pid;
+    driver_supervisor_report_user_fault(pid, 6, 0, 0x400300, 0, 500);
+    driver_supervisor_task_died(pid, 134, 500);
+    driver_supervisor_tick(domain->restart_deadline);
+    pid = domain->pid;
+    driver_supervisor_report_user_fault(pid, 6, 0, 0x400300, 0, 502);
+    driver_supervisor_task_died(pid, 134, 502);
+    int circuit_excluded = !driver_domain_status(domain, &status) &&
+        status.state == DRIVER_DOMAIN_FAILED &&
+        status.terminal_reason == DRIVER_TERMINAL_CRASH_CIRCUIT &&
+        status.last_decision == DRIVER_RECOVERY_DECISION_CRASH_CIRCUIT &&
+        status.fallback_triggers == DRIVER_RECOVERY_TRIGGER_RESTART_LIMIT &&
+        !status.fallback_used;
+    driver_domain_destroy(domain);
+
+    struct driver_user_manifest never_manifest = *manifest;
+    never_manifest.restart_policy = DRIVER_RESTART_NEVER;
+    domain = driver_passport_domain(
+        device, &never_manifest, &profile, DRIVER_RECOVERY_TRIGGER_RESTART_LIMIT,
+        0, 0);
+    if (!domain) return -1;
+    driver_supervisor_task_died(domain->pid, 1, 600);
+    int restart_never = !driver_domain_status(domain, &status) &&
+        status.state == DRIVER_DOMAIN_FAILED &&
+        status.terminal_reason == DRIVER_TERMINAL_RESTART_LIMIT &&
+        status.last_decision == DRIVER_RECOVERY_DECISION_RESTART_LIMIT &&
+        !status.fallback_used;
+    driver_domain_destroy(domain);
+    return primary_restart && fallback_pending && fallback_started &&
+           fallback_exhausted && circuit_excluded && restart_never ? 0 : -1;
+}
+
+static __attribute__((cold, noinline, optimize("Os"))) int
+    driver_manager_recovery_register_self_test(
+        struct kernel_object *device,
+        const struct driver_user_manifest *source) {
+    struct driver_recovery_profile fallback;
+    fallback.image_id = 7;
+    fallback.capabilities = 0;
+    fallback.argument = 0xFA11BACULL;
+    struct driver_crash_circuit_policy policy;
+    policy.repeat_limit = DRIVER_CRASH_REPEAT_LIMIT + 1;
+    policy.repeat_window_ticks = 8;
+    struct driver_manager_recovery_config config;
+    config.fallback = fallback;
+    config.crash_policy = policy;
+    config.fallback_enabled = 1;
+    config.fallback_triggers = DRIVER_RECOVERY_TRIGGER_ALL + 1;
+    config.crash_policy_enabled = 1;
+    struct kernel_object *devices[1];
+    devices[0] = device;
+    driver_manager_init(test_env->resource_provider);
+    int inventory = driver_manager_set_devices(devices, 1);
+    int invalid_rejected =
+        driver_manager_register_recovery(source, &config) < 0 &&
+        !driver_manager_manifest_count() && !driver_manager_binding_count() &&
+        !driver_manager_domain(device);
+    config.fallback_triggers = DRIVER_RECOVERY_TRIGGER_RESTART_LIMIT;
+    int id = inventory == 0 && invalid_rejected ?
+        driver_manager_register_recovery(source, &config) : -1;
+    struct driver_domain *domain = driver_manager_domain(device);
+    struct driver_domain_status status;
+    int active = id > 0 && domain && !driver_domain_status(domain, &status) &&
+        status.state == DRIVER_DOMAIN_RUNNING && status.generation == 1 &&
+        status.fallback_enabled && !status.fallback_used &&
+        status.fallback_triggers == DRIVER_RECOVERY_TRIGGER_RESTART_LIMIT &&
+        status.crash_policy.repeat_limit == policy.repeat_limit &&
+        status.crash_policy.repeat_window_ticks == policy.repeat_window_ticks &&
+        driver_manager_binding_count() == 1 && driver_manager_manifest_count() == 1;
+    int removed = driver_manager_device_removed(device);
+    int unregistered = driver_manager_unregister(id);
+    driver_manager_init(0);
+    return active && !removed && !unregistered ? 0 : -1;
+}
+
+static int driver_manager_fallback_self_test(
+    struct kernel_object *device, const struct driver_user_manifest *source) {
+    struct driver_user_manifest manifest = *source;
+    for (u32 index = 0; index < DRIVER_USER_NAME_MAX; index++)
+        manifest.name[index] = 0;
+    const char name[] = "mich.mgr";
+    for (u32 index = 0; name[index]; index++) manifest.name[index] = name[index];
+    manifest.max_restarts = 1;
+    struct driver_recovery_profile fallback;
+    fallback.image_id = 7;
+    fallback.capabilities = 0;
+    fallback.argument = 0xFA11BACULL;
+    struct driver_recovery_profile invalid_image = fallback;
+    invalid_image.image_id = DRIVER_USER_IMAGE_MAX;
+    struct driver_recovery_profile invalid_capabilities = fallback;
+    invalid_capabilities.capabilities = 1;
+    struct driver_crash_circuit_policy policy;
+    policy.repeat_limit = DRIVER_CRASH_REPEAT_LIMIT + 1;
+    policy.repeat_window_ticks = 8;
+    struct driver_crash_circuit_policy invalid_policy = policy;
+    invalid_policy.repeat_limit = 0;
+    driver_manager_init(test_env->resource_provider);
+    int id = driver_manager_register(&manifest);
+    struct kernel_object *devices[1];
+    devices[0] = device;
+    int configured = id > 0 &&
+        !driver_manager_set_recovery_fallback(id, &fallback);
+    int invalid_rejected = configured &&
+        driver_manager_set_recovery_fallback(id, &invalid_image) < 0 &&
+        driver_manager_set_recovery_fallback(id, &invalid_capabilities) < 0 &&
+        driver_manager_set_recovery_fallback_triggers(id, 0) < 0 &&
+        driver_manager_set_recovery_fallback_triggers(
+            id, DRIVER_RECOVERY_TRIGGER_ALL + 1) < 0 &&
+        driver_manager_set_crash_circuit_policy(id, &invalid_policy) < 0;
+    configured = !configured || !invalid_rejected ||
+        driver_manager_set_recovery_fallback_triggers(
+            id, DRIVER_RECOVERY_TRIGGER_RESTART_LIMIT) ||
+        driver_manager_set_crash_circuit_policy(id, &policy);
+    int started = configured ? -1 : driver_manager_set_devices(devices, 1);
+    struct driver_domain *domain = driver_manager_domain(device);
+    int locked = driver_manager_set_recovery_fallback(id, &fallback) < 0 &&
+        driver_manager_set_recovery_fallback_triggers(
+            id, DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT) < 0 &&
+        driver_manager_set_crash_circuit_policy(id, &policy) < 0;
+    int active = id > 0 && invalid_rejected && !configured && started == 1 &&
+        domain && domain->recovery_profile == DRIVER_RECOVERY_PRIMARY &&
+        domain->fallback_enabled && !domain->fallback_used &&
+        domain->fallback_triggers == DRIVER_RECOVERY_TRIGGER_RESTART_LIMIT &&
+        domain->fallback.image_id == fallback.image_id &&
+        domain->fallback.capabilities == fallback.capabilities &&
+        domain->fallback.argument == fallback.argument &&
+        domain->crash_policy.repeat_limit == policy.repeat_limit &&
+        domain->crash_policy.repeat_window_ticks == policy.repeat_window_ticks &&
+        locked;
+    int pid = domain ? domain->pid : 0;
+    driver_supervisor_report_user_fault(pid, 6, 0, 0x400400, 0, 500);
+    driver_supervisor_task_died(pid, 134, 500);
+    driver_supervisor_tick(domain ? domain->restart_deadline : 0);
+    int primary_restart = domain && domain->state == DRIVER_DOMAIN_RUNNING &&
+        domain->generation == 2 && domain->restart_count == 1 &&
+        domain->recovery_profile == DRIVER_RECOVERY_PRIMARY &&
+        domain->last_decision == DRIVER_RECOVERY_DECISION_RESTART &&
+        !domain->fallback_used;
+    pid = domain ? domain->pid : 0;
+    driver_supervisor_report_user_fault(pid, 6, 0, 0x400400, 0, 504);
+    driver_supervisor_task_died(pid, 134, 504);
+    int fallback_pending = domain && domain->state == DRIVER_DOMAIN_BACKOFF &&
+        domain->generation == 2 && domain->image_id == fallback.image_id &&
+        domain->recovery_profile == DRIVER_RECOVERY_FALLBACK &&
+        domain->fallback_used &&
+        domain->fallback_triggers == DRIVER_RECOVERY_TRIGGER_RESTART_LIMIT &&
+        domain->last_decision == DRIVER_RECOVERY_DECISION_FALLBACK &&
+        domain->crash_policy.repeat_limit == policy.repeat_limit &&
+        domain->crash_policy.repeat_window_ticks == policy.repeat_window_ticks;
+    driver_supervisor_tick(domain ? domain->restart_deadline : 0);
+    int fallback_started = domain && domain->state == DRIVER_DOMAIN_RUNNING &&
+        domain->generation == 3 && domain->image_id == fallback.image_id &&
+        domain->last_decision == DRIVER_RECOVERY_DECISION_FALLBACK &&
+        domain->crash_policy.repeat_limit == policy.repeat_limit &&
+        domain->crash_policy.repeat_window_ticks == policy.repeat_window_ticks;
+    int removed = driver_manager_device_removed(device);
+    int unregistered = driver_manager_unregister(id);
+    int result = active && primary_restart && fallback_pending && fallback_started &&
+        !removed && !unregistered && !driver_manager_binding_count() &&
+        !driver_manager_manifest_count();
+    driver_manager_init(0);
+    return result ? 0 : -1;
+}
+
 static int graceful_stop64_self_test(struct kernel_object *dev) {
     struct driver_user_manifest m;
     u8 *p = (u8 *)&m;
@@ -411,8 +873,10 @@ static int graceful_stop64_self_test(struct kernel_object *dev) {
         return -1;
     }
     driver_supervisor_tick(100);
-    if (driver_domain_request_stop(d) ||
+    if (d->last_decision != DRIVER_RECOVERY_DECISION_START ||
+        driver_domain_request_stop(d) ||
         d->state != DRIVER_DOMAIN_STOPPING ||
+        d->last_decision != DRIVER_RECOVERY_DECISION_STOP_REQUEST ||
         d->bridge_index >= d->resource_count) {
         driver_domain_stop(d);
         driver_domain_destroy(d);
@@ -425,7 +889,8 @@ static int graceful_stop64_self_test(struct kernel_object *dev) {
         note.source == DRIVER_CONTROL_STOP &&
         !driver_domain_stop_ack(pid);
     driver_supervisor_task_died(pid, 0, 101);
-    ok = ok && d->state == DRIVER_DOMAIN_STOPPED;
+    ok = ok && d->state == DRIVER_DOMAIN_STOPPED &&
+         d->last_decision == DRIVER_RECOVERY_DECISION_STOP_ACK;
     driver_domain_destroy(d);
     if (!ok) return -1;
     d = driver_domain_create_user(&m, dev);
@@ -435,17 +900,22 @@ static int graceful_stop64_self_test(struct kernel_object *dev) {
         return -1;
     }
     driver_supervisor_tick(200);
-    ok = !driver_domain_request_stop(d) &&
-        d->stop_deadline == 200 + DRIVER_STOP_GRACE_TICKS;
+    ok = d->last_decision == DRIVER_RECOVERY_DECISION_START &&
+         !driver_domain_request_stop(d) &&
+         d->last_decision == DRIVER_RECOVERY_DECISION_STOP_REQUEST &&
+         d->stop_deadline == 200 + DRIVER_STOP_GRACE_TICKS;
     driver_supervisor_tick(d->stop_deadline - 1);
     ok = ok && d->state == DRIVER_DOMAIN_STOPPING;
     driver_supervisor_tick(d->stop_deadline);
-    ok = ok && d->state == DRIVER_DOMAIN_STOPPED;
+    ok = ok && d->state == DRIVER_DOMAIN_STOPPED &&
+         d->last_decision == DRIVER_RECOVERY_DECISION_STOP_TIMEOUT;
     driver_domain_destroy(d);
     return ok ? 0 : -1;
 }
 
-static int driver_supervisor(const struct test64_env *env) {
+// Keep the test-only supervisor matrix within the fixed boot blob.
+static __attribute__((cold, noinline, optimize("Os"))) int driver_supervisor(
+    const struct test64_env *env) {
     test_env = env;
     struct pci_resource description;
     description.segment = 0;
@@ -615,6 +1085,7 @@ static int driver_supervisor(const struct test64_env *env) {
         driver_supervisor_task_died(dependent_domain->pid, 0, 1);
         driver_manager_tick();
         valid = dependent_domain->state == DRIVER_DOMAIN_STOPPED &&
+                dependent_domain->last_decision == DRIVER_RECOVERY_DECISION_STOP &&
                 dependent_domain->generation == 1 &&
                 !driver_manager_restart_device(dependent_device) &&
                 dependent_domain->state == DRIVER_DOMAIN_RUNNING &&
@@ -624,6 +1095,7 @@ static int driver_supervisor(const struct test64_env *env) {
         valid = !driver_manager_stop_device(device);
         driver_manager_tick();
         valid = valid && domain->state == DRIVER_DOMAIN_STOPPED &&
+                domain->last_decision == DRIVER_RECOVERY_DECISION_STOP &&
                 dependent_domain->state == DRIVER_DOMAIN_STOPPED &&
                 !driver_manager_restart_device(device);
         driver_manager_tick();
@@ -649,6 +1121,8 @@ static int driver_supervisor(const struct test64_env *env) {
                 !driver_domain_start(required_domain) &&
                 driver_domain_stop(required_domain) < 0 &&
                 required_domain->state == DRIVER_DOMAIN_QUARANTINED &&
+                required_domain->last_decision ==
+                    DRIVER_RECOVERY_DECISION_TEARDOWN_QUARANTINE &&
                 driver_domain_for_device(dependent_device) == required_domain &&
                 !driver_domain_admin_release(required_domain);
         if (required_domain && required_domain->active)
@@ -725,8 +1199,18 @@ static int driver_supervisor(const struct test64_env *env) {
             !driver_manager_unregister(manifest_id) &&
             driver_manager_manifest_count() == 0;
     driver_manager_init(0);
-    valid = valid && !driver_crash_stress_self_test(device) &&
-        !graceful_stop64_self_test(device);
+    int manager_register_test =
+        driver_manager_recovery_register_self_test(device, &manifest);
+    int manager_fallback_test = driver_manager_fallback_self_test(device, &manifest);
+    int passport_test = driver_crash_passport_self_test(device, &manifest);
+    int policy_test = driver_crash_policy_self_test(device, &manifest);
+    int launch_test = driver_recovery_launch_decision_self_test(device, &manifest);
+    int fallback_test = driver_recovery_fallback_self_test(device, &manifest);
+    int stress_test = driver_crash_stress_self_test(device);
+    int graceful_test = graceful_stop64_self_test(device);
+    valid = valid && !manager_register_test && !manager_fallback_test &&
+        !passport_test && !policy_test && !launch_test && !fallback_test &&
+        !stress_test && !graceful_test;
     object_release(dependent_device);
     object_release(device);
     driver_supervisor_init(test_env->spawn, test_env->quiesce,
@@ -750,6 +1234,13 @@ int tests64_run_driver(const struct test64_env *env) {
         return -1;
     serial64_write("Mich test64: driver supervisor pass\n");
     serial64_write("Mich test64: driver crash teardown pass\n");
+    serial64_write("Mich test64: driver crash passport pass\n");
+    serial64_write("Mich test64: driver crash circuit breaker pass\n");
+    serial64_write("Mich test64: driver crash policy pass\n");
+    serial64_write("Mich test64: driver recovery decision matrix pass\n");
+    serial64_write("Mich test64: trigger policy pass\n");
+    serial64_write("Mich test64: driver recovery fallback pass\n");
+    serial64_write("Mich test64: driver IOMMU crash quarantine pass\n");
     serial64_write("Mich test64: atomic driver bundle pass\n");
     serial64_write("Mich test64: userspace driver manifest pass\n");
     serial64_write("Mich test64: firmware manifest allowlist pass\n");

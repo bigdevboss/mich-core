@@ -16,6 +16,106 @@ static driver_domain_release_fn release_backend;
 static u32 next_domain_id;
 static u32 now_ticks;
 
+static void passport_clear(struct driver_crash_passport *passport) {
+    u8 *bytes = (u8 *)passport;
+    for (usize_t byte = 0; byte < sizeof(*passport); byte++) bytes[byte] = 0;
+}
+
+static void crash_policy_default(struct driver_domain *domain) {
+    domain->crash_policy.repeat_limit = DRIVER_CRASH_REPEAT_LIMIT;
+    domain->crash_policy.repeat_window_ticks = DRIVER_CRASH_REPEAT_WINDOW_TICKS;
+}
+
+static void crash_state_clear(struct driver_domain *domain) {
+    passport_clear(&domain->last_crash);
+    passport_clear(&domain->pending_crash);
+    domain->crash_repeat_count = 0;
+    domain->crash_repeat_deadline = 0;
+    domain->terminal_reason = DRIVER_TERMINAL_NONE;
+    domain->last_decision = DRIVER_RECOVERY_DECISION_NONE;
+}
+
+static void recovery_fallback_clear(struct driver_domain *domain) {
+    domain->fallback.image_id = 0;
+    domain->fallback.capabilities = 0;
+    domain->fallback.argument = 0;
+    domain->recovery_profile = DRIVER_RECOVERY_PRIMARY;
+    domain->fallback_enabled = 0;
+    domain->fallback_used = 0;
+    domain->fallback_triggers = DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT;
+}
+
+static int recovery_profile_valid(const struct driver_domain *domain,
+                                  const struct driver_recovery_profile *profile) {
+    return profile && profile->image_id < DRIVER_USER_IMAGE_MAX &&
+           !(profile->capabilities & ~domain->capabilities) &&
+           (profile->image_id != domain->image_id ||
+            profile->capabilities != domain->capabilities ||
+            profile->argument != domain->argument);
+}
+
+static int recovery_fallback_activate(struct driver_domain *domain, u32 ticks,
+                                      u32 trigger) {
+    if (!domain->fallback_enabled || domain->fallback_used ||
+        !(domain->fallback_triggers & trigger))
+        return 0;
+    domain->image_id = domain->fallback.image_id;
+    domain->capabilities = domain->fallback.capabilities;
+    domain->argument = domain->fallback.argument;
+    domain->recovery_profile = DRIVER_RECOVERY_FALLBACK;
+    domain->fallback_used = 1;
+    domain->terminal_reason = DRIVER_TERMINAL_NONE;
+    domain->last_decision = DRIVER_RECOVERY_DECISION_FALLBACK;
+    domain->crash_repeat_count = 0;
+    domain->crash_repeat_deadline = 0;
+    domain->restart_deadline = ticks + domain->backoff_ticks;
+    domain->state = DRIVER_DOMAIN_BACKOFF;
+    return 1;
+}
+
+static int passports_match(const struct driver_crash_passport *left,
+                           const struct driver_crash_passport *right) {
+    return left->kind == DRIVER_CRASH_USER_EXCEPTION &&
+           right->kind == DRIVER_CRASH_USER_EXCEPTION && left->code == right->code &&
+           left->vector == right->vector && left->error == right->error &&
+           left->rip == right->rip && left->address == right->address;
+}
+
+static int crash_circuit_open(struct driver_domain *domain,
+                              const struct driver_crash_passport *passport,
+                              u32 ticks) {
+    if (passport->kind != DRIVER_CRASH_USER_EXCEPTION) {
+        domain->crash_repeat_count = 0;
+        domain->crash_repeat_deadline = 0;
+        return 0;
+    }
+    if (domain->crash_repeat_count &&
+        (i32)(ticks - domain->crash_repeat_deadline) < 0 &&
+        passports_match(&domain->last_crash, passport)) {
+        domain->crash_repeat_count++;
+    } else {
+        domain->crash_repeat_count = 1;
+        domain->crash_repeat_deadline =
+            ticks + domain->crash_policy.repeat_window_ticks;
+    }
+    return domain->crash_repeat_count >= domain->crash_policy.repeat_limit;
+}
+
+static void crash_passport_for_death(struct driver_domain *domain, int code,
+                                     u32 ticks,
+                                     struct driver_crash_passport *passport) {
+    passport_clear(passport);
+    if (code && domain->pending_crash.kind &&
+        domain->pending_crash.generation == domain->generation)
+        *passport = domain->pending_crash;
+    else if (code)
+        passport->kind = DRIVER_CRASH_EXIT;
+    passport->code = (u32)code;
+    passport->generation = domain->generation;
+    passport->ticks = ticks;
+    passport_clear(&domain->pending_crash);
+}
+
 static u32 resource_kind(const struct kernel_object *object) {
     if (!object) return 0;
     if (object->type == KOBJECT_PCI) return DRIVER_RESOURCE_PCI;
@@ -136,6 +236,7 @@ static int launch(struct driver_domain *domain) {
     int pid = spawn_backend(domain);
     if (pid <= 0) return -1;
     domain->pid = pid;
+    passport_clear(&domain->pending_crash);
     domain->stop_deadline = 0;
     domain->stop_ack = 0;
     domain->generation++;
@@ -174,6 +275,9 @@ void driver_supervisor_init(driver_domain_spawn_fn spawn,
         domains[index].bridge_index = DRIVER_DOMAIN_RESOURCE_MAX;
         domains[index].restart_count = 0;
         domains[index].restart_deadline = 0;
+        crash_state_clear(&domains[index]);
+        crash_policy_default(&domains[index]);
+        recovery_fallback_clear(&domains[index]);
         domains[index].stop_deadline = 0;
         domains[index].stop_ack = 0;
         domains[index].generation = 0;
@@ -218,6 +322,9 @@ struct driver_domain *driver_domain_create(
         domain->bridge_index = DRIVER_DOMAIN_RESOURCE_MAX;
         domain->restart_count = 0;
         domain->restart_deadline = 0;
+        crash_state_clear(domain);
+        crash_policy_default(domain);
+        recovery_fallback_clear(domain);
         domain->stop_deadline = 0;
         domain->stop_ack = 0;
         domain->generation = 0;
@@ -473,13 +580,63 @@ int driver_domain_add_bridge(struct driver_domain *domain, u32 rights) {
     return 0;
 }
 
+int driver_domain_set_recovery_fallback(
+    struct driver_domain *domain, const struct driver_recovery_profile *profile) {
+    if (!domain || !domain->active || domain->state != DRIVER_DOMAIN_STOPPED ||
+        domain->generation || !recovery_profile_valid(domain, profile))
+        return -1;
+    domain->fallback = *profile;
+    domain->recovery_profile = DRIVER_RECOVERY_PRIMARY;
+    domain->fallback_enabled = 1;
+    domain->fallback_used = 0;
+    domain->fallback_triggers = DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT;
+    return 0;
+}
+
+int driver_recovery_fallback_triggers_validate(u32 triggers) {
+    return !triggers || (triggers & ~DRIVER_RECOVERY_TRIGGER_ALL) ? -1 : 0;
+}
+
+int driver_domain_set_recovery_fallback_triggers(struct driver_domain *domain,
+                                                  u32 triggers) {
+    if (!domain || !domain->active || domain->state != DRIVER_DOMAIN_STOPPED ||
+        domain->generation || !domain->fallback_enabled ||
+        driver_recovery_fallback_triggers_validate(triggers))
+        return -1;
+    domain->fallback_triggers = triggers;
+    return 0;
+}
+
+int driver_crash_circuit_policy_validate(
+    const struct driver_crash_circuit_policy *policy) {
+    return !policy || !policy->repeat_limit ||
+           policy->repeat_limit > DRIVER_CRASH_REPEAT_LIMIT_MAX ||
+           !policy->repeat_window_ticks ||
+           policy->repeat_window_ticks > DRIVER_CRASH_REPEAT_WINDOW_TICKS_MAX ?
+           -1 : 0;
+}
+
+int driver_domain_set_crash_circuit_policy(
+    struct driver_domain *domain,
+    const struct driver_crash_circuit_policy *policy) {
+    if (!domain || !domain->active || domain->state != DRIVER_DOMAIN_STOPPED ||
+        domain->generation || driver_crash_circuit_policy_validate(policy))
+        return -1;
+    domain->crash_policy = *policy;
+    return 0;
+}
+
 int driver_domain_start(struct driver_domain *domain) {
     if (!domain || !domain->active || domain->state != DRIVER_DOMAIN_STOPPED)
         return -1;
+    domain->terminal_reason = DRIVER_TERMINAL_NONE;
     if (launch(domain)) {
+        domain->terminal_reason = DRIVER_TERMINAL_LAUNCH_FAILURE;
+        domain->last_decision = DRIVER_RECOVERY_DECISION_LAUNCH_FAILURE;
         domain->state = DRIVER_DOMAIN_FAILED;
         return -1;
     }
+    domain->last_decision = DRIVER_RECOVERY_DECISION_START;
     return 0;
 }
 
@@ -493,6 +650,33 @@ int driver_domain_bundle(const struct driver_domain *domain, u32 *handles,
         handles[index] = domain->issued_handles[index];
     }
     return (int)domain->resource_count;
+}
+
+int driver_domain_status(const struct driver_domain *domain,
+                         struct driver_domain_status *status) {
+    if (!domain || !domain->active || !status) return -1;
+    status->id = domain->id;
+    status->state = domain->state;
+    status->pid = domain->pid;
+    status->generation = domain->generation;
+    status->image_id = domain->image_id;
+    status->capabilities = domain->capabilities;
+    status->argument = domain->argument;
+    status->recovery_profile = domain->recovery_profile;
+    status->fallback_enabled = domain->fallback_enabled;
+    status->fallback_used = domain->fallback_used;
+    status->fallback_triggers = domain->fallback_triggers;
+    status->restart_count = domain->restart_count;
+    status->restart_deadline = domain->restart_deadline;
+    status->stop_deadline = domain->stop_deadline;
+    status->stop_ack = domain->stop_ack;
+    status->crash_repeat_count = domain->crash_repeat_count;
+    status->crash_repeat_deadline = domain->crash_repeat_deadline;
+    status->crash_policy = domain->crash_policy;
+    status->terminal_reason = domain->terminal_reason;
+    status->last_decision = domain->last_decision;
+    status->last_crash = domain->last_crash;
+    return 0;
 }
 
 int driver_domain_bootstrap(int pid, struct driver_bootstrap_info *info) {
@@ -576,6 +760,7 @@ int driver_domain_request_stop(struct driver_domain *domain) {
         endpoint_signal(bridge, DRIVER_CONTROL_STOP))
         return -1;
     domain->state = DRIVER_DOMAIN_STOPPING;
+    domain->last_decision = DRIVER_RECOVERY_DECISION_STOP_REQUEST;
     domain->stop_deadline = now_ticks + DRIVER_STOP_GRACE_TICKS;
     domain->stop_ack = 0;
     return 0;
@@ -593,6 +778,43 @@ int driver_domain_stop_ack(int pid) {
     return -1;
 }
 
+void driver_supervisor_report_user_fault(int pid, u32 vector, u64 error,
+                                         u64 rip, u64 address, u32 ticks) {
+    struct driver_domain *domain = driver_domain_for_pid(pid);
+    if (!domain) return;
+    passport_clear(&domain->pending_crash);
+    domain->pending_crash.kind = DRIVER_CRASH_USER_EXCEPTION;
+    domain->pending_crash.generation = domain->generation;
+    domain->pending_crash.ticks = ticks;
+    domain->pending_crash.vector = vector;
+    domain->pending_crash.error = error;
+    domain->pending_crash.rip = rip;
+    domain->pending_crash.address = address;
+}
+
+void driver_supervisor_report_iommu_fault(u32 id, u16 segment, u16 source_id,
+                                          u8 reason, u8 write, u64 address,
+                                          u32 ticks) {
+    struct driver_domain *domain = driver_domain_for_id(id);
+    if (!domain || (domain->state != DRIVER_DOMAIN_RUNNING &&
+                    domain->state != DRIVER_DOMAIN_STOPPING))
+        return;
+    passport_clear(&domain->pending_crash);
+    passport_clear(&domain->last_crash);
+    domain->last_crash.kind = DRIVER_CRASH_IOMMU;
+    domain->last_crash.generation = domain->generation;
+    domain->last_crash.ticks = ticks;
+    domain->last_crash.segment = segment;
+    domain->last_crash.source_id = source_id;
+    domain->last_crash.reason = reason;
+    domain->last_crash.write = write;
+    domain->last_crash.address = address;
+    domain->terminal_reason = DRIVER_TERMINAL_IOMMU_FAULT;
+    domain->last_decision = DRIVER_RECOVERY_DECISION_IOMMU_QUARANTINE;
+    domain->crash_repeat_count = 0;
+    domain->crash_repeat_deadline = 0;
+}
+
 void driver_supervisor_task_died(int pid, int code, u32 ticks) {
     for (u32 i = 0; i < DRIVER_DOMAIN_MAX; i++) {
         struct driver_domain *d = &domains[i];
@@ -602,27 +824,66 @@ void driver_supervisor_task_died(int pid, int code, u32 ticks) {
             continue;
         int stopping = d->state == DRIVER_DOMAIN_STOPPING;
         int ack = d->stop_ack;
+        struct driver_crash_passport passport;
+        crash_passport_for_death(d, code, ticks, &passport);
+        int circuit_open = code && crash_circuit_open(d, &passport, ticks);
+        if (code) d->last_crash = passport;
         int rc = teardown(d);
         d->stop_deadline = 0;
         d->stop_ack = 0;
         if (rc) {
+            d->terminal_reason = DRIVER_TERMINAL_TEARDOWN_FAILURE;
+            d->last_decision = DRIVER_RECOVERY_DECISION_TEARDOWN_QUARANTINE;
             d->state = DRIVER_DOMAIN_QUARANTINED;
             continue;
         }
         if (stopping) {
-            d->state = !code && ack ? DRIVER_DOMAIN_STOPPED :
-                                      DRIVER_DOMAIN_FAILED;
+            if (!code && ack) {
+                d->terminal_reason = DRIVER_TERMINAL_NONE;
+                d->last_decision = DRIVER_RECOVERY_DECISION_STOP_ACK;
+                d->state = DRIVER_DOMAIN_STOPPED;
+            } else {
+                d->terminal_reason = DRIVER_TERMINAL_STOP_FAILURE;
+                d->last_decision = DRIVER_RECOVERY_DECISION_STOP_FAILURE;
+                d->state = DRIVER_DOMAIN_FAILED;
+            }
             continue;
         }
         if (!code) {
+            d->terminal_reason = DRIVER_TERMINAL_NONE;
+            d->last_decision = DRIVER_RECOVERY_DECISION_STOP;
+            d->crash_repeat_count = 0;
+            d->crash_repeat_deadline = 0;
             d->state = DRIVER_DOMAIN_STOPPED;
             continue;
         }
-        if (d->restart_policy != DRIVER_RESTART_ON_FAILURE ||
-            d->restart_count >= d->max_restarts) {
+        if (circuit_open) {
+            if (recovery_fallback_activate(
+                    d, ticks, DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT))
+                continue;
+            d->terminal_reason = DRIVER_TERMINAL_CRASH_CIRCUIT;
+            d->last_decision = DRIVER_RECOVERY_DECISION_CRASH_CIRCUIT;
+            d->restart_deadline = 0;
             d->state = DRIVER_DOMAIN_FAILED;
             continue;
         }
+        if (d->restart_policy != DRIVER_RESTART_ON_FAILURE) {
+            d->terminal_reason = DRIVER_TERMINAL_RESTART_LIMIT;
+            d->last_decision = DRIVER_RECOVERY_DECISION_RESTART_LIMIT;
+            d->state = DRIVER_DOMAIN_FAILED;
+            continue;
+        }
+        if (d->restart_count >= d->max_restarts) {
+            if (recovery_fallback_activate(
+                    d, ticks, DRIVER_RECOVERY_TRIGGER_RESTART_LIMIT))
+                continue;
+            d->terminal_reason = DRIVER_TERMINAL_RESTART_LIMIT;
+            d->last_decision = DRIVER_RECOVERY_DECISION_RESTART_LIMIT;
+            d->state = DRIVER_DOMAIN_FAILED;
+            continue;
+        }
+        d->terminal_reason = DRIVER_TERMINAL_NONE;
+        d->last_decision = DRIVER_RECOVERY_DECISION_RESTART;
         d->restart_count++;
         d->restart_deadline = ticks + d->backoff_ticks * d->restart_count;
         d->state = DRIVER_DOMAIN_BACKOFF;
@@ -641,14 +902,26 @@ void driver_supervisor_tick(u32 ticks) {
             d->stop_deadline = 0;
             d->stop_ack = 0;
             d->state = rc ? DRIVER_DOMAIN_QUARANTINED : DRIVER_DOMAIN_STOPPED;
-            if (!rc && terminate_backend && pid > 0 && terminate_backend(pid))
+            d->terminal_reason = rc ? DRIVER_TERMINAL_TEARDOWN_FAILURE :
+                                      DRIVER_TERMINAL_NONE;
+            d->last_decision = rc ?
+                DRIVER_RECOVERY_DECISION_TEARDOWN_QUARANTINE :
+                DRIVER_RECOVERY_DECISION_STOP_TIMEOUT;
+            if (!rc && terminate_backend && pid > 0 && terminate_backend(pid)) {
+                d->terminal_reason = DRIVER_TERMINAL_STOP_FAILURE;
+                d->last_decision = DRIVER_RECOVERY_DECISION_STOP_FAILURE;
                 d->state = DRIVER_DOMAIN_QUARANTINED;
+            }
             continue;
         }
         if (d->state != DRIVER_DOMAIN_BACKOFF ||
             (i32)(ticks - d->restart_deadline) < 0)
             continue;
-        if (launch(d)) d->state = DRIVER_DOMAIN_FAILED;
+        if (launch(d)) {
+            d->terminal_reason = DRIVER_TERMINAL_LAUNCH_FAILURE;
+            d->last_decision = DRIVER_RECOVERY_DECISION_LAUNCH_FAILURE;
+            d->state = DRIVER_DOMAIN_FAILED;
+        }
     }
 }
 
@@ -664,6 +937,10 @@ int driver_domain_stop(struct driver_domain *d) {
             rc = -1;
     }
     d->state = rc ? DRIVER_DOMAIN_QUARANTINED : DRIVER_DOMAIN_STOPPED;
+    d->terminal_reason = rc ? DRIVER_TERMINAL_TEARDOWN_FAILURE :
+                              DRIVER_TERMINAL_NONE;
+    d->last_decision = rc ? DRIVER_RECOVERY_DECISION_TEARDOWN_QUARANTINE :
+                            DRIVER_RECOVERY_DECISION_STOP;
     d->restart_deadline = 0;
     d->stop_deadline = 0;
     d->stop_ack = 0;
@@ -676,6 +953,11 @@ int driver_domain_remove(struct driver_domain *domain) {
     if (quiesce_backend && quiesce_backend(domain->device)) result = -1;
     domain->state = result ? DRIVER_DOMAIN_QUARANTINED
                            : DRIVER_DOMAIN_REMOVED;
+    domain->terminal_reason = result ? DRIVER_TERMINAL_TEARDOWN_FAILURE :
+                                       DRIVER_TERMINAL_NONE;
+    domain->last_decision = result ?
+        DRIVER_RECOVERY_DECISION_TEARDOWN_QUARANTINE :
+        DRIVER_RECOVERY_DECISION_REMOVE;
     return result;
 }
 
@@ -695,6 +977,8 @@ void driver_domain_destroy(struct driver_domain *domain) {
         domain->resources[index].flags = 0;
     }
     if (release_backend && release_backend(domain)) {
+        domain->terminal_reason = DRIVER_TERMINAL_TEARDOWN_FAILURE;
+        domain->last_decision = DRIVER_RECOVERY_DECISION_TEARDOWN_QUARANTINE;
         domain->state = DRIVER_DOMAIN_QUARANTINED;
         return;
     }
@@ -702,6 +986,9 @@ void driver_domain_destroy(struct driver_domain *domain) {
     domain->device = 0;
     domain->resource_count = 0;
     domain->bridge_index = DRIVER_DOMAIN_RESOURCE_MAX;
+    crash_state_clear(domain);
+    crash_policy_default(domain);
+    recovery_fallback_clear(domain);
     domain->stop_deadline = 0;
     domain->stop_ack = 0;
     domain->id = 0;
@@ -739,6 +1026,11 @@ int driver_domain_quarantine(u32 id) {
         rc = teardown(d);
     if (pid > 0 && terminate_backend && terminate_backend(pid)) rc = -1;
     d->state = DRIVER_DOMAIN_QUARANTINED;
+    if (d->terminal_reason == DRIVER_TERMINAL_NONE) {
+        d->terminal_reason = DRIVER_TERMINAL_QUARANTINE;
+        d->last_decision = rc ? DRIVER_RECOVERY_DECISION_TEARDOWN_QUARANTINE :
+                                DRIVER_RECOVERY_DECISION_MANUAL_QUARANTINE;
+    }
     d->restart_deadline = 0;
     d->stop_deadline = 0;
     d->stop_ack = 0;

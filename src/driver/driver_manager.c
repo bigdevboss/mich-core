@@ -3,6 +3,11 @@
 
 struct manager_manifest {
     struct driver_user_manifest manifest;
+    struct driver_recovery_profile fallback;
+    struct driver_crash_circuit_policy crash_policy;
+    u32 fallback_enabled;
+    u32 fallback_triggers;
+    u32 crash_policy_enabled;
     u32 active;
 };
 
@@ -19,6 +24,36 @@ static struct manager_binding bindings[DRIVER_MANAGER_BINDING_MAX];
 static struct kernel_object *managed_devices[DRIVER_MANAGER_DEVICE_MAX];
 static u32 managed_device_count;
 static driver_resource_provider_fn resource_provider;
+
+static void clear_manifest(struct manager_manifest *entry) {
+    u8 *bytes = (u8 *)entry;
+    for (usize_t byte = 0; byte < sizeof(*entry); byte++) bytes[byte] = 0;
+}
+
+static int fallback_valid(const struct driver_user_manifest *manifest,
+                          const struct driver_recovery_profile *profile) {
+    return profile && profile->image_id < DRIVER_USER_IMAGE_MAX &&
+           !(profile->capabilities & ~manifest->capabilities) &&
+           (profile->image_id != manifest->image_id ||
+            profile->capabilities != manifest->capabilities ||
+            profile->argument != manifest->argument);
+}
+
+static int recovery_config_valid(
+    const struct driver_user_manifest *manifest,
+    const struct driver_manager_recovery_config *config) {
+    if (!config) return 0;
+    if (config->fallback_enabled > 1 || config->crash_policy_enabled > 1 ||
+        (!config->fallback_enabled && config->fallback_triggers) ||
+        (config->fallback_enabled &&
+         (!fallback_valid(manifest, &config->fallback) ||
+          driver_recovery_fallback_triggers_validate(
+              config->fallback_triggers))) ||
+        (config->crash_policy_enabled &&
+         driver_crash_circuit_policy_validate(&config->crash_policy)))
+        return -1;
+    return 0;
+}
 
 static int names_equal(const char *left, const char *right) {
     for (u32 index = 0; index < DRIVER_USER_NAME_MAX; index++) {
@@ -107,12 +142,8 @@ void driver_manager_init(driver_resource_provider_fn provider) {
         managed_devices[index] = 0;
     }
     managed_device_count = 0;
-    for (u32 index = 0; index < DRIVER_MANAGER_MANIFEST_MAX; index++) {
-        manifests[index].active = 0;
-        u8 *bytes = (u8 *)&manifests[index].manifest;
-        for (usize_t byte = 0; byte < sizeof(manifests[index].manifest); byte++)
-            bytes[byte] = 0;
-    }
+    for (u32 index = 0; index < DRIVER_MANAGER_MANIFEST_MAX; index++)
+        clear_manifest(&manifests[index]);
     resource_provider = provider;
 }
 
@@ -160,17 +191,35 @@ int driver_manager_set_devices(struct kernel_object **devices, u32 device_count)
 }
 
 int driver_manager_register(const struct driver_user_manifest *manifest) {
-    if (driver_user_manifest_validate(manifest)) return -1;
+    return driver_manager_register_recovery(manifest, 0);
+}
+
+int driver_manager_register_recovery(
+    const struct driver_user_manifest *manifest,
+    const struct driver_manager_recovery_config *config) {
+    if (driver_user_manifest_validate(manifest) ||
+        recovery_config_valid(manifest, config))
+        return -1;
     for (u32 index = 0; index < DRIVER_MANAGER_MANIFEST_MAX; index++)
         if (manifests[index].active &&
             names_equal(manifests[index].manifest.name, manifest->name))
             return -1;
     for (u32 index = 0; index < DRIVER_MANAGER_MANIFEST_MAX; index++) {
         if (manifests[index].active) continue;
+        clear_manifest(&manifests[index]);
         manifests[index].manifest = *manifest;
+        if (config && config->fallback_enabled) {
+            manifests[index].fallback = config->fallback;
+            manifests[index].fallback_enabled = 1;
+            manifests[index].fallback_triggers = config->fallback_triggers;
+        }
+        if (config && config->crash_policy_enabled) {
+            manifests[index].crash_policy = config->crash_policy;
+            manifests[index].crash_policy_enabled = 1;
+        }
         manifests[index].active = 1;
         if (dependency_cycle()) {
-            manifests[index].active = 0;
+            clear_manifest(&manifests[index]);
             return -1;
         }
         driver_manager_start_all(managed_devices, managed_device_count);
@@ -195,16 +244,54 @@ int driver_manager_unregister(int manifest_id) {
                             entry->manifest.name))
                 return -1;
     }
-    entry->active = 0;
-    u8 *bytes = (u8 *)&entry->manifest;
-    for (usize_t byte = 0; byte < sizeof(entry->manifest); byte++)
-        bytes[byte] = 0;
+    clear_manifest(entry);
     return 0;
 }
 
 const struct driver_user_manifest *driver_manager_manifest(int manifest_id) {
     struct manager_manifest *entry = manifest_at(manifest_id);
     return entry ? &entry->manifest : 0;
+}
+
+int driver_manager_set_recovery_fallback(
+    int manifest_id, const struct driver_recovery_profile *profile) {
+    struct manager_manifest *entry = manifest_at(manifest_id);
+    if (!entry || !fallback_valid(&entry->manifest, profile)) return -1;
+    u32 slot = (u32)manifest_id - 1;
+    for (u32 index = 0; index < DRIVER_MANAGER_BINDING_MAX; index++)
+        if (bindings[index].active && bindings[index].manifest_slot == slot)
+            return -1;
+    entry->fallback = *profile;
+    entry->fallback_enabled = 1;
+    entry->fallback_triggers = DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT;
+    return 0;
+}
+
+int driver_manager_set_recovery_fallback_triggers(int manifest_id,
+                                                  u32 triggers) {
+    struct manager_manifest *entry = manifest_at(manifest_id);
+    if (!entry || !entry->fallback_enabled ||
+        driver_recovery_fallback_triggers_validate(triggers))
+        return -1;
+    u32 slot = (u32)manifest_id - 1;
+    for (u32 index = 0; index < DRIVER_MANAGER_BINDING_MAX; index++)
+        if (bindings[index].active && bindings[index].manifest_slot == slot)
+            return -1;
+    entry->fallback_triggers = triggers;
+    return 0;
+}
+
+int driver_manager_set_crash_circuit_policy(
+    int manifest_id, const struct driver_crash_circuit_policy *policy) {
+    struct manager_manifest *entry = manifest_at(manifest_id);
+    if (!entry || driver_crash_circuit_policy_validate(policy)) return -1;
+    u32 slot = (u32)manifest_id - 1;
+    for (u32 index = 0; index < DRIVER_MANAGER_BINDING_MAX; index++)
+        if (bindings[index].active && bindings[index].manifest_slot == slot)
+            return -1;
+    entry->crash_policy = *policy;
+    entry->crash_policy_enabled = 1;
+    return 0;
 }
 
 static int dependencies_ready(u32 slot) {
@@ -257,12 +344,18 @@ struct driver_domain *driver_manager_start_device(struct kernel_object *device) 
         int selected = select_manifest(device, attempted);
         if (selected < 0) return 0;
         attempted[selected] = 1;
-        const struct driver_user_manifest *manifest =
-            &manifests[selected].manifest;
-        struct driver_domain *domain =
-            driver_domain_create_user(manifest, device);
+        struct manager_manifest *entry = &manifests[selected];
+        const struct driver_user_manifest *manifest = &entry->manifest;
+        struct driver_domain *domain = driver_domain_create_user(manifest, device);
         if (!domain) continue;
         if (driver_domain_apply_manifest(domain, manifest, resource_provider) ||
+            (entry->fallback_enabled &&
+             (driver_domain_set_recovery_fallback(domain, &entry->fallback) ||
+              driver_domain_set_recovery_fallback_triggers(
+                  domain, entry->fallback_triggers))) ||
+            (entry->crash_policy_enabled &&
+             driver_domain_set_crash_circuit_policy(domain,
+                                                    &entry->crash_policy)) ||
             driver_domain_start(domain)) {
             driver_domain_destroy(domain);
             continue;

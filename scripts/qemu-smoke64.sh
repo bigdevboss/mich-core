@@ -3,6 +3,8 @@ set -eu
 image="${1:-bin/x86_64/disk.img}"
 memory="${2:-128M}"
 profile="${3:-default}"
+qemu_timeout=45
+if [ "$profile" = "smp" ] || [ "$profile" = "iommu" ]; then qemu_timeout=90; fi
 expanded_image=""
 passive_result=""
 passive_pid=""
@@ -93,7 +95,7 @@ if [ "$profile" = "uefi" ]; then
         -nic none \
         "$@" >"$log" 2>&1
 else
-    timeout 12s qemu-system-x86_64 \
+    timeout "${qemu_timeout}s" qemu-system-x86_64 \
         -drive file="$image",format=raw,if=ide,index=0,media=disk \
         -drive file="$blk_img",format=raw,if=none,id=michblk \
         -device virtio-blk-pci,drive=michblk,disable-legacy=on \
@@ -127,6 +129,16 @@ for marker in \
     "Mich test64: device removal pass" \
     "Mich test64: driver supervisor pass" \
     "Mich test64: driver crash teardown pass" \
+    "Mich test64: driver live primary bootstrap pass" \
+    "Mich test64: driver live fallback bootstrap pass" \
+    "Mich test64: driver live recovery isolation pass" \
+    "Mich test64: driver crash passport pass" \
+    "Mich test64: driver crash circuit breaker pass" \
+    "Mich test64: driver crash policy pass" \
+    "Mich test64: driver recovery decision matrix pass" \
+    "Mich test64: trigger policy pass" \
+    "Mich test64: driver recovery fallback pass" \
+    "Mich test64: driver IOMMU crash quarantine pass" \
     "Mich test64: atomic driver bundle pass" \
     "Mich test64: userspace driver manifest pass" \
     "Mich test64: firmware manifest allowlist pass" \
@@ -389,6 +401,25 @@ for marker in \
 do
     grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
 done
+live_primary="Mich test64: driver live primary bootstrap pass"
+live_fallback="Mich test64: driver live fallback bootstrap pass"
+live_isolation="Mich test64: driver live recovery isolation pass"
+[ "$(grep -Fc "$live_primary" "$log")" -eq 2 ] &&
+[ "$(grep -Fc "$live_fallback" "$log")" -eq 1 ] &&
+[ "$(grep -Fc "$live_isolation" "$log")" -eq 1 ] || {
+    cat "$log"
+    exit 1
+}
+primary_first="$(grep -Fn "$live_primary" "$log" | sed -n '1s/:.*//p')"
+primary_second="$(grep -Fn "$live_primary" "$log" | sed -n '2s/:.*//p')"
+fallback_line="$(grep -Fn "$live_fallback" "$log" | sed -n '1s/:.*//p')"
+isolation_line="$(grep -Fn "$live_isolation" "$log" | sed -n '1s/:.*//p')"
+[ "$primary_first" -lt "$primary_second" ] &&
+[ "$primary_second" -lt "$fallback_line" ] &&
+[ "$fallback_line" -lt "$isolation_line" ] || {
+    cat "$log"
+    exit 1
+}
 if [ "$profile" = "uefi" ]; then
     grep -Fq "BigDevBoot UEFI 0.1.0 by bigdevboss" "$log" || {
         cat "$log"
