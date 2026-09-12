@@ -380,10 +380,12 @@ static int manager64_set_pci_inventory(void) {
 #define DRIVER_LIVE_RECOVERY_FALLBACK_ARGUMENT 22
 #define DRIVER_LIVE_RECOVERY_TIMEOUT_TICKS 128
 
-#define DRIVER_LIVE_RECOVERY_WAIT_PRIMARY_RESTART 1
-#define DRIVER_LIVE_RECOVERY_WAIT_FALLBACK 2
-#define DRIVER_LIVE_RECOVERY_FALLBACK_HOLD 3
-#define DRIVER_LIVE_RECOVERY_COMPLETE 4
+#define DRIVER_LIVE_RECOVERY_WAIT_PRIMARY_READY 1
+#define DRIVER_LIVE_RECOVERY_WAIT_PRIMARY_RESTART 2
+#define DRIVER_LIVE_RECOVERY_WAIT_RESTARTED_READY 3
+#define DRIVER_LIVE_RECOVERY_WAIT_FALLBACK 4
+#define DRIVER_LIVE_RECOVERY_FALLBACK_HOLD 5
+#define DRIVER_LIVE_RECOVERY_COMPLETE 6
 
 struct driver_live_recovery_test {
     struct driver_domain *domain;
@@ -397,6 +399,7 @@ struct driver_live_recovery_test {
     u32 restarted_space;
     u32 primary_handle;
     u32 restarted_handle;
+    u32 rebind_gap;
     struct kernel_object *primary_bridge;
     struct kernel_object *restarted_bridge;
     u64 fault_rip;
@@ -524,7 +527,7 @@ static int driver_live_recovery_arm(void) {
                                      &driver_live_recovery.primary_space))
         return -1;
     driver_live_recovery.domain = domain;
-    driver_live_recovery.phase = DRIVER_LIVE_RECOVERY_WAIT_PRIMARY_RESTART;
+    driver_live_recovery.phase = DRIVER_LIVE_RECOVERY_WAIT_PRIMARY_READY;
     driver_live_recovery.deadline = timer_ticks + DRIVER_LIVE_RECOVERY_TIMEOUT_TICKS;
     driver_live_recovery.primary_pid = status.pid;
     driver_live_recovery.primary_handle = handles[0];
@@ -535,12 +538,24 @@ static void driver_live_recovery_fail(void) {
     KERNEL_PANIC("driver live recovery");
 }
 
-static __attribute__((cold, noinline, optimize("Os"))) void driver_live_recovery_tick(void) {
+static __attribute__((cold, noinline, optimize("Os,no-jump-tables"))) void driver_live_recovery_tick(void) {
     struct driver_live_recovery_test *test = &driver_live_recovery;
     if (!test->phase || test->phase == DRIVER_LIVE_RECOVERY_COMPLETE) return;
     if ((i32)(timer_ticks - test->deadline) >= 0) driver_live_recovery_fail();
     struct driver_domain_status status;
     if (driver_domain_status(test->domain, &status)) driver_live_recovery_fail();
+    if (test->phase == DRIVER_LIVE_RECOVERY_WAIT_PRIMARY_READY) {
+        if (status.state != DRIVER_DOMAIN_RUNNING || status.generation != 1 ||
+            status.pid != test->primary_pid)
+            driver_live_recovery_fail();
+        int owner = service_lookup(SERVICE_TEST);
+        if (owner < 0) return;
+        if (owner != status.pid ||
+            endpoint_signal(test->primary_bridge, DRIVER_CONTROL_STOP))
+            driver_live_recovery_fail();
+        test->phase = DRIVER_LIVE_RECOVERY_WAIT_PRIMARY_RESTART;
+        return;
+    }
     if (test->phase == DRIVER_LIVE_RECOVERY_WAIT_PRIMARY_RESTART) {
         if (status.state == DRIVER_DOMAIN_RUNNING && status.generation == 1) return;
         if (driver_live_recovery_fresh(&status, 2, test->primary_pid,
@@ -557,10 +572,26 @@ static __attribute__((cold, noinline, optimize("Os"))) void driver_live_recovery
             !handles[1] ||
             !(test->restarted_bridge =
               driver_live_recovery_bridge(status.pid, handles[1])) ||
-            test->restarted_bridge == test->primary_bridge)
+            test->restarted_bridge == test->primary_bridge ||
+            endpoint_signal(test->primary_bridge, DRIVER_CONTROL_STOP) == 0)
             driver_live_recovery_fail();
         test->restarted_handle = handles[0];
         test->fault_rip = status.last_crash.rip;
+        test->phase = DRIVER_LIVE_RECOVERY_WAIT_RESTARTED_READY;
+        return;
+    }
+    if (test->phase == DRIVER_LIVE_RECOVERY_WAIT_RESTARTED_READY) {
+        if (status.state != DRIVER_DOMAIN_RUNNING || status.generation != 2 ||
+            status.pid != test->restarted_pid)
+            driver_live_recovery_fail();
+        int owner = service_lookup(SERVICE_TEST);
+        if (owner < 0) {
+            test->rebind_gap = 1;
+            return;
+        }
+        if (!test->rebind_gap || owner != status.pid ||
+            endpoint_signal(test->restarted_bridge, DRIVER_CONTROL_STOP))
+            driver_live_recovery_fail();
         test->phase = DRIVER_LIVE_RECOVERY_WAIT_FALLBACK;
         return;
     }
@@ -576,7 +607,8 @@ static __attribute__((cold, noinline, optimize("Os"))) void driver_live_recovery
             status.last_decision != DRIVER_RECOVERY_DECISION_FALLBACK ||
             status.capabilities ||
             status.argument != DRIVER_LIVE_RECOVERY_FALLBACK_ARGUMENT ||
-            !driver_live_recovery_crash(&status, 2, test->fault_rip))
+            !driver_live_recovery_crash(&status, 2, test->fault_rip) ||
+            service_lookup(SERVICE_TEST) >= 0)
             driver_live_recovery_fail();
         u32 handles[2];
         struct kernel_object *bridge = 0;
@@ -597,7 +629,8 @@ static __attribute__((cold, noinline, optimize("Os"))) void driver_live_recovery
             status.fallback_triggers != DRIVER_RECOVERY_TRIGGER_RESTART_LIMIT ||
             status.last_decision != DRIVER_RECOVERY_DECISION_FALLBACK ||
             status.capabilities ||
-            status.argument != DRIVER_LIVE_RECOVERY_FALLBACK_ARGUMENT)
+            status.argument != DRIVER_LIVE_RECOVERY_FALLBACK_ARGUMENT ||
+            service_lookup(SERVICE_TEST) >= 0)
             driver_live_recovery_fail();
         if ((i32)(timer_ticks - test->hold_deadline) < 0) return;
         serial64_write("Mich test64: driver live recovery isolation pass\n");

@@ -985,7 +985,7 @@ static __attribute__((cold, noinline, optimize("Os"))) int driver_supervisor(
     manifest.requests[1].index = 0;
     manifest.requests[1].rights = KRIGHT_READ | KRIGHT_WRITE | KRIGHT_MAP;
     manifest.requests[2].kind = DRIVER_RESOURCE_BRIDGE;
-    manifest.requests[2].rights = KRIGHT_READ | KRIGHT_WAIT;
+    manifest.requests[2].rights = KRIGHT_READ | KRIGHT_WAIT | KRIGHT_TRANSFER;
     struct driver_user_manifest invalid_manifest = manifest;
     invalid_manifest.size--;
     struct driver_user_manifest invalid_firmware = manifest;
@@ -1132,6 +1132,8 @@ static __attribute__((cold, noinline, optimize("Os"))) int driver_supervisor(
         supervisor_test_revokes = 0;
     }
     u32 bundle[DRIVER_DOMAIN_RESOURCE_MAX];
+    u32 stale_bridge_handle = 0;
+    struct kernel_object *stale_bridge = 0;
     struct driver_bootstrap_info bootstrap;
     valid = valid && driver_domain_bundle(
         domain, bundle, DRIVER_DOMAIN_RESOURCE_MAX) == 3 &&
@@ -1158,11 +1160,26 @@ static __attribute__((cold, noinline, optimize("Os"))) int driver_supervisor(
         bootstrap.resources[2].kind == DRIVER_RESOURCE_BRIDGE &&
         bootstrap.resources[2].handle == bundle[2];
     if (valid) {
+        stale_bridge = handle_get(test_env->target, bundle[2],
+                                  KRIGHT_READ | KRIGHT_WAIT, KOBJECT_ENDPOINT);
+        stale_bridge_handle = stale_bridge ?
+            handle_duplicate(test_env->target, test_env->owner, bundle[2],
+                             KRIGHT_READ | KRIGHT_WAIT) : 0;
+        valid = stale_bridge && stale_bridge_handle &&
+                bridge_endpoint_wait(stale_bridge, test_env->owner_slot) == 1 &&
+                test_env->owner->state == TASK_BLOCKED_EVENT;
+    }
+    if (valid) {
+        struct bridge_notification notification;
         driver_supervisor_task_died(domain->pid, 1, 10);
         valid = domain->state == DRIVER_DOMAIN_BACKOFF &&
                 domain->restart_deadline == 12 &&
                 driver_domain_bundle(domain, bundle,
-                                     DRIVER_DOMAIN_RESOURCE_MAX) < 0;
+                                     DRIVER_DOMAIN_RESOURCE_MAX) < 0 &&
+                !handle_get(test_env->owner, stale_bridge_handle,
+                            KRIGHT_READ, KOBJECT_ENDPOINT) &&
+                test_env->owner->state == TASK_RUNNING &&
+                bridge_endpoint_read(stale_bridge, &notification) < 0;
     }
     if (valid) {
         driver_supervisor_tick(11);
