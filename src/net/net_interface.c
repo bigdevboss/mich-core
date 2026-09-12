@@ -1387,17 +1387,13 @@ int net_interface_udpv6_start_probe(struct kernel_object *object,
                                     struct driver_domain *owner) {
     struct net_interface *interface = net_interface_get(object);
     if (!interface || !owner_valid(interface, owner) ||
-        interface->ipv6_state != NET_INTERFACE_IPV6_SLAAC ||
-        interface->udpv6_probe_binding)
+        interface->ipv6_state != NET_INTERFACE_IPV6_SLAAC)
         return -1;
     u8 destination[IPV6_ADDRESS_SIZE];
     for (u32 index = 0; index < 8; index++)
         destination[index] = interface->icmpv6.prefix[index];
     for (u32 index = 8; index < IPV6_ADDRESS_SIZE; index++) destination[index] = 0;
     destination[15] = 3;
-    u64 binding = udpv6_bind(
-        &interface->udpv6, interface->ipv6_global, 0);
-    if (!binding) return -1;
     u8 query[29];
     for (u32 index = 0; index < sizeof(query); index++) query[index] = 0;
     query[0] = 0x4D;
@@ -1420,6 +1416,13 @@ int net_interface_udpv6_start_probe(struct kernel_object *object,
     query[26] = 1;
     query[27] = 0;
     query[28] = 1;
+    if (interface->udpv6_probe_binding)
+        return udpv6_send(&interface->udpv6,
+                          interface->udpv6_probe_binding, destination, 53,
+                          query, sizeof(query));
+    u64 binding = udpv6_bind(
+        &interface->udpv6, interface->ipv6_global, 0);
+    if (!binding) return -1;
     if (udpv6_send(&interface->udpv6, binding, destination, 53,
                    query, sizeof(query))) {
         udpv6_unbind(&interface->udpv6, binding);

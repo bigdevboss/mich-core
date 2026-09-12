@@ -887,8 +887,12 @@ static unsigned int process_rx_batch(struct virtio_net_capsule *capsule) {
             chunk = VIRTIO_NET_DRIVER_BATCH;
         unsigned int done = mich_net_interface_driver_receive_batch(
             capsule->interface_handle, chunk, requests + processed);
-        if (!done) break;
+        if (done > chunk) break;
         processed += done;
+        // The core has recorded a rejected request but leaves its buffer
+        // driver-owned.  Mark it for the release pass, then preserve the
+        // remaining valid frames in this bounded batch.
+        if (done != chunk) requests[processed++].length = 0;
     }
     // Acquire after the frame is parsed: replacement buffers may reuse
     // pool slots the receive just released.
@@ -907,7 +911,8 @@ static unsigned int process_rx_batch(struct virtio_net_capsule *capsule) {
     for (unsigned int index = 0; index < batch.count; index++) {
         unsigned int slot = slots[index];
         if (slot >= VIRTIO_NET_RX_POSTED) continue;
-        if (!valid[index] || request_index[index] >= processed)
+        if (!valid[index] || request_index[index] >= processed ||
+            !requests[request_index[index]].length)
             mich_net_interface_driver_release_rx(
                 capsule->interface_handle, capsule->rx_buffers[slot]);
         capsule->rx_tokens[slot] = 0;

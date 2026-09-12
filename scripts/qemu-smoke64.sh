@@ -5,6 +5,7 @@ memory="${2:-128M}"
 profile="${3:-default}"
 qemu_timeout=45
 if [ "$profile" = "smp" ] || [ "$profile" = "iommu" ]; then qemu_timeout=90; fi
+if [ "$profile" = "msi" ]; then qemu_timeout=240; fi
 expanded_image=""
 passive_result=""
 passive_pid=""
@@ -43,31 +44,52 @@ case "$profile" in
         set --
         ;;
 esac
+log="$(mktemp)"
 if [ "$profile" = "msi" ]; then
     passive_result="$(mktemp)"
-    python3 - "$passive_result" <<'PY' &
+    python3 - "$passive_result" "$qemu_timeout" "$log" <<'PY' &
 import socket
 import sys
 import time
 
-result = sys.argv[1]
-for _ in range(60):
+result, timeout, log = sys.argv[1:]
+deadline = time.monotonic() + int(timeout) - 5
+ready_marker = "Mich virtio-net: passive listener ready"
+listener_ready = False
+while time.monotonic() < deadline:
+    if not listener_ready:
+        try:
+            with open(log, "r", encoding="ascii", errors="replace") as input:
+                listener_ready = ready_marker in input.read()
+        except OSError:
+            pass
+        if not listener_ready:
+            time.sleep(0.1)
+            continue
+    connection = None
     try:
         connection = socket.create_connection(("127.0.0.1", 10080), 0.2)
-        connection.settimeout(2)
+        connection.settimeout(5)
         connection.sendall(b"PASSIVE")
-        data = connection.recv(7)
-        connection.close()
+        data = b""
+        while len(data) < 7:
+            chunk = connection.recv(7 - len(data))
+            if not chunk:
+                break
+            data += chunk
         if data == b"PASSIVE":
             with open(result, "w", encoding="ascii") as output:
                 output.write("PASS")
-        break
+            break
     except OSError:
-        time.sleep(0.1)
+        pass
+    finally:
+        if connection is not None:
+            connection.close()
+    time.sleep(0.1)
 PY
     passive_pid=$!
 fi
-log="$(mktemp)"
 blk_img="$(mktemp)"
 uefi_vars=""
 dd if=/dev/zero of="$blk_img" bs=512 count=256 2>/dev/null

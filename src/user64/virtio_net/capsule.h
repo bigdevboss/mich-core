@@ -51,10 +51,14 @@ struct virtio_net_capsule {
     unsigned int ipv6_slaac_ready;
     unsigned int ipv6_ping_sent;
     unsigned int ipv6_ping_complete;
+    unsigned int ipv6_ping_retries;
+    unsigned int ipv6_ping_retry_at;
     unsigned int tcpv6_probe_started;
     unsigned int tcpv6_probe_complete;
     unsigned int udpv6_probe_sent;
     unsigned int udpv6_probe_complete;
+    unsigned int udpv6_probe_retries;
+    unsigned int udpv6_probe_retry_at;
     unsigned int socket6_handle;
     unsigned int socket6_sent;
     unsigned int dhcp_state;
@@ -89,10 +93,11 @@ struct virtio_net_capsule {
     unsigned int stream_shutdown;
     unsigned int stream_closed;
     unsigned int stream_rounds;
+    unsigned int stream_received;
     unsigned int readiness_reported;
     unsigned int listener_handle;
     unsigned int accepted_handle;
-    unsigned int passive_complete;
+    unsigned int passive_received;
     unsigned int offered_address;
     unsigned int offered_netmask;
     unsigned int offered_gateway;
