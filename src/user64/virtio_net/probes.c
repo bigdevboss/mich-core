@@ -3,6 +3,14 @@
 #include <mich/syscall.h>
 #include <mich/net_interface.h>
 #include <mich/socket.h>
+#include <mich/timer.h>
+
+static const unsigned char passive_message[] = {
+    'P', 'A', 'S', 'S', 'I', 'V', 'E'
+};
+static const unsigned char stream_message[] = {
+    'S', 'T', 'R', 'E', 'A', 'M', '5', 0
+};
 
 static int start_socket_udp(struct virtio_net_capsule *capsule) {
     int handle = mich_socket_create();
@@ -167,11 +175,15 @@ void probes_on_slaac(struct virtio_net_capsule *capsule) {
     if (!mich_net_interface_ipv6_send_echo(
             capsule->interface_handle)) {
         capsule->ipv6_ping_sent = 1;
+        capsule->ipv6_ping_retries = 0;
+        capsule->ipv6_ping_retry_at = mich_ticks() + 1000;
         mich_write("Mich virtio-net: external IPv6 ping queued\n");
     }
     if (!mich_net_interface_udpv6_start_probe(
             capsule->interface_handle)) {
         capsule->udpv6_probe_sent = 1;
+        capsule->udpv6_probe_retries = 0;
+        capsule->udpv6_probe_retry_at = mich_ticks() + 1000;
         mich_write("Mich virtio-net: external UDPv6 queued\n");
     }
     if (!start_socket_udpv6(capsule, &ipv6))
@@ -216,15 +228,13 @@ int probes_poll(struct virtio_net_capsule *capsule) {
                 mich_write("Mich virtio-net: stream readiness connected pass\n");
             }
             struct mich_socket_stream_data data;
-            data.length = 8;
+            data.length = sizeof(stream_message);
             data.reserved = 0;
             for (unsigned int index = 0;
                  index < MICH_SOCKET_STREAM_PAYLOAD_MAX; index++)
                 data.data[index] = 0;
-            data.data[0] = 'S'; data.data[1] = 'T';
-            data.data[2] = 'R'; data.data[3] = 'E';
-            data.data[4] = 'A'; data.data[5] = 'M';
-            data.data[6] = '5'; data.data[7] = 0;
+            for (unsigned int index = 0; index < data.length; index++)
+                data.data[index] = stream_message[index];
             if (!mich_socket_stream_send(capsule->stream_handle, &data)) {
                 capsule->stream_sent = 1;
                 mich_write("Mich virtio-net: stream socket send pass\n");
@@ -242,17 +252,27 @@ int probes_poll(struct virtio_net_capsule *capsule) {
         data.reserved = 0;
         if (!mich_socket_stream_state(capsule->stream_handle, &state) &&
             (state.readiness & SOCKET_READY_READABLE) &&
-            !mich_socket_stream_receive(capsule->stream_handle, &data) &&
-            data.length == 8 && data.data[0] == 'S' &&
-            data.data[1] == 'T' && data.data[2] == 'R' &&
-            data.data[3] == 'E' && data.data[4] == 'A' &&
-            data.data[5] == 'M' && data.data[6] == '5') {
+            !mich_socket_stream_receive(capsule->stream_handle, &data)) {
+            if (data.length > sizeof(stream_message) -
+                              capsule->stream_received)
+                return -1;
+            for (unsigned int index = 0; index < data.length; index++)
+                if (data.data[index] !=
+                    stream_message[capsule->stream_received + index])
+                    return -1;
+            capsule->stream_received += data.length;
+        }
+        if (capsule->stream_received == sizeof(stream_message)) {
+            capsule->stream_received = 0;
             if (!capsule->stream_rounds)
                 mich_write("Mich virtio-net: stream readiness readable pass\n");
             capsule->stream_rounds++;
             if (capsule->stream_rounds == 1)
                 mich_write("Mich virtio-net: stream socket receive pass\n");
             if (capsule->stream_rounds < 32) {
+                data.length = sizeof(stream_message);
+                for (unsigned int index = 0; index < data.length; index++)
+                    data.data[index] = stream_message[index];
                 if (mich_socket_stream_send(capsule->stream_handle, &data))
                     return -1;
             } else {
@@ -284,27 +304,49 @@ int probes_poll(struct virtio_net_capsule *capsule) {
             mich_write("Mich virtio-net: external passive accept pass\n");
         }
     }
-    if (capsule->accepted_handle && !capsule->passive_complete) {
+    if (capsule->accepted_handle && capsule->passive_received < 8) {
         struct mich_socket_stream_data data;
         data.length = 0;
         data.reserved = 0;
-        if (!mich_socket_stream_receive(capsule->accepted_handle, &data) &&
-            data.length == 7 && data.data[0] == 'P' &&
-            data.data[1] == 'A' && data.data[2] == 'S' &&
-            data.data[3] == 'S' && data.data[4] == 'I' &&
-            data.data[5] == 'V' && data.data[6] == 'E' &&
-            !mich_socket_stream_send(capsule->accepted_handle, &data)) {
-            capsule->passive_complete = 1;
-            mich_write("Mich virtio-net: external passive echo pass\n");
+        if (capsule->passive_received < sizeof(passive_message) &&
+            !mich_socket_stream_receive(capsule->accepted_handle, &data)) {
+            if (data.length > sizeof(passive_message) -
+                              capsule->passive_received) {
+                capsule->passive_received = 9;
+            } else {
+                for (unsigned int index = 0; index < data.length; index++)
+                    if (data.data[index] !=
+                        passive_message[capsule->passive_received + index])
+                        capsule->passive_received = 9;
+                if (capsule->passive_received < sizeof(passive_message))
+                    capsule->passive_received += data.length;
+            }
+        }
+        if (capsule->passive_received == sizeof(passive_message)) {
+            data.length = sizeof(passive_message);
+            for (unsigned int index = 0; index < data.length; index++)
+                data.data[index] = passive_message[index];
+            if (!mich_socket_stream_send(capsule->accepted_handle, &data)) {
+                capsule->passive_received = 8;
+                mich_write("Mich virtio-net: external passive echo pass\n");
+            }
         }
     }
     if (capsule->ipv6_dad_complete && !capsule->ipv6_slaac_ready)
         probes_on_slaac(capsule);
-    if (capsule->ipv6_ping_sent && !capsule->ipv6_ping_complete &&
-        mich_net_interface_ipv6_echo_replies(
-            capsule->interface_handle)) {
-        capsule->ipv6_ping_complete = 1;
-        mich_write("Mich virtio-net: external IPv6 ping reply pass\n");
+    if (capsule->ipv6_ping_sent && !capsule->ipv6_ping_complete) {
+        if (mich_net_interface_ipv6_echo_replies(
+                capsule->interface_handle)) {
+            capsule->ipv6_ping_complete = 1;
+            mich_write("Mich virtio-net: external IPv6 ping reply pass\n");
+        } else if (capsule->ipv6_ping_retries < 3) {
+            unsigned int now = mich_ticks();
+            if ((int)(now - capsule->ipv6_ping_retry_at) >= 0) {
+                capsule->ipv6_ping_retry_at = now + 1000;
+                capsule->ipv6_ping_retries++;
+                mich_net_interface_ipv6_send_echo(capsule->interface_handle);
+            }
+        }
     }
     if (capsule->udpv6_probe_sent && !capsule->udpv6_probe_complete) {
         int udpv6 = mich_net_interface_udpv6_poll_probe(
@@ -315,6 +357,13 @@ int probes_poll(struct virtio_net_capsule *capsule) {
         } else if (udpv6 == 2) {
             capsule->udpv6_probe_complete = 1;
             mich_write("Mich virtio-net: external UDPv6 ICMP error pass\n");
+        } else if (!udpv6 && capsule->udpv6_probe_retries < 3) {
+            unsigned int now = mich_ticks();
+            if ((int)(now - capsule->udpv6_probe_retry_at) >= 0) {
+                capsule->udpv6_probe_retry_at = now + 1000;
+                capsule->udpv6_probe_retries++;
+                mich_net_interface_udpv6_start_probe(capsule->interface_handle);
+            }
         }
     }
     return 0;

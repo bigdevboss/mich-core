@@ -4,14 +4,15 @@ org 0x7E00
 %define BD_MAGIC   0x58424442
 %define BLOB_LBA   32
 %define BLOB_LOAD  0x10000
-%define BDINFO     0x78000
-%define BDSEG      0x7800
-%define BMODS      0x78400
-%define BSTRS      0x78480
+; Keep boot metadata above the 872-sector blob window ending at 0x7D000.
+%define BDINFO     0x80000
+%define BDSEG      0x8000
+%define BMODS      0x80400
+%define BSTRS      0x80480
 %define VBEINFO    0x6000
 %define MODEINFO   0x6400
 %define MAX_MMAP   32
-%define BOOT_BLOCKS 832
+%define BOOT_BLOCKS 904
 %define BLOB_MAXSEC (BOOT_BLOCKS - BLOB_LBA)
 %define MAX_MODS   8
 

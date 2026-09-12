@@ -384,8 +384,9 @@ static int manager64_set_pci_inventory(void) {
 #define DRIVER_LIVE_RECOVERY_WAIT_PRIMARY_RESTART 2
 #define DRIVER_LIVE_RECOVERY_WAIT_RESTARTED_READY 3
 #define DRIVER_LIVE_RECOVERY_WAIT_FALLBACK 4
-#define DRIVER_LIVE_RECOVERY_FALLBACK_HOLD 5
-#define DRIVER_LIVE_RECOVERY_COMPLETE 6
+#define DRIVER_LIVE_RECOVERY_WAIT_FALLBACK_READY 5
+#define DRIVER_LIVE_RECOVERY_FALLBACK_HOLD 6
+#define DRIVER_LIVE_RECOVERY_COMPLETE 7
 
 struct driver_live_recovery_test {
     struct driver_domain *domain;
@@ -617,11 +618,12 @@ static __attribute__((cold, noinline, optimize("Os,no-jump-tables"))) void drive
             bridge == test->restarted_bridge)
             driver_live_recovery_fail();
         test->fallback_pid = status.pid;
-        test->hold_deadline = timer_ticks + 2;
-        test->phase = DRIVER_LIVE_RECOVERY_FALLBACK_HOLD;
+        test->deadline = timer_ticks + DRIVER_LIVE_RECOVERY_TIMEOUT_TICKS;
+        test->phase = DRIVER_LIVE_RECOVERY_WAIT_FALLBACK_READY;
         return;
     }
-    if (test->phase == DRIVER_LIVE_RECOVERY_FALLBACK_HOLD) {
+    if (test->phase == DRIVER_LIVE_RECOVERY_WAIT_FALLBACK_READY ||
+        test->phase == DRIVER_LIVE_RECOVERY_FALLBACK_HOLD) {
         if (status.state != DRIVER_DOMAIN_RUNNING ||
             status.generation != 3 || status.pid != test->fallback_pid ||
             status.recovery_profile != DRIVER_RECOVERY_FALLBACK ||
@@ -632,6 +634,16 @@ static __attribute__((cold, noinline, optimize("Os,no-jump-tables"))) void drive
             status.argument != DRIVER_LIVE_RECOVERY_FALLBACK_ARGUMENT ||
             service_lookup(SERVICE_TEST) >= 0)
             driver_live_recovery_fail();
+        if (test->phase == DRIVER_LIVE_RECOVERY_WAIT_FALLBACK_READY) {
+            u32 fallback_slot = PID_SLOT((u32)test->fallback_pid);
+            if (fallback_slot >= MAX_TASKS ||
+                task_pool[fallback_slot].id != test->fallback_pid)
+                driver_live_recovery_fail();
+            if (task_pool[fallback_slot].state != TASK_BLOCKED_EVENT) return;
+            test->hold_deadline = timer_ticks + 2;
+            test->phase = DRIVER_LIVE_RECOVERY_FALLBACK_HOLD;
+            return;
+        }
         if ((i32)(timer_ticks - test->hold_deadline) < 0) return;
         serial64_write("Mich test64: driver live recovery isolation pass\n");
         if (task_pool[1].id != 1 || task_pool[2].id != 2)
