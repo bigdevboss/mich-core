@@ -1872,10 +1872,14 @@ struct kernel_object *net_interface_wait_event(struct kernel_object *object) {
 void net_interface_task_died(int pid) {
     if (!pid) return;
     for (u32 index = 0; index < NET_INTERFACE_MAX; index++) {
-        struct net_interface *interface = net_interface_get(registry[index]);
-        if (interface && interface->owner && interface->owner->pid == pid &&
-            interface->state != NET_INTERFACE_REVOKED)
+        struct kernel_object *object = registry[index];
+        struct net_interface *interface = net_interface_get(object);
+        if (!interface || !interface->owner || interface->owner->pid != pid)
+            continue;
+        if (interface->state != NET_INTERFACE_REVOKED)
             revoke_interface(interface);
+        handle_revoke_object(object);
+        net_interface_remove(object);
     }
 }
 

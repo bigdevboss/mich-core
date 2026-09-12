@@ -55,7 +55,8 @@ int test_network_revoke(const struct test64_env *env) {
     return valid ? 0 : -1;
 }
 
-int test_net_interface(const struct test64_env *env) {
+__attribute__((cold, noinline, optimize("Os"))) int test_net_interface(
+    const struct test64_env *env) {
     u32 free_pages = pmm_free_pages();
     u32 objects = object_active_count();
     u32 interfaces = net_interface_active_count();
@@ -69,7 +70,7 @@ int test_net_interface(const struct test64_env *env) {
     u8 *owner_bytes = (u8 *)&owner;
     for (usize_t index = 0; index < sizeof(owner); index++) owner_bytes[index] = 0;
     owner.id = 77;
-    owner.pid = 12345;
+    owner.pid = env->owner->id;
     owner.state = DRIVER_DOMAIN_RUNNING;
     owner.active = 1;
     struct kernel_object *vnic = vnic_create(16, 8);
@@ -262,17 +263,45 @@ int test_net_interface(const struct test64_env *env) {
     valid = valid &&
         net_interface_driver_complete_tx_batch(
             interface, &owner, batch_ids, 1) == 0;
+    u32 owner_handle = handle_open(env->owner, interface,
+                                   KRIGHT_READ | KRIGHT_WAIT | KRIGHT_TRANSFER);
+    u32 consumer_handle = owner_handle ?
+        handle_duplicate(env->owner, env->target, owner_handle,
+                         KRIGHT_READ | KRIGHT_WAIT) : 0;
+    struct kernel_object *interface_event = net_interface_wait_event(interface);
+    env->target->state = TASK_RUNNING;
+    valid = valid && owner_handle && consumer_handle && interface_event &&
+        !event_reset(interface_event) &&
+        event_wait(interface_event, env->target_slot) == 1 &&
+        env->target->state == TASK_BLOCKED_EVENT;
     u32 old_generation = info->generation;
     u32 interface_id = info->interface_id;
     net_interface_task_died(owner.pid);
-    valid = valid && info->state == NET_INTERFACE_REVOKED &&
+    owner.pid = env->target->id;
+    struct net_interface *replacement = net_interface_get(duplicate);
+    valid = valid && info->state == NET_INTERFACE_REMOVED &&
         info->generation != old_generation &&
         !net_interface_lookup(interface_id, old_generation) &&
         !route_count(&routes) && ring_resource_get(info->rx_ring)->revoked &&
         ring_resource_get(info->tx_ring)->revoked &&
         !packet_pool_free_count(info->pool) &&
-        !net_interface_remove(interface);
+        !handle_get(env->owner, owner_handle, KRIGHT_READ,
+                    KOBJECT_NET_INTERFACE) &&
+        !handle_get(env->target, consumer_handle, KRIGHT_READ,
+                    KOBJECT_NET_INTERFACE) &&
+        env->target->state == TASK_RUNNING && *env->target_result == 0 &&
+        net_interface_remove(interface) < 0 &&
+        !net_interface_register(duplicate) && replacement &&
+        replacement->interface_id != interface_id &&
+        replacement->generation == 1 &&
+        replacement->state == NET_INTERFACE_DOWN &&
+        net_interface_lookup(replacement->interface_id,
+                             replacement->generation) == duplicate &&
+        !net_interface_set_link(duplicate, &owner, 1) &&
+        replacement->state == NET_INTERFACE_UP;
     object_release(interface);
+    if (duplicate && duplicate->active && replacement && replacement->registered)
+        valid = valid && !net_interface_remove(duplicate);
     object_release(duplicate);
     object_release(vnic);
     object_release(duplicate_vnic);

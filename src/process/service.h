@@ -6,6 +6,7 @@
 #define SERVICE_PCI  3
 #define SERVICE_FS   4
 #define SERVICE_INIT 5
+#define SERVICE_TEST 15
 #define SERVICE_MAX  16
 
 void service_init(void);

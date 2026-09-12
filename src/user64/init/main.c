@@ -143,19 +143,22 @@ int main(u64 role) {
             bootstrap.abi_version != MICH_DRIVER_ABI_VERSION ||
             bootstrap.size != sizeof(bootstrap) ||
             bootstrap.pid != (unsigned int)pid || bootstrap.image_id != 0 ||
-            bootstrap.resource_count != 2)
+            bootstrap.resource_count != 2 ||
+            bootstrap.resources[1].kind != MICH_DRIVER_RESOURCE_BRIDGE ||
+            !bootstrap.resources[1].handle)
             stop();
         if (role == 21) {
             if (!bootstrap.generation || bootstrap.generation > 2 ||
-                mich_cap_get() != MICH_CAP_SERVICE_REGISTER)
+                mich_cap_get() != MICH_CAP_SERVICE_REGISTER ||
+                mich_service_register(MICH_SERVICE_TEST) != 0)
                 stop();
             mich_write("Mich test64: driver live primary bootstrap pass\n");
+            if (mich_bridge_wait(bootstrap.resources[1].handle) != 0) stop();
         } else {
             if (bootstrap.generation != 3 || mich_cap_get() != 0)
                 stop();
             mich_write("Mich test64: driver live fallback bootstrap pass\n");
-            struct mich_message message;
-            mich_recv(&message);
+            mich_bridge_wait(bootstrap.resources[1].handle);
             stop();
         }
         __asm__ volatile("ud2");
