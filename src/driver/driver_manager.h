@@ -11,8 +11,10 @@
 
 struct driver_manager_recovery_config {
     struct driver_recovery_profile fallback;
+    struct driver_recovery_selector fallback_selector;
     struct driver_crash_circuit_policy crash_policy;
     u32 fallback_enabled;
+    u32 fallback_selector_enabled;
     u32 fallback_triggers;
     u32 crash_policy_enabled;
 };
@@ -27,6 +29,8 @@ int driver_manager_unregister(int manifest_id);
 const struct driver_user_manifest *driver_manager_manifest(int manifest_id);
 int driver_manager_set_recovery_fallback(
     int manifest_id, const struct driver_recovery_profile *profile);
+int driver_manager_set_recovery_fallback_selector(
+    int manifest_id, const struct driver_recovery_selector *selector);
 int driver_manager_set_recovery_fallback_triggers(int manifest_id,
                                                   u32 triggers);
 int driver_manager_set_crash_circuit_policy(

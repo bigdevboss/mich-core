@@ -3,16 +3,17 @@ org 0x7E00
 
 %define BD_MAGIC   0x58424442
 %define BLOB_LBA   32
-%define BLOB_LOAD  0x10000
-; Keep boot metadata above the 872-sector blob window ending at 0x7D000.
-%define BDINFO     0x80000
-%define BDSEG      0x8000
-%define BMODS      0x80400
-%define BSTRS      0x80480
+%define BLOB_LOAD  0xA000
+; The 1072-sector blob ends at 0x90000; metadata and the stage-2 stack
+; stay above it until the kernel installs its own stack.
+%define BDINFO     0x90000
+%define BDSEG      0x9000
+%define BMODS      0x90400
+%define BSTRS      0x90480
 %define VBEINFO    0x6000
 %define MODEINFO   0x6400
 %define MAX_MMAP   32
-%define BOOT_BLOCKS 904
+%define BOOT_BLOCKS 1104
 %define BLOB_MAXSEC (BOOT_BLOCKS - BLOB_LBA)
 %define MAX_MODS   8
 
@@ -114,7 +115,7 @@ after_vbe:
     cmp eax, BLOB_MAXSEC
     ja blob_fail
     mov [blob_rem], eax
-    mov word [curseg], 0x1000
+    mov word [curseg], 0x0A00
     mov dword [curlba], BLOB_LBA
 blob_loop:
     mov eax, [blob_rem]
@@ -263,7 +264,7 @@ pm32:
     mov ds, ax
     mov es, ax
     mov ss, ax
-    mov esp, 0x90000
+    mov esp, 0x9F000
     lidt [idtr]
     mov esi, msg_pm
     call sputs32
@@ -504,7 +505,7 @@ long64:
     mov ds, ax
     mov es, ax
     mov ss, ax
-    mov rsp, 0x90000
+    mov rsp, 0x9F000
     mov edi, BD_MAGIC
     mov esi, BDINFO
     mov eax, [BLOB_LOAD + 16]

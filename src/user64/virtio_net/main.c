@@ -1054,10 +1054,12 @@ static void itr_drain(struct virtio_net_capsule *capsule) {
     report_itr(capsule);
 }
 
+#ifndef VIRTIO_NET_SAFE_ARTIFACT
 static void restart_test_poll(struct virtio_net_capsule *capsule) {
     if (!capsule->restart_test_enabled || capsule->restart_test_complete)
         return;
-    int circuit_fault = capsule->circuit_test_enabled &&
+    int circuit_fault = (capsule->circuit_test_enabled ||
+                         capsule->recovery_test_enabled) &&
         capsule->restart_count == 1;
     if (!circuit_fault && !probes_external_complete(capsule)) return;
     if (!capsule->restart_count)
@@ -1069,6 +1071,7 @@ static void restart_test_poll(struct virtio_net_capsule *capsule) {
     capsule->restart_test_complete = 1;
     mich_write("Mich virtio-net: post-restart network baseline pass\n");
 }
+#endif
 
 static int firmware_probe(void) {
     struct mich_firmware_open_request request;
@@ -1113,14 +1116,25 @@ int main(unsigned long long argument) {
         bytes[index] = 0;
     if ((unsigned int)argument != 0x564E4554u || bootstrap(&capsule)) return 1;
     capsule.external_probe_enabled = (unsigned int)(argument >> 32) & 1u;
+#ifndef VIRTIO_NET_SAFE_ARTIFACT
     capsule.restart_test_enabled = (unsigned int)(argument >> 33) & 1u;
     capsule.circuit_test_enabled = (unsigned int)(argument >> 34) & 1u;
+    capsule.recovery_test_enabled = (unsigned int)(argument >> 35) & 1u;
     if ((capsule.circuit_test_enabled && !capsule.restart_test_enabled) ||
+        (capsule.recovery_test_enabled &&
+         (!capsule.restart_test_enabled || capsule.circuit_test_enabled)) ||
         (capsule.restart_test_enabled && capsule.restart_count > 1))
         return 1;
+#else
+    if (argument >> 33) return 1;
+#endif
     mich_write("Mich virtio-net: bootstrap pass\n");
+#ifndef VIRTIO_NET_SAFE_ARTIFACT
     if (capsule.restart_test_enabled && capsule.restart_count == 1)
         mich_write("Mich virtio-net: supervisor restart pass\n");
+#else
+    mich_write("Mich virtio-net: recovery artifact selected\n");
+#endif
     if (firmware_probe()) return 2;
     mich_write("Mich virtio-net: firmware allowlist pass\n");
     mich_write("Mich virtio-net: bounded firmware read pass\n");
@@ -1144,10 +1158,13 @@ int main(unsigned long long argument) {
     mich_write("Mich virtio-net: MSI-X queue vectors pass\n");
     if (setup_interface(&capsule)) return 6;
     mich_write("Mich virtio-net: network interface registered\n");
+#ifndef VIRTIO_NET_SAFE_ARTIFACT
     if (capsule.restart_test_enabled && capsule.restart_count == 1)
         mich_write("Mich virtio-net: fresh eth0 re-registration pass\n");
-    if (capsule.circuit_test_enabled && capsule.restart_count == 1)
+    if ((capsule.circuit_test_enabled || capsule.recovery_test_enabled) &&
+        capsule.restart_count == 1)
         restart_test_poll(&capsule);
+#endif
     if (post_rx(&capsule)) return 7;
     mich_write("Mich virtio-net: RX buffers published\n");
     if (transition(&capsule, VIRTIO_NET_STATE_QUEUES,
@@ -1197,7 +1214,9 @@ int main(unsigned long long argument) {
         process_rx_batch(&capsule);
         process_tx_batch(&capsule);
         if (probes_poll(&capsule) < 0) return 13;
+#ifndef VIRTIO_NET_SAFE_ARTIFACT
         restart_test_poll(&capsule);
+#endif
         process_tx_batch(&capsule);
         if (capsule.restart_requested) return 10;
         int ready = mich_wait_many(&waits);

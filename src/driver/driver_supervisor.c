@@ -35,10 +35,18 @@ static void crash_state_clear(struct driver_domain *domain) {
     domain->last_decision = DRIVER_RECOVERY_DECISION_NONE;
 }
 
+static void recovery_selector_clear(struct driver_domain *domain) {
+    u8 *bytes = (u8 *)&domain->fallback_selector;
+    for (usize_t index = 0; index < sizeof(domain->fallback_selector); index++)
+        bytes[index] = 0;
+    domain->fallback_selector_enabled = 0;
+}
+
 static void recovery_fallback_clear(struct driver_domain *domain) {
     domain->fallback.image_id = 0;
     domain->fallback.capabilities = 0;
     domain->fallback.argument = 0;
+    recovery_selector_clear(domain);
     domain->recovery_profile = DRIVER_RECOVERY_PRIMARY;
     domain->fallback_enabled = 0;
     domain->fallback_used = 0;
@@ -54,10 +62,31 @@ static int recovery_profile_valid(const struct driver_domain *domain,
             profile->argument != domain->argument);
 }
 
+static int recovery_selector_matches(
+    const struct driver_domain *domain,
+    const struct driver_crash_passport *passport) {
+    const struct pci_resource *pci = pci_resource_get(domain->device);
+    const struct driver_recovery_fingerprint *fingerprint =
+        &domain->fallback_selector.fingerprint;
+    return pci && passport &&
+        pci->vendor_id == domain->fallback_selector.vendor_id &&
+        pci->device_id == domain->fallback_selector.device_id &&
+        passport->kind == fingerprint->kind &&
+        passport->code == fingerprint->code &&
+        passport->vector == fingerprint->vector &&
+        passport->error == fingerprint->error &&
+        passport->rip == fingerprint->rip &&
+        passport->address == fingerprint->address;
+}
+
 static int recovery_fallback_activate(struct driver_domain *domain, u32 ticks,
-                                      u32 trigger) {
+                                      u32 trigger,
+                                      const struct driver_crash_passport *passport) {
     if (!domain->fallback_enabled || domain->fallback_used ||
-        !(domain->fallback_triggers & trigger))
+        !(domain->fallback_triggers & trigger) ||
+        (domain->fallback_selector_enabled &&
+         (trigger != DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT ||
+          !recovery_selector_matches(domain, passport))))
         return 0;
     domain->image_id = domain->fallback.image_id;
     domain->capabilities = domain->fallback.capabilities;
@@ -586,10 +615,35 @@ int driver_domain_set_recovery_fallback(
         domain->generation || !recovery_profile_valid(domain, profile))
         return -1;
     domain->fallback = *profile;
+    recovery_selector_clear(domain);
     domain->recovery_profile = DRIVER_RECOVERY_PRIMARY;
     domain->fallback_enabled = 1;
     domain->fallback_used = 0;
     domain->fallback_triggers = DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT;
+    return 0;
+}
+
+int driver_recovery_selector_validate(
+    const struct driver_recovery_selector *selector) {
+    if (!selector || selector->vendor_id == 0xFFFF ||
+        selector->device_id == 0xFFFF ||
+        selector->fingerprint.kind != DRIVER_CRASH_USER_EXCEPTION ||
+        !selector->fingerprint.code || selector->fingerprint.vector > 31 ||
+        !selector->fingerprint.rip)
+        return -1;
+    return 0;
+}
+
+int driver_domain_set_recovery_fallback_selector(
+    struct driver_domain *domain,
+    const struct driver_recovery_selector *selector) {
+    if (!domain || !domain->active || domain->state != DRIVER_DOMAIN_STOPPED ||
+        domain->generation || !domain->fallback_enabled ||
+        !(domain->fallback_triggers & DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT) ||
+        driver_recovery_selector_validate(selector))
+        return -1;
+    domain->fallback_selector = *selector;
+    domain->fallback_selector_enabled = 1;
     return 0;
 }
 
@@ -664,6 +718,8 @@ int driver_domain_status(const struct driver_domain *domain,
     status->argument = domain->argument;
     status->recovery_profile = domain->recovery_profile;
     status->fallback_enabled = domain->fallback_enabled;
+    status->fallback_selector_enabled = domain->fallback_selector_enabled;
+    status->fallback_selector = domain->fallback_selector;
     status->fallback_used = domain->fallback_used;
     status->fallback_triggers = domain->fallback_triggers;
     status->restart_count = domain->restart_count;
@@ -859,7 +915,8 @@ void driver_supervisor_task_died(int pid, int code, u32 ticks) {
         }
         if (circuit_open) {
             if (recovery_fallback_activate(
-                    d, ticks, DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT))
+                    d, ticks, DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT,
+                    &passport))
                 continue;
             d->terminal_reason = DRIVER_TERMINAL_CRASH_CIRCUIT;
             d->last_decision = DRIVER_RECOVERY_DECISION_CRASH_CIRCUIT;
@@ -875,7 +932,8 @@ void driver_supervisor_task_died(int pid, int code, u32 ticks) {
         }
         if (d->restart_count >= d->max_restarts) {
             if (recovery_fallback_activate(
-                    d, ticks, DRIVER_RECOVERY_TRIGGER_RESTART_LIMIT))
+                    d, ticks, DRIVER_RECOVERY_TRIGGER_RESTART_LIMIT,
+                    &passport))
                 continue;
             d->terminal_reason = DRIVER_TERMINAL_RESTART_LIMIT;
             d->last_decision = DRIVER_RECOVERY_DECISION_RESTART_LIMIT;

@@ -68,6 +68,7 @@ DISK64_UNIT = $(BIN64)/disk-unit.img
 DISK64_HARDWARE = $(BIN64)/disk-hardware.img
 DISK64_HARDWARE_RESTART = $(BIN64)/disk-hardware-restart.img
 DISK64_HARDWARE_CIRCUIT = $(BIN64)/disk-hardware-circuit.img
+DISK64_HARDWARE_RECOVERY = $(BIN64)/disk-hardware-recovery.img
 DISK64_PANIC = $(BIN64)/disk-panic.img
 UEFI64_OBJ = $(OBJ64)/uefi.o
 UEFI64_EFI = $(BIN64)/BOOTX64.EFI
@@ -78,8 +79,10 @@ USER64_OBJ_DIR = $(USER64_DIR)/obj
 INIT64_ELF = $(USER64_DIR)/init64.elf
 INIT64_OBJS = $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(USER64_OBJ_DIR)/init.o
 VIRTIO_NET64_OBJ = $(USER64_OBJ_DIR)/virtio_net.o
+VIRTIO_NET_SAFE64_OBJ = $(USER64_OBJ_DIR)/virtio_net_safe.o
 VIRTIO_NET64_PROBES_OBJ = $(USER64_OBJ_DIR)/virtio_net_probes.o
 VIRTIO_NET64_ELF = $(USER64_DIR)/virtio-net.elf
+VIRTIO_NET_SAFE64_ELF = $(USER64_DIR)/virtio-net-safe.elf
 OBJS64 = $(OBJ64)/boot.o $(OBJ64)/kernel.o $(OBJ64)/task_core.o $(OBJ64)/scheduler_core.o $(OBJ64)/service_core.o $(OBJ64)/object_core.o $(OBJ64)/resource_core.o $(OBJ64)/iommu_core.o $(OBJ64)/driver_core.o $(OBJ64)/driver_supervisor_core.o $(OBJ64)/driver_manager_core.o $(OBJ64)/ring_core.o $(OBJ64)/completion_core.o $(OBJ64)/timer_object_core.o $(OBJ64)/net_buffer_core.o $(OBJ64)/vnic_core.o $(OBJ64)/vnic_benchmark.o $(OBJ64)/net_interface_core.o $(OBJ64)/ethernet_core.o $(OBJ64)/arp_core.o $(OBJ64)/ipv4_core.o $(OBJ64)/ipv6_core.o $(OBJ64)/icmp_core.o $(OBJ64)/icmpv6_core.o $(OBJ64)/loopback_core.o $(OBJ64)/udp_core.o $(OBJ64)/udpv6_core.o $(OBJ64)/tcp_core.o $(OBJ64)/tcp_cc_core.o $(OBJ64)/pmtu_core.o $(OBJ64)/route_core.o $(OBJ64)/socket_core.o $(OBJ64)/vfs_core.o $(OBJ64)/blockfs_core.o $(OBJ64)/block_core.o $(OBJ64)/cache_core.o $(OBJ64)/firmware_core.o $(OBJ64)/event_core.o $(OBJ64)/endpoint_core.o $(OBJ64)/bridge_core.o $(OBJ64)/pmm_core.o $(OBJ64)/mem_core.o $(OBJ64)/ipc64.o $(OBJ64)/acpi64.o $(OBJ64)/vtd64.o $(OBJ64)/amd_iommu64.o $(OBJ64)/pci64.o $(OBJ64)/virtio_pci.o $(OBJ64)/virtio_blk.o $(OBJ64)/apic64.o $(OBJ64)/ioapic64.o $(OBJ64)/smp64.o $(OBJ64)/smp_tramp.o $(OBJ64)/vector64.o $(OBJ64)/msi64.o $(OBJ64)/msix64.o $(OBJ64)/panic64.o $(OBJ64)/gdt_asm.o $(OBJ64)/gdt.o $(OBJ64)/exceptions.o $(OBJ64)/interrupt.o $(OBJ64)/idt.o $(OBJ64)/vm.o $(OBJ64)/elf64.o $(OBJ64)/platform.o $(OBJ64)/serial.o $(OBJ64)/syscall_dispatch.o $(OBJ64)/syscall.o
 TEST64_OBJS = $(OBJ64)/test_runner64.o $(OBJ64)/test_object64.o $(OBJ64)/test_resource64.o $(OBJ64)/test_async64.o $(OBJ64)/test_fpu64.o $(OBJ64)/test_smp64.o $(OBJ64)/test_driver64.o $(OBJ64)/test_hardware64.o $(OBJ64)/test_network_runner64.o $(OBJ64)/test_net_support64.o $(OBJ64)/test_net_foundation64.o $(OBJ64)/test_ipv4_64.o $(OBJ64)/test_ipv6_64.o $(OBJ64)/test_tcp64.o $(OBJ64)/test_udp_socket64.o $(OBJ64)/test_net_interface64.o $(OBJ64)/test_vfs64.o $(OBJ64)/test_block64.o $(OBJ64)/test_cache64.o $(OBJ64)/test_blockfs64.o $(OBJ64)/test_virtio_blk64.o $(OBJ64)/test_net_bench64.o $(OBJ64)/test_report64.o
 OBJS64_TEST = $(OBJ64)/boot.o $(OBJ64)/kernel_test.o $(filter-out $(OBJ64)/boot.o $(OBJ64)/kernel.o,$(OBJS64)) $(TEST64_OBJS)
@@ -410,11 +413,17 @@ $(INIT64_ELF): $(INIT64_OBJS) src/user64/linker.ld | $(USER64_DIR)
 $(VIRTIO_NET64_OBJ): src/user64/virtio_net/main.c src/user64/virtio_net/capsule.h src/user64/include/mich/syscall.h src/user64/include/mich/event.h src/user64/include/mich/driver.h src/user64/include/mich/virtio.h src/user64/include/mich/net.h src/user64/include/mich/net_interface.h src/user64/include/mich/timer.h src/user64/include/mich/wait.h src/user64/include/mich/vfs.h src/user64/include/mich/firmware.h | $(USER64_OBJ_DIR)
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
+$(VIRTIO_NET_SAFE64_OBJ): src/user64/virtio_net/main.c src/user64/virtio_net/capsule.h src/user64/include/mich/syscall.h src/user64/include/mich/event.h src/user64/include/mich/driver.h src/user64/include/mich/virtio.h src/user64/include/mich/net.h src/user64/include/mich/net_interface.h src/user64/include/mich/timer.h src/user64/include/mich/wait.h src/user64/include/mich/vfs.h src/user64/include/mich/firmware.h | $(USER64_OBJ_DIR)
+	$(CC) $(USER64_CFLAGS) -DVIRTIO_NET_SAFE_ARTIFACT -Werror -c $< -o $@
+
 $(VIRTIO_NET64_PROBES_OBJ): src/user64/virtio_net/probes.c src/user64/virtio_net/capsule.h src/user64/include/mich/syscall.h src/user64/include/mich/net_interface.h src/user64/include/mich/socket.h | $(USER64_OBJ_DIR)
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
 $(VIRTIO_NET64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_NET64_OBJ) $(VIRTIO_NET64_PROBES_OBJ) src/user64/linker.ld | $(USER64_DIR)
 	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_NET64_OBJ) $(VIRTIO_NET64_PROBES_OBJ)
+
+$(VIRTIO_NET_SAFE64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_NET_SAFE64_OBJ) $(VIRTIO_NET64_PROBES_OBJ) src/user64/linker.ld | $(USER64_DIR)
+	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_NET_SAFE64_OBJ) $(VIRTIO_NET64_PROBES_OBJ)
 
 $(KERNEL64_ELF): $(OBJS64) $(ARCH64_BOOT)/linker.ld | $(BIN64)
 	$(LD) $(LDFLAGS64) -o $@ $(OBJS64)
@@ -468,6 +477,9 @@ $(DISK64_HARDWARE_RESTART): mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLA
 $(DISK64_HARDWARE_CIRCUIT): mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(BDB1_64) $(BDB2_64) $(INIT64_ELF) $(VIRTIO_NET64_ELF)
 	$(PYTHON) mkboot64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) $@ init64:0x680000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF)
 
+$(DISK64_HARDWARE_RECOVERY): mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(BDB1_64) $(BDB2_64) $(INIT64_ELF) $(VIRTIO_NET64_ELF) $(VIRTIO_NET_SAFE64_ELF)
+	$(PYTHON) mkboot64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) $@ init64:0x640000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) virtio-net-safe:0=$(VIRTIO_NET_SAFE64_ELF)
+
 $(DISK64_PANIC): mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(BDB1_64) $(BDB2_64) $(INIT64_ELF)
 	$(PYTHON) mkboot64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) $@ init64:0x800000C9=$(INIT64_ELF)
 
@@ -510,6 +522,9 @@ test64-msi-restart: $(DISK64_HARDWARE_RESTART)
 test64-msi-circuit: $(DISK64_HARDWARE_CIRCUIT)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_HARDWARE_CIRCUIT) 256M msi-circuit
 
+test64-msi-recovery: $(DISK64_HARDWARE_RECOVERY)
+	sh ./scripts/qemu-smoke64.sh $(DISK64_HARDWARE_RECOVERY) 256M msi-recovery
+
 test64-pcie: $(DISK64_TEST)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_TEST) 256M pcie
 
@@ -542,10 +557,10 @@ release-check:
 
 DEPFILES = $(OBJS:.o=.d) $(OBJS64:.o=.d) $(OBJS64_TEST:.o=.d) $(PORTABLE64_OBJS:.o=.d) \
            $(INIT_OBJS:.o=.d) $(INIT64_OBJS:.o=.d) $(VIRTIO_NET64_OBJ:.o=.d) \
-           $(VIRTIO_NET64_PROBES_OBJ:.o=.d) $(UEFI64_OBJ:.o=.d)
+           $(VIRTIO_NET_SAFE64_OBJ:.o=.d) $(VIRTIO_NET64_PROBES_OBJ:.o=.d) $(UEFI64_OBJ:.o=.d)
 -include $(DEPFILES)
 
 clean:
 	rm -rf $(BIN_DIR)
 
-.PHONY: all run test run64 test64 test64-uefi test64-prod test64-unit test64-highmem test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-pcie test64-panic release-check clean
+.PHONY: all run test run64 test64 test64-uefi test64-prod test64-unit test64-highmem test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-pcie test64-panic release-check clean

@@ -4,8 +4,10 @@
 struct manager_manifest {
     struct driver_user_manifest manifest;
     struct driver_recovery_profile fallback;
+    struct driver_recovery_selector fallback_selector;
     struct driver_crash_circuit_policy crash_policy;
     u32 fallback_enabled;
+    u32 fallback_selector_enabled;
     u32 fallback_triggers;
     u32 crash_policy_enabled;
     u32 active;
@@ -39,16 +41,29 @@ static int fallback_valid(const struct driver_user_manifest *manifest,
             profile->argument != manifest->argument);
 }
 
+static void recovery_selector_clear(struct manager_manifest *entry) {
+    u8 *bytes = (u8 *)&entry->fallback_selector;
+    for (usize_t index = 0; index < sizeof(entry->fallback_selector); index++)
+        bytes[index] = 0;
+    entry->fallback_selector_enabled = 0;
+}
+
 static int recovery_config_valid(
     const struct driver_user_manifest *manifest,
     const struct driver_manager_recovery_config *config) {
     if (!config) return 0;
-    if (config->fallback_enabled > 1 || config->crash_policy_enabled > 1 ||
-        (!config->fallback_enabled && config->fallback_triggers) ||
+    if (config->fallback_enabled > 1 ||
+        config->fallback_selector_enabled > 1 ||
+        config->crash_policy_enabled > 1 ||
+        (!config->fallback_enabled &&
+         (config->fallback_triggers || config->fallback_selector_enabled)) ||
         (config->fallback_enabled &&
          (!fallback_valid(manifest, &config->fallback) ||
           driver_recovery_fallback_triggers_validate(
               config->fallback_triggers))) ||
+        (config->fallback_selector_enabled &&
+         (!(config->fallback_triggers & DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT) ||
+          driver_recovery_selector_validate(&config->fallback_selector))) ||
         (config->crash_policy_enabled &&
          driver_crash_circuit_policy_validate(&config->crash_policy)))
         return -1;
@@ -212,6 +227,10 @@ int driver_manager_register_recovery(
             manifests[index].fallback = config->fallback;
             manifests[index].fallback_enabled = 1;
             manifests[index].fallback_triggers = config->fallback_triggers;
+            if (config->fallback_selector_enabled) {
+                manifests[index].fallback_selector = config->fallback_selector;
+                manifests[index].fallback_selector_enabled = 1;
+            }
         }
         if (config && config->crash_policy_enabled) {
             manifests[index].crash_policy = config->crash_policy;
@@ -262,8 +281,25 @@ int driver_manager_set_recovery_fallback(
         if (bindings[index].active && bindings[index].manifest_slot == slot)
             return -1;
     entry->fallback = *profile;
+    recovery_selector_clear(entry);
     entry->fallback_enabled = 1;
     entry->fallback_triggers = DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT;
+    return 0;
+}
+
+int driver_manager_set_recovery_fallback_selector(
+    int manifest_id, const struct driver_recovery_selector *selector) {
+    struct manager_manifest *entry = manifest_at(manifest_id);
+    if (!entry || !entry->fallback_enabled ||
+        !(entry->fallback_triggers & DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT) ||
+        driver_recovery_selector_validate(selector))
+        return -1;
+    u32 slot = (u32)manifest_id - 1;
+    for (u32 index = 0; index < DRIVER_MANAGER_BINDING_MAX; index++)
+        if (bindings[index].active && bindings[index].manifest_slot == slot)
+            return -1;
+    entry->fallback_selector = *selector;
+    entry->fallback_selector_enabled = 1;
     return 0;
 }
 
@@ -277,6 +313,9 @@ int driver_manager_set_recovery_fallback_triggers(int manifest_id,
     for (u32 index = 0; index < DRIVER_MANAGER_BINDING_MAX; index++)
         if (bindings[index].active && bindings[index].manifest_slot == slot)
             return -1;
+    if (entry->fallback_selector_enabled &&
+        !(triggers & DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT))
+        return -1;
     entry->fallback_triggers = triggers;
     return 0;
 }
@@ -352,7 +391,10 @@ struct driver_domain *driver_manager_start_device(struct kernel_object *device) 
             (entry->fallback_enabled &&
              (driver_domain_set_recovery_fallback(domain, &entry->fallback) ||
               driver_domain_set_recovery_fallback_triggers(
-                  domain, entry->fallback_triggers))) ||
+                  domain, entry->fallback_triggers) ||
+              (entry->fallback_selector_enabled &&
+               driver_domain_set_recovery_fallback_selector(
+                   domain, &entry->fallback_selector)))) ||
             (entry->crash_policy_enabled &&
              driver_domain_set_crash_circuit_policy(domain,
                                                     &entry->crash_policy)) ||

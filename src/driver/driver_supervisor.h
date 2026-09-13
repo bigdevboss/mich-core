@@ -81,6 +81,21 @@ struct driver_recovery_profile {
     u64 argument;
 };
 
+struct driver_recovery_fingerprint {
+    u32 kind;
+    u32 code;
+    u32 vector;
+    u64 error;
+    u64 rip;
+    u64 address;
+};
+
+struct driver_recovery_selector {
+    u16 vendor_id;
+    u16 device_id;
+    struct driver_recovery_fingerprint fingerprint;
+};
+
 struct driver_crash_circuit_policy {
     u32 repeat_limit;
     u32 repeat_window_ticks;
@@ -134,8 +149,10 @@ struct driver_domain {
     u32 reset_policy;
     u64 argument;
     struct driver_recovery_profile fallback;
+    struct driver_recovery_selector fallback_selector;
     u32 recovery_profile;
     u32 fallback_enabled;
+    u32 fallback_selector_enabled;
     u32 fallback_used;
     u32 fallback_triggers;
     u32 terminal_reason;
@@ -155,6 +172,8 @@ struct driver_domain_status {
     u64 argument;
     u32 recovery_profile;
     u32 fallback_enabled;
+    u32 fallback_selector_enabled;
+    struct driver_recovery_selector fallback_selector;
     u32 fallback_used;
     u32 fallback_triggers;
     u32 restart_count;
@@ -206,6 +225,11 @@ int driver_domain_add_resource_kind(struct driver_domain *domain,
 int driver_domain_add_bridge(struct driver_domain *domain, u32 rights);
 int driver_domain_set_recovery_fallback(
     struct driver_domain *domain, const struct driver_recovery_profile *profile);
+int driver_recovery_selector_validate(
+    const struct driver_recovery_selector *selector);
+int driver_domain_set_recovery_fallback_selector(
+    struct driver_domain *domain,
+    const struct driver_recovery_selector *selector);
 int driver_recovery_fallback_triggers_validate(u32 triggers);
 int driver_domain_set_recovery_fallback_triggers(struct driver_domain *domain,
                                                   u32 triggers);
