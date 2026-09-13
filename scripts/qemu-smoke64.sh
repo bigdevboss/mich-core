@@ -6,11 +6,15 @@ profile="${3:-default}"
 qemu_timeout=45
 if [ "$profile" = "smp" ] || [ "$profile" = "iommu" ]; then qemu_timeout=90; fi
 if [ "$profile" = "msi" ]; then qemu_timeout=240; fi
+if [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ]; then
+    qemu_timeout=360
+fi
 expanded_image=""
 passive_result=""
 passive_pid=""
+passive_expected=0
 case "$profile" in
-    msi)
+    msi|msi-restart|msi-circuit)
         set -- -netdev user,id=michnet,guestfwd=tcp:10.0.2.4:8080-cmd:/bin/cat,hostfwd=tcp:127.0.0.1:10080-10.0.2.15:8082 -device virtio-net-pci,netdev=michnet
         ;;
     pcie)
@@ -45,27 +49,29 @@ case "$profile" in
         ;;
 esac
 log="$(mktemp)"
-if [ "$profile" = "msi" ]; then
+if [ "$profile" = "msi" ] || [ "$profile" = "msi-restart" ] ||
+   [ "$profile" = "msi-circuit" ]; then
     passive_result="$(mktemp)"
-    python3 - "$passive_result" "$qemu_timeout" "$log" <<'PY' &
+    if [ "$profile" = "msi-restart" ]; then passive_expected=2; else passive_expected=1; fi
+    python3 - "$passive_result" "$qemu_timeout" "$log" "$passive_expected" <<'PY' &
 import socket
 import sys
 import time
 
-result, timeout, log = sys.argv[1:]
+result, timeout, log, expected = sys.argv[1:]
 deadline = time.monotonic() + int(timeout) - 5
 ready_marker = "Mich virtio-net: passive listener ready"
-listener_ready = False
+expected = int(expected)
+completed = 0
 while time.monotonic() < deadline:
-    if not listener_ready:
-        try:
-            with open(log, "r", encoding="ascii", errors="replace") as input:
-                listener_ready = ready_marker in input.read()
-        except OSError:
-            pass
-        if not listener_ready:
-            time.sleep(0.1)
-            continue
+    try:
+        with open(log, "r", encoding="ascii", errors="replace") as input:
+            ready = input.read().count(ready_marker)
+    except OSError:
+        ready = 0
+    if ready <= completed:
+        time.sleep(0.1)
+        continue
     connection = None
     try:
         connection = socket.create_connection(("127.0.0.1", 10080), 0.2)
@@ -78,9 +84,11 @@ while time.monotonic() < deadline:
                 break
             data += chunk
         if data == b"PASSIVE":
-            with open(result, "w", encoding="ascii") as output:
-                output.write("PASS")
-            break
+            completed += 1
+            if completed == expected:
+                with open(result, "w", encoding="ascii") as output:
+                    output.write("PASS")
+                break
     except OSError:
         pass
     finally:
@@ -475,13 +483,15 @@ if [ "$profile" = "smp" ]; then
         grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
     done
 fi
-if [ "$profile" = "hardware" ] || [ "$profile" = "msi" ]; then
+if [ "$profile" = "hardware" ] || [ "$profile" = "msi" ] ||
+   [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ]; then
     grep -Fq "Mich x86_64: hardware destructive test profile" "$log" || {
         cat "$log"
         exit 1
     }
 fi
-if [ "$profile" = "msi" ]; then
+if [ "$profile" = "msi" ] || [ "$profile" = "msi-restart" ] ||
+   [ "$profile" = "msi-circuit" ]; then
     if [ -n "$passive_pid" ]; then wait "$passive_pid" || true; fi
     grep -Fq "PASS" "$passive_result" || { cat "$log"; exit 1; }
     for marker in \
@@ -550,6 +560,140 @@ if [ "$profile" = "msi" ]; then
         "Mich virtio-net: userspace capsule running"
     do
         grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+    done
+fi
+if [ "$profile" = "msi-restart" ]; then
+    for marker in \
+        "Mich virtio-net: pre-restart network baseline pass" \
+        "Mich virtio-net: restart fault injected" \
+        "Mich virtio-net: supervisor restart pass" \
+        "Mich virtio-net: fresh eth0 re-registration pass" \
+        "Mich virtio-net: post-restart network baseline pass"
+    do
+        [ "$(grep -Fc "$marker" "$log")" -eq 1 ] || {
+            cat "$log"
+            exit 1
+        }
+    done
+    for marker in \
+        "Mich virtio-net: bootstrap pass" \
+        "Mich virtio-net: network interface registered" \
+        "Mich virtio-net: DHCP ACK receive pass" \
+        "Mich virtio-net: DHCP IPv4 lease applied" \
+        "Mich virtio-net: external ping reply pass" \
+        "Mich virtio-net: external UDP reply pass" \
+        "Mich virtio-net: external socket UDP reply pass" \
+        "Mich virtio-net: external TCP handshake and echo pass" \
+        "Mich virtio-net: external passive accept pass" \
+        "Mich virtio-net: external passive echo pass" \
+        "Mich virtio-net: TCP stream soak pass" \
+        "Mich virtio-net: external TCP FIN lifecycle pass" \
+        "Mich virtio-net: external IPv6 DAD pass" \
+        "Mich virtio-net: external IPv6 RA and SLAAC pass" \
+        "Mich virtio-net: external IPv6 ping reply pass" \
+        "Mich virtio-net: external UDPv6 ICMP error pass" \
+        "Mich virtio-net: userspace capsule running"
+    do
+        [ "$(grep -Fc "$marker" "$log")" -eq 2 ] || {
+            cat "$log"
+            exit 1
+        }
+    done
+    baseline_line="$(grep -Fn "Mich virtio-net: pre-restart network baseline pass" "$log" | sed -n '1s/:.*//p')"
+    fault_line="$(grep -Fn "Mich virtio-net: restart fault injected" "$log" | sed -n '1s/:.*//p')"
+    exception_line="$(grep -Fn "Mich x86_64: user fault vec=0000000000000006" "$log" | awk -F: -v line="$fault_line" '$1 > line { print $1; exit }')"
+    contained_line="$(grep -Fn "Mich x86_64: user exception contained" "$log" | awk -F: -v line="$fault_line" '$1 > line { print $1; exit }')"
+    restart_line="$(grep -Fn "Mich virtio-net: supervisor restart pass" "$log" | sed -n '1s/:.*//p')"
+    eth0_line="$(grep -Fn "Mich virtio-net: fresh eth0 re-registration pass" "$log" | sed -n '1s/:.*//p')"
+    post_line="$(grep -Fn "Mich virtio-net: post-restart network baseline pass" "$log" | sed -n '1s/:.*//p')"
+    [ -n "$baseline_line" ] && [ -n "$fault_line" ] &&
+    [ -n "$exception_line" ] && [ -n "$contained_line" ] &&
+    [ -n "$restart_line" ] && [ -n "$eth0_line" ] &&
+    [ -n "$post_line" ] && [ "$baseline_line" -lt "$fault_line" ] &&
+    [ "$fault_line" -lt "$exception_line" ] &&
+    [ "$exception_line" -lt "$contained_line" ] &&
+    [ "$contained_line" -lt "$restart_line" ] &&
+    [ "$restart_line" -lt "$eth0_line" ] &&
+    [ "$eth0_line" -lt "$post_line" ] || {
+        cat "$log"
+        exit 1
+    }
+fi
+if [ "$profile" = "msi-circuit" ]; then
+    for marker in \
+        "Mich virtio-net: pre-restart network baseline pass" \
+        "Mich virtio-net: supervisor restart pass" \
+        "Mich virtio-net: fresh eth0 re-registration pass"
+    do
+        [ "$(grep -Fc "$marker" "$log")" -eq 1 ] || {
+            cat "$log"
+            exit 1
+        }
+    done
+    restart_fault="Mich virtio-net: restart fault injected"
+    [ "$(grep -Fc "$restart_fault" "$log")" -eq 2 ] &&
+    [ "$(grep -Fc "Mich virtio-net: bootstrap pass" "$log")" -eq 2 ] &&
+    [ "$(grep -Fc "Mich virtio-net: network interface registered" "$log")" -eq 2 ] &&
+    [ "$(grep -Fc "Mich virtio-net: DRIVER_OK pass" "$log")" -eq 1 ] &&
+    [ "$(grep -Fc "Mich virtio-net: userspace capsule running" "$log")" -eq 1 ] &&
+    [ "$(grep -Fc "Mich virtio-net: post-restart network baseline pass" "$log")" -eq 0 ] || {
+        cat "$log"
+        exit 1
+    }
+    baseline_line="$(grep -Fn "Mich virtio-net: pre-restart network baseline pass" "$log" | sed -n '1s/:.*//p')"
+    first_fault_line="$(grep -Fn "$restart_fault" "$log" | sed -n '1s/:.*//p')"
+    second_fault_line="$(grep -Fn "$restart_fault" "$log" | sed -n '2s/:.*//p')"
+    first_exception_line="$(grep -Fn "Mich x86_64: user fault vec=0000000000000006 rip=" "$log" | awk -F: -v line="$first_fault_line" '$1 > line { print $1; exit }')"
+    first_contained_line="$(grep -Fn "Mich x86_64: user exception contained" "$log" | awk -F: -v line="$first_fault_line" '$1 > line { print $1; exit }')"
+    restart_line="$(grep -Fn "Mich virtio-net: supervisor restart pass" "$log" | sed -n '1s/:.*//p')"
+    eth0_line="$(grep -Fn "Mich virtio-net: fresh eth0 re-registration pass" "$log" | sed -n '1s/:.*//p')"
+    second_exception_line="$(grep -Fn "Mich x86_64: user fault vec=0000000000000006 rip=" "$log" | awk -F: -v line="$second_fault_line" '$1 > line { print $1; exit }')"
+    second_contained_line="$(grep -Fn "Mich x86_64: user exception contained" "$log" | awk -F: -v line="$second_fault_line" '$1 > line { print $1; exit }')"
+    first_rip="$(sed -n "${first_exception_line}p" "$log" | sed -n 's/.* rip=\([^[:space:]]*\).*/\1/p')"
+    second_rip="$(sed -n "${second_exception_line}p" "$log" | sed -n 's/.* rip=\([^[:space:]]*\).*/\1/p')"
+    [ -n "$baseline_line" ] && [ -n "$first_fault_line" ] &&
+    [ -n "$second_fault_line" ] && [ -n "$first_exception_line" ] &&
+    [ -n "$first_contained_line" ] && [ -n "$restart_line" ] &&
+    [ -n "$eth0_line" ] && [ -n "$second_exception_line" ] &&
+    [ -n "$second_contained_line" ] && [ -n "$first_rip" ] &&
+    [ "$first_rip" = "$second_rip" ] &&
+    [ "$baseline_line" -lt "$first_fault_line" ] &&
+    [ "$first_fault_line" -lt "$first_exception_line" ] &&
+    [ "$first_exception_line" -lt "$first_contained_line" ] &&
+    [ "$first_contained_line" -lt "$restart_line" ] &&
+    [ "$restart_line" -lt "$eth0_line" ] &&
+    [ "$eth0_line" -lt "$second_fault_line" ] &&
+    [ "$second_fault_line" -lt "$second_exception_line" ] &&
+    [ "$second_exception_line" -lt "$second_contained_line" ] || {
+        cat "$log"
+        exit 1
+    }
+    for marker in \
+        "Mich virtio-net: DHCP ACK receive pass" \
+        "Mich virtio-net: DHCP IPv4 lease applied" \
+        "Mich virtio-net: external ping reply pass" \
+        "Mich virtio-net: external UDP reply pass" \
+        "Mich virtio-net: external socket UDP reply pass" \
+        "Mich virtio-net: external TCP handshake and echo pass" \
+        "Mich virtio-net: external passive accept pass" \
+        "Mich virtio-net: external passive echo pass" \
+        "Mich virtio-net: TCP stream soak pass" \
+        "Mich virtio-net: external TCP FIN lifecycle pass" \
+        "Mich virtio-net: external IPv6 DAD pass" \
+        "Mich virtio-net: external IPv6 RA and SLAAC pass" \
+        "Mich virtio-net: external IPv6 ping reply pass" \
+        "Mich virtio-net: external UDPv6 ICMP error pass" \
+        "Mich virtio-net: userspace capsule running"
+    do
+        [ "$(grep -Fc "$marker" "$log")" -eq 1 ] || {
+            cat "$log"
+            exit 1
+        }
+        marker_line="$(grep -Fn "$marker" "$log" | sed -n '1s/:.*//p')"
+        [ "$marker_line" -lt "$baseline_line" ] || {
+            cat "$log"
+            exit 1
+        }
     done
 fi
 if [ "$profile" = "pcie" ] || [ "$profile" = "iommu" ] ||

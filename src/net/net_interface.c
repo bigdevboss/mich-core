@@ -718,6 +718,9 @@ static int interface_tcp_handler(
         transmit_from_response(&transmit, &response);
         if (transmit_tcp(interface, &transmit) < 0) return -1;
     }
+    if (response.connection_id &&
+        flush_tcp(interface, response.connection_id) < 0)
+        return -1;
     return 0;
 }
 
@@ -758,6 +761,9 @@ static int interface_tcpv6_handler(
         transmit_from_response(&transmit, &response);
         if (transmit_tcp(interface, &transmit) < 0) return -1;
     }
+    if (response.connection_id &&
+        flush_tcp(interface, response.connection_id) < 0)
+        return -1;
     return 0;
 }
 
