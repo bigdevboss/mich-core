@@ -84,11 +84,14 @@
 #define MSR_LSTAR 0xC0000082u
 #define MSR_FMASK 0xC0000084u
 #define BOOT_MODULE_DRIVER_CIRCUIT_TEST (1u << 27)
+#define BOOT_MODULE_DRIVER_RECOVERY_TEST (1u << 26)
 #define BOOT_MODULE_UNIT_TEST (1u << 28)
 #define BOOT_MODULE_DRIVER_RESTART_TEST (1u << 29)
 #define BOOT_MODULE_HARDWARE_TEST (1u << 30)
 #define BOOT_MODULE_PANIC_TEST (1u << 31)
 #define IOMMU_FAULT_BATCH 8
+/* The primary capsule's sole test ud2; its source location is intentionally fixed. */
+#define VIRTIO_NET_RECOVERY_TEST_RIP 0x100000E3EULL
 
 extern void syscall64_entry(void);
 extern void user64_enter(u64 rip, u64 rsp, u64 argument);
@@ -327,9 +330,10 @@ static int supervisor64_resource(
 }
 
 static int manager64_register_virtio_net(int external_probe, int restart_test,
-                                         int circuit_test) {
-    if (circuit_test && !restart_test) return -1;
-    if (spawn_image_count < 2) return 0;
+                                         int circuit_test, int recovery_test) {
+    if ((circuit_test && !restart_test) ||
+        (recovery_test && (!restart_test || circuit_test))) return -1;
+    if (spawn_image_count < (recovery_test ? 3u : 2u)) return 0;
     struct driver_user_manifest manifest;
     u8 *bytes = (u8 *)&manifest;
     for (usize_t index = 0; index < sizeof(manifest); index++) bytes[index] = 0;
@@ -350,7 +354,8 @@ static int manager64_register_virtio_net(int external_probe, int restart_test,
     manifest.argument = 0x564E4554ULL |
         (external_probe ? 1ULL << 32 : 0) |
         (restart_test ? 1ULL << 33 : 0) |
-        (circuit_test ? 1ULL << 34 : 0);
+        (circuit_test ? 1ULL << 34 : 0) |
+        (recovery_test ? 1ULL << 35 : 0);
     manifest.match_count = 2;
     for (u32 index = 0; index < manifest.match_count; index++) {
         manifest.matches[index].vendor_id = 0x1AF4;
@@ -369,7 +374,26 @@ static int manager64_register_virtio_net(int external_probe, int restart_test,
     manifest.requests[2].amount = 3;
     manifest.requests[3].kind = DRIVER_RESOURCE_BRIDGE;
     manifest.requests[3].rights = KRIGHT_READ | KRIGHT_WAIT;
-    return driver_manager_register(&manifest) > 0 ? 0 : -1;
+    if (!recovery_test) return driver_manager_register(&manifest) > 0 ? 0 : -1;
+
+    struct driver_manager_recovery_config recovery;
+    u8 *recovery_bytes = (u8 *)&recovery;
+    for (usize_t index = 0; index < sizeof(recovery); index++)
+        recovery_bytes[index] = 0;
+    recovery.fallback.image_id = 2;
+    recovery.fallback.capabilities = 0;
+    recovery.fallback.argument = 0x564E4554ULL |
+        (external_probe ? 1ULL << 32 : 0);
+    recovery.fallback_enabled = 1;
+    recovery.fallback_triggers = DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT;
+    recovery.fallback_selector_enabled = 1;
+    recovery.fallback_selector.vendor_id = 0x1AF4;
+    recovery.fallback_selector.device_id = 0x1000;
+    recovery.fallback_selector.fingerprint.kind = DRIVER_CRASH_USER_EXCEPTION;
+    recovery.fallback_selector.fingerprint.code = 134;
+    recovery.fallback_selector.fingerprint.vector = 6;
+    recovery.fallback_selector.fingerprint.rip = VIRTIO_NET_RECOVERY_TEST_RIP;
+    return driver_manager_register_recovery(&manifest, &recovery) > 0 ? 0 : -1;
 }
 
 static int manager64_set_pci_inventory(void) {
@@ -1552,9 +1576,12 @@ void kernel64_main(u32 magic, struct bd_info *info) {
         (init_module->flags & BOOT_MODULE_DRIVER_RESTART_TEST) != 0;
     int virtio_net_circuit_test =
         (init_module->flags & BOOT_MODULE_DRIVER_CIRCUIT_TEST) != 0;
+    int virtio_net_recovery_test =
+        (init_module->flags & BOOT_MODULE_DRIVER_RECOVERY_TEST) != 0;
     if (manager64_register_virtio_net(
             (init_module->flags & BOOT_MODULE_HARDWARE_TEST) != 0,
-            virtio_net_restart_test, virtio_net_circuit_test))
+            virtio_net_restart_test, virtio_net_circuit_test,
+            virtio_net_recovery_test))
         KERNEL_PANIC("virtio-net manifest");
 #ifdef MICH_TEST_BUILD
     if (!(init_module->flags & BOOT_MODULE_UNIT_TEST) &&

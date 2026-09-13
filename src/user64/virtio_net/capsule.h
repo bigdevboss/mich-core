@@ -72,6 +72,7 @@ struct virtio_net_capsule {
     unsigned int external_probe_enabled;
     unsigned int restart_test_enabled;
     unsigned int circuit_test_enabled;
+    unsigned int recovery_test_enabled;
     unsigned int restart_count;
     unsigned int restart_test_complete;
     unsigned int rx_seen;

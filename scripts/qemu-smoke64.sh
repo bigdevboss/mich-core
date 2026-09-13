@@ -6,16 +6,24 @@ profile="${3:-default}"
 qemu_timeout=45
 if [ "$profile" = "smp" ] || [ "$profile" = "iommu" ]; then qemu_timeout=90; fi
 if [ "$profile" = "msi" ]; then qemu_timeout=240; fi
-if [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ]; then
+if [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ] ||
+   [ "$profile" = "msi-recovery" ]; then
     qemu_timeout=360
 fi
 expanded_image=""
 passive_result=""
 passive_pid=""
 passive_expected=0
+active_result=""
+recovery_guestfwd=""
 case "$profile" in
     msi|msi-restart|msi-circuit)
         set -- -netdev user,id=michnet,guestfwd=tcp:10.0.2.4:8080-cmd:/bin/cat,hostfwd=tcp:127.0.0.1:10080-10.0.2.15:8082 -device virtio-net-pci,netdev=michnet
+        ;;
+    msi-recovery)
+        active_result="$(mktemp)"
+        recovery_guestfwd="$(mktemp)"
+        set -- -netdev user,id=michnet,guestfwd=tcp:10.0.2.4:8080-cmd:$recovery_guestfwd,hostfwd=tcp:127.0.0.1:10080-10.0.2.15:8082 -device virtio-net-pci,netdev=michnet
         ;;
     pcie)
         set -- -machine q35
@@ -50,7 +58,7 @@ case "$profile" in
 esac
 log="$(mktemp)"
 if [ "$profile" = "msi" ] || [ "$profile" = "msi-restart" ] ||
-   [ "$profile" = "msi-circuit" ]; then
+   [ "$profile" = "msi-circuit" ] || [ "$profile" = "msi-recovery" ]; then
     passive_result="$(mktemp)"
     if [ "$profile" = "msi-restart" ]; then passive_expected=2; else passive_expected=1; fi
     python3 - "$passive_result" "$qemu_timeout" "$log" "$passive_expected" <<'PY' &
@@ -98,6 +106,38 @@ while time.monotonic() < deadline:
 PY
     passive_pid=$!
 fi
+if [ "$profile" = "msi-recovery" ]; then
+    cat >"$recovery_guestfwd" <<'PYHELPER'
+#!/usr/bin/env python3
+import os
+
+result = os.environ.get("MICH_RECOVERY_ACTIVE_RESULT")
+log = os.environ.get("MICH_RECOVERY_LOG")
+seen = False
+while True:
+    data = os.read(0, 4096)
+    if not data:
+        break
+    if not seen:
+        seen = True
+        if result and log:
+            try:
+                selected = "Mich virtio-net: recovery artifact selected" in \
+                    open(log, "r", encoding="ascii", errors="replace").read()
+            except OSError:
+                selected = False
+            if selected:
+                with open(result, "w", encoding="ascii") as output:
+                    output.write("PASS")
+    view = memoryview(data)
+    while view:
+        written = os.write(1, view)
+        view = view[written:]
+PYHELPER
+    chmod 700 "$recovery_guestfwd"
+    export MICH_RECOVERY_ACTIVE_RESULT="$active_result"
+    export MICH_RECOVERY_LOG="$log"
+fi
 blk_img="$(mktemp)"
 uefi_vars=""
 dd if=/dev/zero of="$blk_img" bs=512 count=256 2>/dev/null
@@ -105,7 +145,7 @@ if [ "$profile" = "uefi" ]; then
     uefi_vars="$(mktemp)"
     cp /usr/share/OVMF/OVMF_VARS_4M.fd "$uefi_vars"
 fi
-trap 'if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; rm -f "$log" "$expanded_image" "$passive_result" "$blk_img" "$uefi_vars"' EXIT
+trap 'if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; rm -f "$log" "$expanded_image" "$passive_result" "$active_result" "$recovery_guestfwd" "$blk_img" "$uefi_vars"' EXIT
 set +e
 if [ "$profile" = "uefi" ]; then
     timeout 90s qemu-system-x86_64 \
@@ -168,6 +208,7 @@ for marker in \
     "Mich test64: driver recovery decision matrix pass" \
     "Mich test64: trigger policy pass" \
     "Mich test64: driver recovery fallback pass" \
+    "Mich test64: driver recovery selector pass" \
     "Mich test64: driver IOMMU crash quarantine pass" \
     "Mich test64: atomic driver bundle pass" \
     "Mich test64: userspace driver manifest pass" \
@@ -432,18 +473,18 @@ do
     grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
 done
 live_primary="Mich test64: driver live primary bootstrap pass"
-live_fallback="Mich test64: driver live fallback bootstrap pass"
-live_isolation="Mich test64: driver live recovery isolation pass"
-[ "$(grep -Fc "$live_primary" "$log")" -eq 2 ] &&
-[ "$(grep -Fc "$live_fallback" "$log")" -eq 1 ] &&
-[ "$(grep -Fc "$live_isolation" "$log")" -eq 1 ] || {
-    cat "$log"
-    exit 1
-}
-primary_first="$(grep -Fn "$live_primary" "$log" | sed -n '1s/:.*//p')"
-primary_second="$(grep -Fn "$live_primary" "$log" | sed -n '2s/:.*//p')"
-fallback_line="$(grep -Fn "$live_fallback" "$log" | sed -n '1s/:.*//p')"
-isolation_line="$(grep -Fn "$live_isolation" "$log" | sed -n '1s/:.*//p')"
+    live_fallback="Mich test64: driver live fallback bootstrap pass"
+    live_isolation="Mich test64: driver live recovery isolation pass"
+    [ "$(grep -Fc "$live_primary" "$log")" -eq 2 ] &&
+    [ "$(grep -Fc "$live_fallback" "$log")" -eq 1 ] &&
+    [ "$(grep -Fc "$live_isolation" "$log")" -eq 1 ] || {
+        cat "$log"
+        exit 1
+    }
+    primary_first="$(grep -Fn "$live_primary" "$log" | sed -n '1s/:.*//p')"
+    primary_second="$(grep -Fn "$live_primary" "$log" | sed -n '2s/:.*//p')"
+    fallback_line="$(grep -Fn "$live_fallback" "$log" | sed -n '1s/:.*//p')"
+    isolation_line="$(grep -Fn "$live_isolation" "$log" | sed -n '1s/:.*//p')"
 [ "$primary_first" -lt "$primary_second" ] &&
 [ "$primary_second" -lt "$fallback_line" ] &&
 [ "$fallback_line" -lt "$isolation_line" ] || {
@@ -484,16 +525,20 @@ if [ "$profile" = "smp" ]; then
     done
 fi
 if [ "$profile" = "hardware" ] || [ "$profile" = "msi" ] ||
-   [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ]; then
+   [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ] ||
+   [ "$profile" = "msi-recovery" ]; then
     grep -Fq "Mich x86_64: hardware destructive test profile" "$log" || {
         cat "$log"
         exit 1
     }
 fi
 if [ "$profile" = "msi" ] || [ "$profile" = "msi-restart" ] ||
-   [ "$profile" = "msi-circuit" ]; then
+   [ "$profile" = "msi-circuit" ] || [ "$profile" = "msi-recovery" ]; then
     if [ -n "$passive_pid" ]; then wait "$passive_pid" || true; fi
     grep -Fq "PASS" "$passive_result" || { cat "$log"; exit 1; }
+    if [ "$profile" = "msi-recovery" ]; then
+        grep -Fq "PASS" "$active_result" || { cat "$log"; exit 1; }
+    fi
     for marker in \
         "Mich test64: MSI-X hardware programming pass" \
         "Mich test64: modern virtio PCI capabilities pass" \
@@ -695,6 +740,78 @@ if [ "$profile" = "msi-circuit" ]; then
             exit 1
         }
     done
+fi
+
+if [ "$profile" = "msi-recovery" ]; then
+    restart_fault="Mich virtio-net: restart fault injected"
+    selected="Mich virtio-net: recovery artifact selected"
+    [ "$(grep -Fc "$restart_fault" "$log")" -eq 2 ] &&
+    [ "$(grep -Fc "Mich virtio-net: bootstrap pass" "$log")" -eq 3 ] &&
+    [ "$(grep -Fc "Mich virtio-net: network interface registered" "$log")" -eq 3 ] &&
+    [ "$(grep -Fc "Mich virtio-net: supervisor restart pass" "$log")" -eq 1 ] &&
+    [ "$(grep -Fc "Mich virtio-net: fresh eth0 re-registration pass" "$log")" -eq 1 ] &&
+    [ "$(grep -Fc "$selected" "$log")" -eq 1 ] &&
+    [ "$(grep -Fc "Mich virtio-net: pre-restart network baseline pass" "$log")" -eq 1 ] &&
+    [ "$(grep -Fc "Mich virtio-net: post-restart network baseline pass" "$log")" -eq 0 ] &&
+    [ "$(grep -Fc "Mich virtio-net: external passive accept pass" "$log")" -eq 1 ] &&
+    [ "$(grep -Fc "Mich virtio-net: external passive echo pass" "$log")" -eq 1 ] || {
+        cat "$log"
+        exit 1
+    }
+    for marker in \
+        "Mich virtio-net: DRIVER_OK pass" \
+        "Mich virtio-net: DHCP ACK receive pass" \
+        "Mich virtio-net: DHCP IPv4 lease applied" \
+        "Mich virtio-net: external ping reply pass" \
+        "Mich virtio-net: external UDP reply pass" \
+        "Mich virtio-net: external socket UDP reply pass" \
+        "Mich virtio-net: external TCP handshake and echo pass" \
+        "Mich virtio-net: TCP stream soak pass" \
+        "Mich virtio-net: external TCP FIN lifecycle pass" \
+        "Mich virtio-net: external IPv6 DAD pass" \
+        "Mich virtio-net: external IPv6 RA and SLAAC pass" \
+        "Mich virtio-net: external IPv6 ping reply pass" \
+        "Mich virtio-net: external UDPv6 ICMP error pass" \
+        "Mich virtio-net: userspace capsule running"
+    do
+        [ "$(grep -Fc "$marker" "$log")" -eq 2 ] || {
+            cat "$log"
+            exit 1
+        }
+    done
+    baseline_line="$(grep -Fn "Mich virtio-net: pre-restart network baseline pass" "$log" | sed -n '1s/:.*//p')"
+    first_fault_line="$(grep -Fn "$restart_fault" "$log" | sed -n '1s/:.*//p')"
+    second_fault_line="$(grep -Fn "$restart_fault" "$log" | sed -n '2s/:.*//p')"
+    first_exception_line="$(grep -Fn "Mich x86_64: user fault vec=0000000000000006 rip=" "$log" | awk -F: -v line="$first_fault_line" '$1 > line { print $1; exit }')"
+    first_contained_line="$(grep -Fn "Mich x86_64: user exception contained" "$log" | awk -F: -v line="$first_fault_line" '$1 > line { print $1; exit }')"
+    restart_line="$(grep -Fn "Mich virtio-net: supervisor restart pass" "$log" | sed -n '1s/:.*//p')"
+    eth0_line="$(grep -Fn "Mich virtio-net: fresh eth0 re-registration pass" "$log" | sed -n '1s/:.*//p')"
+    second_exception_line="$(grep -Fn "Mich x86_64: user fault vec=0000000000000006 rip=" "$log" | awk -F: -v line="$second_fault_line" '$1 > line { print $1; exit }')"
+    second_contained_line="$(grep -Fn "Mich x86_64: user exception contained" "$log" | awk -F: -v line="$second_fault_line" '$1 > line { print $1; exit }')"
+    selected_line="$(grep -Fn "$selected" "$log" | sed -n '1s/:.*//p')"
+    external_line="$(grep -Fn "Mich virtio-net: external TCP handshake and echo pass" "$log" | sed -n '2s/:.*//p')"
+    first_rip="$(sed -n "${first_exception_line}p" "$log" | sed -n 's/.* rip=\([^[:space:]]*\).*/\1/p')"
+    second_rip="$(sed -n "${second_exception_line}p" "$log" | sed -n 's/.* rip=\([^[:space:]]*\).*/\1/p')"
+    [ -n "$baseline_line" ] && [ -n "$first_fault_line" ] &&
+    [ -n "$second_fault_line" ] && [ -n "$first_exception_line" ] &&
+    [ -n "$first_contained_line" ] && [ -n "$restart_line" ] &&
+    [ -n "$eth0_line" ] && [ -n "$second_exception_line" ] &&
+    [ -n "$second_contained_line" ] && [ -n "$selected_line" ] &&
+    [ -n "$external_line" ] && [ -n "$first_rip" ] &&
+    [ "$first_rip" = "$second_rip" ] &&
+    [ "$baseline_line" -lt "$first_fault_line" ] &&
+    [ "$first_fault_line" -lt "$first_exception_line" ] &&
+    [ "$first_exception_line" -lt "$first_contained_line" ] &&
+    [ "$first_contained_line" -lt "$restart_line" ] &&
+    [ "$restart_line" -lt "$eth0_line" ] &&
+    [ "$eth0_line" -lt "$second_fault_line" ] &&
+    [ "$second_fault_line" -lt "$second_exception_line" ] &&
+    [ "$second_exception_line" -lt "$second_contained_line" ] &&
+    [ "$second_contained_line" -lt "$selected_line" ] &&
+    [ "$selected_line" -lt "$external_line" ] || {
+        cat "$log"
+        exit 1
+    }
 fi
 if [ "$profile" = "pcie" ] || [ "$profile" = "iommu" ] ||
    [ "$profile" = "amd-iommu" ]; then
