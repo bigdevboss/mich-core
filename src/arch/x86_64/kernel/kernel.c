@@ -83,7 +83,9 @@
 #define MSR_STAR 0xC0000081u
 #define MSR_LSTAR 0xC0000082u
 #define MSR_FMASK 0xC0000084u
+#define BOOT_MODULE_DRIVER_CIRCUIT_TEST (1u << 27)
 #define BOOT_MODULE_UNIT_TEST (1u << 28)
+#define BOOT_MODULE_DRIVER_RESTART_TEST (1u << 29)
 #define BOOT_MODULE_HARDWARE_TEST (1u << 30)
 #define BOOT_MODULE_PANIC_TEST (1u << 31)
 #define IOMMU_FAULT_BATCH 8
@@ -324,7 +326,9 @@ static int supervisor64_resource(
     return -1;
 }
 
-static int manager64_register_virtio_net(int external_probe) {
+static int manager64_register_virtio_net(int external_probe, int restart_test,
+                                         int circuit_test) {
+    if (circuit_test && !restart_test) return -1;
     if (spawn_image_count < 2) return 0;
     struct driver_user_manifest manifest;
     u8 *bytes = (u8 *)&manifest;
@@ -344,7 +348,9 @@ static int manager64_register_virtio_net(int external_probe) {
     for (u32 index = 0; firmware_name[index]; index++)
         manifest.firmware[0][index] = firmware_name[index];
     manifest.argument = 0x564E4554ULL |
-        (external_probe ? 1ULL << 32 : 0);
+        (external_probe ? 1ULL << 32 : 0) |
+        (restart_test ? 1ULL << 33 : 0) |
+        (circuit_test ? 1ULL << 34 : 0);
     manifest.match_count = 2;
     for (u32 index = 0; index < manifest.match_count; index++) {
         manifest.matches[index].vendor_id = 0x1AF4;
@@ -655,6 +661,7 @@ static __attribute__((cold, noinline, optimize("Os,no-jump-tables"))) void drive
     }
     driver_live_recovery_fail();
 }
+
 #endif
 
 static int udp_unreachable_to_icmp(const struct ipv4_packet_view *packet,
@@ -1541,8 +1548,13 @@ void kernel64_main(u32 magic, struct bd_info *info) {
             &test_env, destructive, &msi_test, &msix_test, &virtio_test))
         KERNEL_PANIC("independent hardware tests");
 #endif
+    int virtio_net_restart_test =
+        (init_module->flags & BOOT_MODULE_DRIVER_RESTART_TEST) != 0;
+    int virtio_net_circuit_test =
+        (init_module->flags & BOOT_MODULE_DRIVER_CIRCUIT_TEST) != 0;
     if (manager64_register_virtio_net(
-            (init_module->flags & BOOT_MODULE_HARDWARE_TEST) != 0))
+            (init_module->flags & BOOT_MODULE_HARDWARE_TEST) != 0,
+            virtio_net_restart_test, virtio_net_circuit_test))
         KERNEL_PANIC("virtio-net manifest");
 #ifdef MICH_TEST_BUILD
     if (!(init_module->flags & BOOT_MODULE_UNIT_TEST) &&

@@ -12,6 +12,19 @@ static const unsigned char stream_message[] = {
     'S', 'T', 'R', 'E', 'A', 'M', '5', 0
 };
 
+#define STREAM_ROUNDS 32
+
+static inline int queue_stream_message(struct virtio_net_capsule *capsule) {
+    struct mich_socket_stream_data data;
+    data.length = sizeof(stream_message);
+    data.reserved = 0;
+    for (unsigned int index = 0; index < data.length; index++)
+        data.data[index] = stream_message[index];
+    if (mich_socket_stream_send(capsule->stream_handle, &data)) return -1;
+    capsule->stream_sent++;
+    return 0;
+}
+
 static int start_socket_udp(struct virtio_net_capsule *capsule) {
     int handle = mich_socket_create();
     if (handle <= 0) return -1;
@@ -190,6 +203,20 @@ void probes_on_slaac(struct virtio_net_capsule *capsule) {
         mich_write("Mich virtio-net: external IPv6 socket queued\n");
 }
 
+int probes_external_complete(const struct virtio_net_capsule *capsule) {
+    if (!capsule) return 0;
+    return capsule->external_probe_enabled & capsule->ipv4_configured &
+        capsule->ping_complete & capsule->udp_probe_complete &
+        capsule->socket_udp_complete & capsule->tcp_probe_complete &
+        capsule->stream_closed &
+        (capsule->passive_received == sizeof(passive_message) + 1) &
+        capsule->ipv6_dad_complete & capsule->ipv6_slaac_ready &
+        capsule->ipv6_ping_complete & capsule->udpv6_probe_complete &
+        capsule->socket6_sent & capsule->interrupt_seen &
+        capsule->batch_reported & capsule->tx_batch_reported &
+        capsule->itr_reported;
+}
+
 int probes_poll(struct virtio_net_capsule *capsule) {
     if (capsule->ping_sent && !capsule->ping_complete &&
         mich_net_interface_echo_replies(capsule->interface_handle)) {
@@ -227,62 +254,51 @@ int probes_poll(struct virtio_net_capsule *capsule) {
                 capsule->readiness_reported = 1;
                 mich_write("Mich virtio-net: stream readiness connected pass\n");
             }
-            struct mich_socket_stream_data data;
-            data.length = sizeof(stream_message);
-            data.reserved = 0;
-            for (unsigned int index = 0;
-                 index < MICH_SOCKET_STREAM_PAYLOAD_MAX; index++)
-                data.data[index] = 0;
-            for (unsigned int index = 0; index < data.length; index++)
-                data.data[index] = stream_message[index];
-            if (!mich_socket_stream_send(capsule->stream_handle, &data)) {
-                capsule->stream_sent = 1;
-                mich_write("Mich virtio-net: stream socket send pass\n");
-            }
+            for (unsigned int index = 0; index < STREAM_ROUNDS; index++)
+                if (queue_stream_message(capsule)) return -1;
+            mich_write("Mich virtio-net: stream socket send pass\n");
         }
     }
     if (capsule->stream_sent && !capsule->stream_complete) {
-        struct mich_socket_stream_state_result state;
-        state.state = 0;
-        state.readiness = 0;
-        state.error = 0;
-        state.eof = 0;
-        struct mich_socket_stream_data data;
-        data.length = 0;
-        data.reserved = 0;
-        if (!mich_socket_stream_state(capsule->stream_handle, &state) &&
-            (state.readiness & SOCKET_READY_READABLE) &&
-            !mich_socket_stream_receive(capsule->stream_handle, &data)) {
-            if (data.length > sizeof(stream_message) -
-                              capsule->stream_received)
-                return -1;
-            for (unsigned int index = 0; index < data.length; index++)
+        for (unsigned int read = 0; read < STREAM_ROUNDS; read++) {
+            struct mich_socket_stream_state_result state;
+            state.state = 0;
+            state.readiness = 0;
+            state.error = 0;
+            state.eof = 0;
+            struct mich_socket_stream_data data;
+            data.length = 0;
+            data.reserved = 0;
+            if (mich_socket_stream_state(capsule->stream_handle, &state) ||
+                !(state.readiness & SOCKET_READY_READABLE) ||
+                mich_socket_stream_receive(capsule->stream_handle, &data))
+                break;
+            for (unsigned int index = 0; index < data.length; index++) {
                 if (data.data[index] !=
-                    stream_message[capsule->stream_received + index])
+                    stream_message[capsule->stream_received])
                     return -1;
-            capsule->stream_received += data.length;
-        }
-        if (capsule->stream_received == sizeof(stream_message)) {
-            capsule->stream_received = 0;
-            if (!capsule->stream_rounds)
-                mich_write("Mich virtio-net: stream readiness readable pass\n");
-            capsule->stream_rounds++;
-            if (capsule->stream_rounds == 1)
-                mich_write("Mich virtio-net: stream socket receive pass\n");
-            if (capsule->stream_rounds < 32) {
-                data.length = sizeof(stream_message);
-                for (unsigned int index = 0; index < data.length; index++)
-                    data.data[index] = stream_message[index];
-                if (mich_socket_stream_send(capsule->stream_handle, &data))
+                capsule->stream_received++;
+                if (capsule->stream_received != sizeof(stream_message))
+                    continue;
+                capsule->stream_received = 0;
+                if (!capsule->stream_rounds)
+                    mich_write("Mich virtio-net: stream readiness readable pass\n");
+                capsule->stream_rounds++;
+                if (capsule->stream_rounds == 1)
+                    mich_write("Mich virtio-net: stream socket receive pass\n");
+                if (capsule->stream_sent < STREAM_ROUNDS &&
+                    queue_stream_message(capsule))
                     return -1;
-            } else {
-                capsule->stream_complete = 1;
-                mich_write("Mich virtio-net: TCP stream soak pass\n");
-                if (!mich_socket_stream_shutdown(capsule->stream_handle)) {
-                    capsule->stream_shutdown = 1;
-                    mich_write("Mich virtio-net: stream socket shutdown pass\n");
+                if (capsule->stream_rounds == STREAM_ROUNDS) {
+                    capsule->stream_complete = 1;
+                    mich_write("Mich virtio-net: TCP stream soak pass\n");
+                    if (!mich_socket_stream_shutdown(capsule->stream_handle)) {
+                        capsule->stream_shutdown = 1;
+                        mich_write("Mich virtio-net: stream socket shutdown pass\n");
+                    }
                 }
             }
+            if (capsule->stream_complete) break;
         }
     }
     if (capsule->stream_shutdown && !capsule->stream_closed) {

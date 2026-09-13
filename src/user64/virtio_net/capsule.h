@@ -70,6 +70,10 @@ struct virtio_net_capsule {
     unsigned int restart_requested;
     unsigned int config_generation;
     unsigned int external_probe_enabled;
+    unsigned int restart_test_enabled;
+    unsigned int circuit_test_enabled;
+    unsigned int restart_count;
+    unsigned int restart_test_complete;
     unsigned int rx_seen;
     unsigned int rx_packets;
     unsigned int rx_drops;
@@ -127,5 +131,6 @@ struct virtio_net_capsule {
 void probes_on_ipv4_up(struct virtio_net_capsule *capsule);
 void probes_on_slaac(struct virtio_net_capsule *capsule);
 int probes_poll(struct virtio_net_capsule *capsule);
+int probes_external_complete(const struct virtio_net_capsule *capsule);
 
 #endif

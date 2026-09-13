@@ -66,6 +66,8 @@ DISK64 = $(BIN64)/disk.img
 DISK64_TEST = $(BIN64)/disk-test.img
 DISK64_UNIT = $(BIN64)/disk-unit.img
 DISK64_HARDWARE = $(BIN64)/disk-hardware.img
+DISK64_HARDWARE_RESTART = $(BIN64)/disk-hardware-restart.img
+DISK64_HARDWARE_CIRCUIT = $(BIN64)/disk-hardware-circuit.img
 DISK64_PANIC = $(BIN64)/disk-panic.img
 UEFI64_OBJ = $(OBJ64)/uefi.o
 UEFI64_EFI = $(BIN64)/BOOTX64.EFI
@@ -412,7 +414,7 @@ $(VIRTIO_NET64_PROBES_OBJ): src/user64/virtio_net/probes.c src/user64/virtio_net
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
 $(VIRTIO_NET64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_NET64_OBJ) $(VIRTIO_NET64_PROBES_OBJ) src/user64/linker.ld | $(USER64_DIR)
-	$(LD) -m elf_x86_64 -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_NET64_OBJ) $(VIRTIO_NET64_PROBES_OBJ)
+	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_NET64_OBJ) $(VIRTIO_NET64_PROBES_OBJ)
 
 $(KERNEL64_ELF): $(OBJS64) $(ARCH64_BOOT)/linker.ld | $(BIN64)
 	$(LD) $(LDFLAGS64) -o $@ $(OBJS64)
@@ -460,6 +462,12 @@ $(DISK64_UNIT): mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(BDB1_64
 $(DISK64_HARDWARE): mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(BDB1_64) $(BDB2_64) $(INIT64_ELF) $(VIRTIO_NET64_ELF)
 	$(PYTHON) mkboot64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) $@ init64:0x400000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF)
 
+$(DISK64_HARDWARE_RESTART): mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(BDB1_64) $(BDB2_64) $(INIT64_ELF) $(VIRTIO_NET64_ELF)
+	$(PYTHON) mkboot64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) $@ init64:0x600000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF)
+
+$(DISK64_HARDWARE_CIRCUIT): mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(BDB1_64) $(BDB2_64) $(INIT64_ELF) $(VIRTIO_NET64_ELF)
+	$(PYTHON) mkboot64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) $@ init64:0x680000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF)
+
 $(DISK64_PANIC): mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(BDB1_64) $(BDB2_64) $(INIT64_ELF)
 	$(PYTHON) mkboot64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) $@ init64:0x800000C9=$(INIT64_ELF)
 
@@ -495,6 +503,12 @@ test64-hardware: $(DISK64_HARDWARE)
 
 test64-msi: $(DISK64_HARDWARE)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_HARDWARE) 256M msi
+
+test64-msi-restart: $(DISK64_HARDWARE_RESTART)
+	sh ./scripts/qemu-smoke64.sh $(DISK64_HARDWARE_RESTART) 256M msi-restart
+
+test64-msi-circuit: $(DISK64_HARDWARE_CIRCUIT)
+	sh ./scripts/qemu-smoke64.sh $(DISK64_HARDWARE_CIRCUIT) 256M msi-circuit
 
 test64-pcie: $(DISK64_TEST)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_TEST) 256M pcie
@@ -534,4 +548,4 @@ DEPFILES = $(OBJS:.o=.d) $(OBJS64:.o=.d) $(OBJS64_TEST:.o=.d) $(PORTABLE64_OBJS:
 clean:
 	rm -rf $(BIN_DIR)
 
-.PHONY: all run test run64 test64 test64-uefi test64-prod test64-unit test64-highmem test64-hardware test64-msi test64-pcie test64-panic release-check clean
+.PHONY: all run test run64 test64 test64-uefi test64-prod test64-unit test64-highmem test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-pcie test64-panic release-check clean
