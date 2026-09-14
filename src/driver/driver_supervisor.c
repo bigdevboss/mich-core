@@ -42,11 +42,29 @@ static void recovery_selector_clear(struct driver_domain *domain) {
     domain->fallback_selector_enabled = 0;
 }
 
+static void recovery_audit_clear(struct driver_domain *domain) {
+    u8 *bytes = (u8 *)&domain->recovery_audit;
+    for (usize_t index = 0; index < sizeof(domain->recovery_audit); index++)
+        bytes[index] = 0;
+}
+
+static void recovery_audit_record(
+    struct driver_domain *domain, u32 trigger, u32 outcome,
+    const struct driver_crash_passport *passport) {
+    recovery_audit_clear(domain);
+    domain->recovery_audit.trigger = trigger;
+    domain->recovery_audit.outcome = outcome;
+    if (domain->fallback_enabled)
+        domain->recovery_audit.profile = domain->fallback;
+    if (passport) domain->recovery_audit.passport = *passport;
+}
+
 static void recovery_fallback_clear(struct driver_domain *domain) {
     domain->fallback.image_id = 0;
     domain->fallback.capabilities = 0;
     domain->fallback.argument = 0;
     recovery_selector_clear(domain);
+    recovery_audit_clear(domain);
     domain->recovery_profile = DRIVER_RECOVERY_PRIMARY;
     domain->fallback_enabled = 0;
     domain->fallback_used = 0;
@@ -83,11 +101,20 @@ static int recovery_fallback_activate(struct driver_domain *domain, u32 ticks,
                                       u32 trigger,
                                       const struct driver_crash_passport *passport) {
     if (!domain->fallback_enabled || domain->fallback_used ||
-        !(domain->fallback_triggers & trigger) ||
-        (domain->fallback_selector_enabled &&
-         (trigger != DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT ||
-          !recovery_selector_matches(domain, passport))))
+        !(domain->fallback_triggers & trigger)) {
+        recovery_audit_record(domain, trigger, DRIVER_RECOVERY_AUDIT_UNAVAILABLE,
+                              passport);
         return 0;
+    }
+    if (domain->fallback_selector_enabled &&
+        (trigger != DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT ||
+         !recovery_selector_matches(domain, passport))) {
+        recovery_audit_record(domain, trigger,
+                              DRIVER_RECOVERY_AUDIT_SELECTOR_MISMATCH, passport);
+        return 0;
+    }
+    recovery_audit_record(domain, trigger, DRIVER_RECOVERY_AUDIT_SELECTED,
+                          passport);
     domain->image_id = domain->fallback.image_id;
     domain->capabilities = domain->fallback.capabilities;
     domain->argument = domain->fallback.argument;
@@ -720,6 +747,7 @@ int driver_domain_status(const struct driver_domain *domain,
     status->fallback_enabled = domain->fallback_enabled;
     status->fallback_selector_enabled = domain->fallback_selector_enabled;
     status->fallback_selector = domain->fallback_selector;
+    status->recovery_audit = domain->recovery_audit;
     status->fallback_used = domain->fallback_used;
     status->fallback_triggers = domain->fallback_triggers;
     status->restart_count = domain->restart_count;

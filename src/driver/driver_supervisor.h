@@ -75,6 +75,11 @@ struct driver_crash_passport {
 #define DRIVER_RECOVERY_DECISION_MANUAL_QUARANTINE 14
 #define DRIVER_RECOVERY_DECISION_REMOVE 15
 
+#define DRIVER_RECOVERY_AUDIT_NONE 0
+#define DRIVER_RECOVERY_AUDIT_SELECTED 1
+#define DRIVER_RECOVERY_AUDIT_UNAVAILABLE 2
+#define DRIVER_RECOVERY_AUDIT_SELECTOR_MISMATCH 3
+
 struct driver_recovery_profile {
     u32 image_id;
     u32 capabilities;
@@ -94,6 +99,13 @@ struct driver_recovery_selector {
     u16 vendor_id;
     u16 device_id;
     struct driver_recovery_fingerprint fingerprint;
+};
+
+struct driver_recovery_audit {
+    u32 trigger;
+    u32 outcome;
+    struct driver_recovery_profile profile;
+    struct driver_crash_passport passport;
 };
 
 struct driver_crash_circuit_policy {
@@ -150,6 +162,7 @@ struct driver_domain {
     u64 argument;
     struct driver_recovery_profile fallback;
     struct driver_recovery_selector fallback_selector;
+    struct driver_recovery_audit recovery_audit;
     u32 recovery_profile;
     u32 fallback_enabled;
     u32 fallback_selector_enabled;
@@ -174,6 +187,7 @@ struct driver_domain_status {
     u32 fallback_enabled;
     u32 fallback_selector_enabled;
     struct driver_recovery_selector fallback_selector;
+    struct driver_recovery_audit recovery_audit;
     u32 fallback_used;
     u32 fallback_triggers;
     u32 restart_count;

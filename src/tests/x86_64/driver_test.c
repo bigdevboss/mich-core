@@ -658,6 +658,13 @@ static int driver_recovery_fallback_self_test(
         domain->fallback_enabled && domain->fallback_used &&
         domain->fallback_triggers == DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT &&
         domain->last_decision == DRIVER_RECOVERY_DECISION_FALLBACK &&
+        domain->recovery_audit.trigger == DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT &&
+        domain->recovery_audit.outcome == DRIVER_RECOVERY_AUDIT_SELECTED &&
+        domain->recovery_audit.profile.image_id == profile.image_id &&
+        domain->recovery_audit.profile.argument == profile.argument &&
+        domain->recovery_audit.passport.generation == 2 &&
+        domain->recovery_audit.passport.ticks == 402 &&
+        domain->recovery_audit.passport.rip == 0x400300 &&
         !domain->crash_repeat_count && !domain->crash_repeat_deadline &&
         domain->restart_deadline == 403;
     driver_supervisor_tick(domain->restart_deadline);
@@ -681,7 +688,12 @@ static int driver_recovery_fallback_self_test(
         status.crash_repeat_count == DRIVER_CRASH_REPEAT_LIMIT &&
         !status.restart_deadline &&
         status.terminal_reason == DRIVER_TERMINAL_CRASH_CIRCUIT &&
-        status.last_decision == DRIVER_RECOVERY_DECISION_CRASH_CIRCUIT;
+        status.last_decision == DRIVER_RECOVERY_DECISION_CRASH_CIRCUIT &&
+        status.recovery_audit.trigger == DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT &&
+        status.recovery_audit.outcome == DRIVER_RECOVERY_AUDIT_UNAVAILABLE &&
+        status.recovery_audit.profile.image_id == profile.image_id &&
+        status.recovery_audit.passport.generation == 4 &&
+        status.recovery_audit.passport.ticks == 407;
     driver_domain_destroy(domain);
 
     struct driver_crash_circuit_policy circuit_policy;
@@ -703,7 +715,11 @@ static int driver_recovery_fallback_self_test(
         status.terminal_reason == DRIVER_TERMINAL_CRASH_CIRCUIT &&
         status.last_decision == DRIVER_RECOVERY_DECISION_CRASH_CIRCUIT &&
         status.fallback_triggers == DRIVER_RECOVERY_TRIGGER_RESTART_LIMIT &&
-        !status.fallback_used;
+        status.recovery_audit.trigger == DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT &&
+        status.recovery_audit.outcome == DRIVER_RECOVERY_AUDIT_UNAVAILABLE &&
+        status.recovery_audit.profile.image_id == profile.image_id &&
+        status.recovery_audit.passport.generation == 2 &&
+        status.recovery_audit.passport.ticks == 502 && !status.fallback_used;
     driver_domain_destroy(domain);
 
     struct driver_user_manifest never_manifest = *manifest;
@@ -777,7 +793,14 @@ static __attribute__((cold, noinline, optimize("Os"))) int
         status.fallback_selector.device_id == selector.device_id &&
         status.fallback_selector.fingerprint.rip == selector.fingerprint.rip &&
         status.fallback_used &&
-        status.last_decision == DRIVER_RECOVERY_DECISION_FALLBACK;
+        status.last_decision == DRIVER_RECOVERY_DECISION_FALLBACK &&
+        status.recovery_audit.trigger == DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT &&
+        status.recovery_audit.outcome == DRIVER_RECOVERY_AUDIT_SELECTED &&
+        status.recovery_audit.profile.image_id == profile.image_id &&
+        status.recovery_audit.profile.argument == profile.argument &&
+        status.recovery_audit.passport.generation == 2 &&
+        status.recovery_audit.passport.ticks == 702 &&
+        status.recovery_audit.passport.rip == selector.fingerprint.rip;
     driver_supervisor_tick(domain->restart_deadline);
     selected = selected && domain->state == DRIVER_DOMAIN_RUNNING &&
         domain->generation == 3 && domain->image_id == profile.image_id &&
@@ -799,7 +822,13 @@ static __attribute__((cold, noinline, optimize("Os"))) int
         status.state == DRIVER_DOMAIN_FAILED &&
         status.terminal_reason == DRIVER_TERMINAL_CRASH_CIRCUIT &&
         status.last_decision == DRIVER_RECOVERY_DECISION_CRASH_CIRCUIT &&
-        !status.fallback_used;
+        status.recovery_audit.trigger == DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT &&
+        status.recovery_audit.outcome ==
+            DRIVER_RECOVERY_AUDIT_SELECTOR_MISMATCH &&
+        status.recovery_audit.profile.image_id == profile.image_id &&
+        status.recovery_audit.passport.generation == 2 &&
+        status.recovery_audit.passport.ticks == 732 &&
+        status.recovery_audit.passport.rip == 0x400701 && !status.fallback_used;
     driver_domain_destroy(domain);
 
     selector.device_id ^= 1;
@@ -817,7 +846,13 @@ static __attribute__((cold, noinline, optimize("Os"))) int
     int device_rejected = !driver_domain_status(domain, &status) &&
         status.state == DRIVER_DOMAIN_FAILED &&
         status.terminal_reason == DRIVER_TERMINAL_CRASH_CIRCUIT &&
-        !status.fallback_used;
+        status.recovery_audit.trigger == DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT &&
+        status.recovery_audit.outcome ==
+            DRIVER_RECOVERY_AUDIT_SELECTOR_MISMATCH &&
+        status.recovery_audit.profile.image_id == profile.image_id &&
+        status.recovery_audit.passport.generation == 2 &&
+        status.recovery_audit.passport.ticks == 762 &&
+        status.recovery_audit.passport.rip == 0x400700 && !status.fallback_used;
     driver_domain_destroy(domain);
     return selected && fingerprint_rejected && device_rejected ? 0 : -1;
 }
@@ -1387,6 +1422,7 @@ int tests64_run_driver(const struct test64_env *env) {
     serial64_write("Mich test64: trigger policy pass\n");
     serial64_write("Mich test64: driver recovery fallback pass\n");
     serial64_write("Mich test64: driver recovery selector pass\n");
+    serial64_write("Mich test64: driver recovery audit pass\n");
     serial64_write("Mich test64: driver IOMMU crash quarantine pass\n");
     serial64_write("Mich test64: atomic driver bundle pass\n");
     serial64_write("Mich test64: userspace driver manifest pass\n");

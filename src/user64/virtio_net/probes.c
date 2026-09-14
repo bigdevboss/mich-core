@@ -210,7 +210,8 @@ int probes_external_complete(const struct virtio_net_capsule *capsule) {
         capsule->socket_udp_complete & capsule->tcp_probe_complete &
         capsule->stream_closed &
         (capsule->passive_received == sizeof(passive_message) + 1) &
-        capsule->ipv6_dad_complete & capsule->ipv6_slaac_ready &
+        capsule->passive_closed & capsule->ipv6_dad_complete &
+        capsule->ipv6_slaac_ready &
         capsule->ipv6_ping_complete & capsule->udpv6_probe_complete &
         capsule->socket6_sent & capsule->interrupt_seen &
         capsule->batch_reported & capsule->tx_batch_reported &
@@ -346,6 +347,20 @@ int probes_poll(struct virtio_net_capsule *capsule) {
                 capsule->passive_received = 8;
                 mich_write("Mich virtio-net: external passive echo pass\n");
             }
+        }
+    }
+    if (capsule->accepted_handle &&
+        capsule->passive_received == sizeof(passive_message) + 1 &&
+        !capsule->passive_closed) {
+        struct mich_socket_stream_state_result state;
+        state.state = 0;
+        state.readiness = 0;
+        state.error = 0;
+        state.eof = 0;
+        if (!mich_socket_stream_state(capsule->accepted_handle, &state) &&
+            (state.readiness & SOCKET_READY_HANGUP)) {
+            capsule->passive_closed = 1;
+            mich_write("Mich virtio-net: external passive close pass\n");
         }
     }
     if (capsule->ipv6_dad_complete && !capsule->ipv6_slaac_ready)
