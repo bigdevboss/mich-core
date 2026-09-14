@@ -93,6 +93,20 @@
 /* The primary capsule's sole test ud2; its source location is intentionally fixed. */
 #define VIRTIO_NET_RECOVERY_TEST_RIP 0x100000E3EULL
 
+static const struct driver_manager_recovery_config
+    virtio_net_recovery_catalog[] = {
+    {
+        { 2, 0, 0x564E4554ULL | (1ULL << 32) },
+        {
+            0x1AF4, 0x1000,
+            { DRIVER_CRASH_USER_EXCEPTION, 134, 6, 0,
+              VIRTIO_NET_RECOVERY_TEST_RIP, 0 }
+        },
+        { 0, 0 },
+        1, 1, DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT, 0
+    }
+};
+
 extern void syscall64_entry(void);
 extern void user64_enter(u64 rip, u64 rsp, u64 argument);
 extern u8 _bss_end;
@@ -329,10 +343,26 @@ static int supervisor64_resource(
     return -1;
 }
 
+static const struct driver_manager_recovery_config *
+manager64_recovery_catalog_lookup(u16 vendor_id, u16 device_id) {
+    for (u32 index = 0;
+         index < sizeof(virtio_net_recovery_catalog) /
+                     sizeof(virtio_net_recovery_catalog[0]);
+         index++) {
+        const struct driver_manager_recovery_config *config =
+            &virtio_net_recovery_catalog[index];
+        if (config->fallback_selector.vendor_id == vendor_id &&
+            config->fallback_selector.device_id == device_id)
+            return config;
+    }
+    return 0;
+}
+
 static int manager64_register_virtio_net(int external_probe, int restart_test,
                                          int circuit_test, int recovery_test) {
     if ((circuit_test && !restart_test) ||
-        (recovery_test && (!restart_test || circuit_test))) return -1;
+        (recovery_test && (!restart_test || circuit_test || !external_probe)))
+        return -1;
     if (spawn_image_count < (recovery_test ? 3u : 2u)) return 0;
     struct driver_user_manifest manifest;
     u8 *bytes = (u8 *)&manifest;
@@ -376,24 +406,10 @@ static int manager64_register_virtio_net(int external_probe, int restart_test,
     manifest.requests[3].rights = KRIGHT_READ | KRIGHT_WAIT;
     if (!recovery_test) return driver_manager_register(&manifest) > 0 ? 0 : -1;
 
-    struct driver_manager_recovery_config recovery;
-    u8 *recovery_bytes = (u8 *)&recovery;
-    for (usize_t index = 0; index < sizeof(recovery); index++)
-        recovery_bytes[index] = 0;
-    recovery.fallback.image_id = 2;
-    recovery.fallback.capabilities = 0;
-    recovery.fallback.argument = 0x564E4554ULL |
-        (external_probe ? 1ULL << 32 : 0);
-    recovery.fallback_enabled = 1;
-    recovery.fallback_triggers = DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT;
-    recovery.fallback_selector_enabled = 1;
-    recovery.fallback_selector.vendor_id = 0x1AF4;
-    recovery.fallback_selector.device_id = 0x1000;
-    recovery.fallback_selector.fingerprint.kind = DRIVER_CRASH_USER_EXCEPTION;
-    recovery.fallback_selector.fingerprint.code = 134;
-    recovery.fallback_selector.fingerprint.vector = 6;
-    recovery.fallback_selector.fingerprint.rip = VIRTIO_NET_RECOVERY_TEST_RIP;
-    return driver_manager_register_recovery(&manifest, &recovery) > 0 ? 0 : -1;
+    const struct driver_manager_recovery_config *recovery =
+        manager64_recovery_catalog_lookup(0x1AF4, 0x1000);
+    return recovery && driver_manager_register_recovery(&manifest, recovery) > 0
+        ? 0 : -1;
 }
 
 static int manager64_set_pci_inventory(void) {

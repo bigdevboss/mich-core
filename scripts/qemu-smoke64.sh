@@ -581,6 +581,7 @@ if [ "$profile" = "msi" ] || [ "$profile" = "msi-restart" ] ||
         "Mich virtio-net: passive listener ready" \
         "Mich virtio-net: external passive accept pass" \
         "Mich virtio-net: external passive echo pass" \
+        "Mich virtio-net: external passive close pass" \
         "Mich virtio-net: stream socket connect queued" \
         "Mich virtio-net: stream readiness connected pass" \
         "Mich virtio-net: stream socket send pass" \
@@ -631,6 +632,7 @@ if [ "$profile" = "msi-restart" ]; then
         "Mich virtio-net: external TCP handshake and echo pass" \
         "Mich virtio-net: external passive accept pass" \
         "Mich virtio-net: external passive echo pass" \
+        "Mich virtio-net: external passive close pass" \
         "Mich virtio-net: TCP stream soak pass" \
         "Mich virtio-net: external TCP FIN lifecycle pass" \
         "Mich virtio-net: external IPv6 DAD pass" \
@@ -722,6 +724,7 @@ if [ "$profile" = "msi-circuit" ]; then
         "Mich virtio-net: external TCP handshake and echo pass" \
         "Mich virtio-net: external passive accept pass" \
         "Mich virtio-net: external passive echo pass" \
+        "Mich virtio-net: external passive close pass" \
         "Mich virtio-net: TCP stream soak pass" \
         "Mich virtio-net: external TCP FIN lifecycle pass" \
         "Mich virtio-net: external IPv6 DAD pass" \
@@ -744,42 +747,46 @@ fi
 
 if [ "$profile" = "msi-recovery" ]; then
     restart_fault="Mich virtio-net: restart fault injected"
+    audit="Mich test64: driver recovery audit pass"
     selected="Mich virtio-net: recovery artifact selected"
+    safe_bootstrap="Mich virtio-net safe: bootstrap pass"
+    safe_device="Mich virtio-net safe: device ready pass"
+    safe_interface="Mich virtio-net safe: eth0 registered pass"
+    safe_virtio="Mich virtio-net safe: virtio ready pass"
+    safe_ipv4="Mich virtio-net safe: static IPv4 configured pass"
+    safe_queued="Mich virtio-net safe: external TCP queued"
+    safe_echo="Mich virtio-net safe: external TCP echo pass"
     [ "$(grep -Fc "$restart_fault" "$log")" -eq 2 ] &&
-    [ "$(grep -Fc "Mich virtio-net: bootstrap pass" "$log")" -eq 3 ] &&
-    [ "$(grep -Fc "Mich virtio-net: network interface registered" "$log")" -eq 3 ] &&
+    [ "$(grep -Fc "$audit" "$log")" -eq 1 ] &&
+    [ "$(grep -Fc "Mich virtio-net: bootstrap pass" "$log")" -eq 2 ] &&
+    [ "$(grep -Fc "Mich virtio-net: network interface registered" "$log")" -eq 2 ] &&
     [ "$(grep -Fc "Mich virtio-net: supervisor restart pass" "$log")" -eq 1 ] &&
     [ "$(grep -Fc "Mich virtio-net: fresh eth0 re-registration pass" "$log")" -eq 1 ] &&
     [ "$(grep -Fc "$selected" "$log")" -eq 1 ] &&
     [ "$(grep -Fc "Mich virtio-net: pre-restart network baseline pass" "$log")" -eq 1 ] &&
     [ "$(grep -Fc "Mich virtio-net: post-restart network baseline pass" "$log")" -eq 0 ] &&
     [ "$(grep -Fc "Mich virtio-net: external passive accept pass" "$log")" -eq 1 ] &&
-    [ "$(grep -Fc "Mich virtio-net: external passive echo pass" "$log")" -eq 1 ] || {
+    [ "$(grep -Fc "Mich virtio-net: external passive echo pass" "$log")" -eq 1 ] &&
+    [ "$(grep -Fc "Mich virtio-net: external passive close pass" "$log")" -eq 1 ] || {
         cat "$log"
         exit 1
     }
     for marker in \
-        "Mich virtio-net: DRIVER_OK pass" \
-        "Mich virtio-net: DHCP ACK receive pass" \
-        "Mich virtio-net: DHCP IPv4 lease applied" \
-        "Mich virtio-net: external ping reply pass" \
-        "Mich virtio-net: external UDP reply pass" \
-        "Mich virtio-net: external socket UDP reply pass" \
-        "Mich virtio-net: external TCP handshake and echo pass" \
-        "Mich virtio-net: TCP stream soak pass" \
-        "Mich virtio-net: external TCP FIN lifecycle pass" \
-        "Mich virtio-net: external IPv6 DAD pass" \
-        "Mich virtio-net: external IPv6 RA and SLAAC pass" \
-        "Mich virtio-net: external IPv6 ping reply pass" \
-        "Mich virtio-net: external UDPv6 ICMP error pass" \
-        "Mich virtio-net: userspace capsule running"
+        "$safe_bootstrap" \
+        "$safe_device" \
+        "$safe_interface" \
+        "$safe_virtio" \
+        "$safe_ipv4" \
+        "$safe_queued" \
+        "$safe_echo"
     do
-        [ "$(grep -Fc "$marker" "$log")" -eq 2 ] || {
+        [ "$(grep -Fc "$marker" "$log")" -eq 1 ] || {
             cat "$log"
             exit 1
         }
     done
     baseline_line="$(grep -Fn "Mich virtio-net: pre-restart network baseline pass" "$log" | sed -n '1s/:.*//p')"
+    audit_line="$(grep -Fn "$audit" "$log" | sed -n '1s/:.*//p')"
     first_fault_line="$(grep -Fn "$restart_fault" "$log" | sed -n '1s/:.*//p')"
     second_fault_line="$(grep -Fn "$restart_fault" "$log" | sed -n '2s/:.*//p')"
     first_exception_line="$(grep -Fn "Mich x86_64: user fault vec=0000000000000006 rip=" "$log" | awk -F: -v line="$first_fault_line" '$1 > line { print $1; exit }')"
@@ -789,16 +796,27 @@ if [ "$profile" = "msi-recovery" ]; then
     second_exception_line="$(grep -Fn "Mich x86_64: user fault vec=0000000000000006 rip=" "$log" | awk -F: -v line="$second_fault_line" '$1 > line { print $1; exit }')"
     second_contained_line="$(grep -Fn "Mich x86_64: user exception contained" "$log" | awk -F: -v line="$second_fault_line" '$1 > line { print $1; exit }')"
     selected_line="$(grep -Fn "$selected" "$log" | sed -n '1s/:.*//p')"
-    external_line="$(grep -Fn "Mich virtio-net: external TCP handshake and echo pass" "$log" | sed -n '2s/:.*//p')"
+    safe_bootstrap_line="$(grep -Fn "$safe_bootstrap" "$log" | sed -n '1s/:.*//p')"
+    safe_device_line="$(grep -Fn "$safe_device" "$log" | sed -n '1s/:.*//p')"
+    safe_interface_line="$(grep -Fn "$safe_interface" "$log" | sed -n '1s/:.*//p')"
+    safe_virtio_line="$(grep -Fn "$safe_virtio" "$log" | sed -n '1s/:.*//p')"
+    safe_ipv4_line="$(grep -Fn "$safe_ipv4" "$log" | sed -n '1s/:.*//p')"
+    safe_queued_line="$(grep -Fn "$safe_queued" "$log" | sed -n '1s/:.*//p')"
+    safe_echo_line="$(grep -Fn "$safe_echo" "$log" | sed -n '1s/:.*//p')"
     first_rip="$(sed -n "${first_exception_line}p" "$log" | sed -n 's/.* rip=\([^[:space:]]*\).*/\1/p')"
     second_rip="$(sed -n "${second_exception_line}p" "$log" | sed -n 's/.* rip=\([^[:space:]]*\).*/\1/p')"
-    [ -n "$baseline_line" ] && [ -n "$first_fault_line" ] &&
+    [ -n "$audit_line" ] && [ -n "$baseline_line" ] &&
+    [ -n "$first_fault_line" ] &&
     [ -n "$second_fault_line" ] && [ -n "$first_exception_line" ] &&
     [ -n "$first_contained_line" ] && [ -n "$restart_line" ] &&
     [ -n "$eth0_line" ] && [ -n "$second_exception_line" ] &&
     [ -n "$second_contained_line" ] && [ -n "$selected_line" ] &&
-    [ -n "$external_line" ] && [ -n "$first_rip" ] &&
+    [ -n "$safe_bootstrap_line" ] && [ -n "$safe_device_line" ] &&
+    [ -n "$safe_interface_line" ] && [ -n "$safe_virtio_line" ] &&
+    [ -n "$safe_ipv4_line" ] && [ -n "$safe_queued_line" ] &&
+    [ -n "$safe_echo_line" ] && [ -n "$first_rip" ] &&
     [ "$first_rip" = "$second_rip" ] &&
+    [ "$audit_line" -lt "$baseline_line" ] &&
     [ "$baseline_line" -lt "$first_fault_line" ] &&
     [ "$first_fault_line" -lt "$first_exception_line" ] &&
     [ "$first_exception_line" -lt "$first_contained_line" ] &&
@@ -808,7 +826,13 @@ if [ "$profile" = "msi-recovery" ]; then
     [ "$second_fault_line" -lt "$second_exception_line" ] &&
     [ "$second_exception_line" -lt "$second_contained_line" ] &&
     [ "$second_contained_line" -lt "$selected_line" ] &&
-    [ "$selected_line" -lt "$external_line" ] || {
+    [ "$selected_line" -lt "$safe_bootstrap_line" ] &&
+    [ "$safe_bootstrap_line" -lt "$safe_device_line" ] &&
+    [ "$safe_device_line" -lt "$safe_interface_line" ] &&
+    [ "$safe_interface_line" -lt "$safe_virtio_line" ] &&
+    [ "$safe_virtio_line" -lt "$safe_ipv4_line" ] &&
+    [ "$safe_ipv4_line" -lt "$safe_queued_line" ] &&
+    [ "$safe_queued_line" -lt "$safe_echo_line" ] || {
         cat "$log"
         exit 1
     }

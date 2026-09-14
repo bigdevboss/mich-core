@@ -103,6 +103,7 @@ struct virtio_net_capsule {
     unsigned int listener_handle;
     unsigned int accepted_handle;
     unsigned int passive_received;
+    unsigned int passive_closed;
     unsigned int offered_address;
     unsigned int offered_netmask;
     unsigned int offered_gateway;
