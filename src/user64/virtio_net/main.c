@@ -14,6 +14,12 @@
 
 #include "capsule.h"
 
+#define VIRTIO_NET_ETHERNET_HEADER 14
+#define VIRTIO_NET_IPV4_MIN_HEADER 20
+#define VIRTIO_NET_TCP_MIN_HEADER 20
+#define VIRTIO_NET_TCP_SYN 0x02
+#define VIRTIO_NET_TCP_ACK 0x10
+
 static unsigned long long read_cycles(void) {
     unsigned int low;
     unsigned int high;
@@ -62,6 +68,86 @@ static void write_cycle_metric(const char *prefix,
     text[length++] = '\n';
     text[length] = 0;
     mich_write(text);
+}
+
+void virtio_net_timing_mark(const struct virtio_net_capsule *capsule,
+                            const char *phase) {
+    if (!capsule || !capsule->timing_enabled || !phase) return;
+    char text[80];
+    const char *prefix = "Mich virtio-net: timing ";
+    unsigned int length = 0;
+    while (prefix[length] && length < sizeof(text) - 19) {
+        text[length] = prefix[length];
+        length++;
+    }
+    unsigned int phase_index = 0;
+    while (phase[phase_index] && length < sizeof(text) - 19) {
+        text[length++] = phase[phase_index++];
+    }
+    if (phase[phase_index]) return;
+    text[length++] = ' ';
+    text[length++] = 't';
+    text[length++] = 'i';
+    text[length++] = 'c';
+    text[length++] = 'k';
+    text[length++] = 's';
+    text[length++] = '=';
+    text[length++] = '0';
+    text[length++] = 'x';
+    unsigned int ticks = mich_ticks();
+    for (int shift = 28; shift >= 0; shift -= 4) {
+        unsigned int digit = (ticks >> shift) & 15u;
+        text[length++] = digit < 10 ? (char)('0' + digit) :
+                                     (char)('A' + digit - 10);
+    }
+    text[length++] = '\n';
+    text[length] = 0;
+    mich_write(text);
+}
+
+static void observe_passive_ingress(struct virtio_net_capsule *capsule,
+                                    const volatile unsigned char *frame,
+                                    unsigned int length) {
+    if (!capsule || !capsule->timing_enabled || !capsule->listener_handle ||
+        !frame || length < VIRTIO_NET_ETHERNET_HEADER +
+        VIRTIO_NET_IPV4_MIN_HEADER)
+        return;
+    if (frame[12] != 0x08 || frame[13] != 0x00) return;
+    unsigned int ipv4 = VIRTIO_NET_ETHERNET_HEADER;
+    unsigned int ipv4_header = (unsigned int)(frame[ipv4] & 15u) * 4;
+    if ((frame[ipv4] >> 4) != 4 ||
+        ipv4_header < VIRTIO_NET_IPV4_MIN_HEADER ||
+        ipv4_header > length - ipv4)
+        return;
+    unsigned int total = ((unsigned int)frame[ipv4 + 2] << 8) |
+        frame[ipv4 + 3];
+    if (total < ipv4_header + VIRTIO_NET_TCP_MIN_HEADER ||
+        total > length - ipv4 || (frame[ipv4 + 6] & 0x3Fu) ||
+        frame[ipv4 + 7] || frame[ipv4 + 9] != 6)
+        return;
+    unsigned int tcp = ipv4 + ipv4_header;
+    unsigned int tcp_header = (unsigned int)(frame[tcp + 12] >> 4) * 4;
+    if (tcp_header < VIRTIO_NET_TCP_MIN_HEADER ||
+        tcp_header > total - ipv4_header ||
+        (((unsigned int)frame[tcp + 2] << 8) | frame[tcp + 3]) !=
+            VIRTIO_NET_PASSIVE_PORT)
+        return;
+    unsigned int flags = frame[tcp + 13];
+    if ((flags & VIRTIO_NET_TCP_SYN) && !capsule->passive_ingress_syn_seen) {
+        capsule->passive_ingress_syn_seen = 1;
+        virtio_net_timing_mark(capsule, "passive-ingress-syn");
+    }
+    if (capsule->passive_ingress_syn_seen &&
+        !(flags & VIRTIO_NET_TCP_SYN) && (flags & VIRTIO_NET_TCP_ACK) &&
+        !capsule->passive_ingress_ack_seen) {
+        capsule->passive_ingress_ack_seen = 1;
+        virtio_net_timing_mark(capsule, "passive-ingress-ack");
+    }
+    if (total > ipv4_header + tcp_header &&
+        !capsule->passive_ingress_data_seen) {
+        capsule->passive_ingress_data_seen = 1;
+        virtio_net_timing_mark(capsule, "passive-ingress-data");
+    }
 }
 
 static int transition(struct virtio_net_capsule *capsule,
@@ -786,6 +872,13 @@ static int process_rx_head(struct virtio_net_capsule *capsule,
             }
             unsigned int frame_length =
                 length - VIRTIO_NET_HEADER_SIZE;
+            unsigned int pool_slot =
+                (unsigned int)capsule->rx_buffers[slot] - 1;
+            const volatile unsigned char *frame =
+                (const volatile unsigned char *)VIRTIO_NET_POOL_ADDRESS +
+                (unsigned long long)pool_slot * NET_PACKET_DATA_MAX +
+                NET_PACKET_HEADROOM;
+            observe_passive_ingress(capsule, frame, frame_length);
             dhcp_message = parse_dhcp_reply(capsule, slot, frame_length);
             if (dhcp_message == 2 && !capsule->dhcp_offer_seen) {
                 capsule->dhcp_offer_seen = 1;
@@ -1062,14 +1155,18 @@ static void restart_test_poll(struct virtio_net_capsule *capsule) {
                          capsule->recovery_test_enabled) &&
         capsule->restart_count == 1;
     if (!circuit_fault && !probes_external_complete(capsule)) return;
-    if (!capsule->restart_count)
+    if (!capsule->restart_count) {
         mich_write("Mich virtio-net: pre-restart network baseline pass\n");
+        virtio_net_timing_mark(capsule, "pre-restart");
+    }
     if (!capsule->restart_count || circuit_fault) {
         mich_write("Mich virtio-net: restart fault injected\n");
+        virtio_net_timing_mark(capsule, "fault");
         __asm__ volatile("ud2" ::: "memory");
     }
     capsule->restart_test_complete = 1;
     mich_write("Mich virtio-net: post-restart network baseline pass\n");
+    virtio_net_timing_mark(capsule, "post-restart");
 }
 #endif
 
@@ -1118,6 +1215,7 @@ int main(unsigned long long argument) {
     capsule.external_probe_enabled = (unsigned int)(argument >> 32) & 1u;
 #ifndef VIRTIO_NET_SAFE_ARTIFACT
     capsule.restart_test_enabled = (unsigned int)(argument >> 33) & 1u;
+    capsule.timing_enabled = capsule.restart_test_enabled;
     capsule.circuit_test_enabled = (unsigned int)(argument >> 34) & 1u;
     capsule.recovery_test_enabled = (unsigned int)(argument >> 35) & 1u;
     if ((capsule.circuit_test_enabled && !capsule.restart_test_enabled) ||
@@ -1130,8 +1228,10 @@ int main(unsigned long long argument) {
 #endif
     mich_write("Mich virtio-net: bootstrap pass\n");
 #ifndef VIRTIO_NET_SAFE_ARTIFACT
-    if (capsule.restart_test_enabled && capsule.restart_count == 1)
+    if (capsule.restart_test_enabled && capsule.restart_count == 1) {
         mich_write("Mich virtio-net: supervisor restart pass\n");
+        virtio_net_timing_mark(&capsule, "supervisor-restart");
+    }
 #else
     mich_write("Mich virtio-net: recovery artifact selected\n");
 #endif
@@ -1159,8 +1259,10 @@ int main(unsigned long long argument) {
     if (setup_interface(&capsule)) return 6;
     mich_write("Mich virtio-net: network interface registered\n");
 #ifndef VIRTIO_NET_SAFE_ARTIFACT
-    if (capsule.restart_test_enabled && capsule.restart_count == 1)
+    if (capsule.restart_test_enabled && capsule.restart_count == 1) {
         mich_write("Mich virtio-net: fresh eth0 re-registration pass\n");
+        virtio_net_timing_mark(&capsule, "fresh-eth0");
+    }
     if ((capsule.circuit_test_enabled || capsule.recovery_test_enabled) &&
         capsule.restart_count == 1)
         restart_test_poll(&capsule);
@@ -1220,6 +1322,16 @@ int main(unsigned long long argument) {
         process_tx_batch(&capsule);
         if (capsule.restart_requested) return 10;
         int ready = mich_wait_many(&waits);
+        if (capsule.timing_enabled && ready == 2 &&
+            capsule.listener_timer_snapshot_pending) {
+            capsule.listener_timer_snapshot_pending = 0;
+            if (!capsule.accepted_handle) capsule.listener_snapshot_due = 1;
+        }
+        if (capsule.timing_enabled && capsule.passive_wait_reported &&
+            !capsule.passive_wake_reported) {
+            capsule.passive_wake_reported = 1;
+            virtio_net_timing_mark(&capsule, "passive-wake");
+        }
         if (ready == 0) {
             struct mich_bridge_notification notification;
             while (!mich_bridge_read(capsule.bridge_handle, &notification)) {

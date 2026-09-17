@@ -14,6 +14,52 @@ static const unsigned char stream_message[] = {
 
 #define STREAM_ROUNDS 32
 
+static void append_snapshot_text(char *text, unsigned int *length,
+                                 const char *value) {
+    for (unsigned int index = 0; value[index] && *length < 158; index++)
+        text[(*length)++] = value[index];
+}
+
+static void append_snapshot_hex(char *text, unsigned int *length,
+                                unsigned int value) {
+    for (int shift = 28; shift >= 0 && *length < 158; shift -= 4) {
+        unsigned int digit = (value >> shift) & 15u;
+        text[(*length)++] = digit < 10 ? (char)('0' + digit) :
+                                     (char)('A' + digit - 10);
+    }
+}
+
+static void report_passive_snapshot(struct virtio_net_capsule *capsule,
+                                    unsigned int handle, const char *phase,
+                                    unsigned int rx_progress) {
+    if (!capsule || !capsule->timing_enabled || !handle) return;
+    struct mich_socket_stream_state_result state;
+    state.state = 0;
+    state.readiness = 0;
+    state.error = 0;
+    state.eof = 0;
+    unsigned int queried = !mich_socket_stream_state(handle, &state);
+    char text[160];
+    unsigned int length = 0;
+    append_snapshot_text(text, &length, "Mich virtio-net: passive snapshot ");
+    append_snapshot_text(text, &length, phase);
+    append_snapshot_text(text, &length, " query=0x");
+    append_snapshot_hex(text, &length, queried);
+    append_snapshot_text(text, &length, " state=0x");
+    append_snapshot_hex(text, &length, state.state);
+    append_snapshot_text(text, &length, " ready=0x");
+    append_snapshot_hex(text, &length, state.readiness);
+    append_snapshot_text(text, &length, " error=0x");
+    append_snapshot_hex(text, &length, (unsigned int)state.error);
+    append_snapshot_text(text, &length, " eof=0x");
+    append_snapshot_hex(text, &length, state.eof);
+    append_snapshot_text(text, &length, " rx-progress=0x");
+    append_snapshot_hex(text, &length, rx_progress ? 1 : 0);
+    text[length++] = '\n';
+    text[length] = 0;
+    mich_write(text);
+}
+
 static inline int queue_stream_message(struct virtio_net_capsule *capsule) {
     struct mich_socket_stream_data data;
     data.length = sizeof(stream_message);
@@ -167,12 +213,18 @@ void probes_on_ipv4_up(struct virtio_net_capsule *capsule) {
     if (listener > 0) {
         struct mich_socket_stream_listen_request listen;
         listen.interface_handle = capsule->interface_handle;
-        listen.local_port = 8082;
+        listen.local_port = VIRTIO_NET_PASSIVE_PORT;
         listen.backlog = 8;
         if (!mich_socket_stream_listen(
                 (unsigned int)listener, &listen)) {
             capsule->listener_handle = (unsigned int)listener;
+            if (capsule->timing_enabled) {
+                capsule->listener_timer_snapshot_pending = 1;
+                capsule->listener_rx_packets = capsule->rx_packets;
+                capsule->listener_rx_drops = capsule->rx_drops;
+            }
             mich_write("Mich virtio-net: passive listener ready\n");
+            virtio_net_timing_mark(capsule, "passive-listener");
         }
     }
 }
@@ -314,19 +366,55 @@ int probes_poll(struct virtio_net_capsule *capsule) {
             mich_write("Mich virtio-net: external TCP FIN lifecycle pass\n");
         }
     }
+    if (capsule->timing_enabled && capsule->listener_snapshot_due &&
+        !capsule->accepted_handle && !capsule->listener_snapshot_reported) {
+        capsule->listener_snapshot_due = 0;
+        capsule->listener_snapshot_reported = 1;
+        report_passive_snapshot(
+            capsule, capsule->listener_handle, "listener",
+            capsule->rx_packets != capsule->listener_rx_packets ||
+            capsule->rx_drops != capsule->listener_rx_drops);
+    }
     if (capsule->listener_handle && !capsule->accepted_handle) {
         int accepted = mich_socket_stream_accept(capsule->listener_handle);
         if (accepted > 0) {
             capsule->accepted_handle = (unsigned int)accepted;
             mich_write("Mich virtio-net: external passive accept pass\n");
+            virtio_net_timing_mark(capsule, "passive-accept");
         }
     }
     if (capsule->accepted_handle && capsule->passive_received < 8) {
         struct mich_socket_stream_data data;
         data.length = 0;
         data.reserved = 0;
-        if (capsule->passive_received < sizeof(passive_message) &&
-            !mich_socket_stream_receive(capsule->accepted_handle, &data)) {
+        if (capsule->timing_enabled && !capsule->passive_receive_polled) {
+            capsule->passive_receive_polled = 1;
+            virtio_net_timing_mark(capsule, "passive-receive");
+        }
+        int receive_result = -1;
+        if (capsule->passive_received < sizeof(passive_message))
+            receive_result = mich_socket_stream_receive(
+                capsule->accepted_handle, &data);
+        if (capsule->timing_enabled && !receive_result && !data.length &&
+            !capsule->passive_empty_snapshot_reported) {
+            capsule->passive_empty_snapshot_reported = 1;
+            capsule->passive_rx_packets = capsule->rx_packets;
+            capsule->passive_rx_drops = capsule->rx_drops;
+            report_passive_snapshot(
+                capsule, capsule->accepted_handle, "empty", 0);
+        }
+        if (capsule->timing_enabled && capsule->passive_wake_reported &&
+            capsule->passive_empty_snapshot_reported &&
+            !capsule->passive_wake_snapshot_reported) {
+            capsule->passive_wake_snapshot_reported = 1;
+            report_passive_snapshot(
+                capsule, capsule->accepted_handle, "wake",
+                capsule->rx_packets != capsule->passive_rx_packets ||
+                capsule->rx_drops != capsule->passive_rx_drops);
+        }
+        if (!receive_result) {
+            if (data.length)
+                virtio_net_timing_mark(capsule, "passive-bytes");
             if (data.length > sizeof(passive_message) -
                               capsule->passive_received) {
                 capsule->passive_received = 9;
@@ -346,8 +434,14 @@ int probes_poll(struct virtio_net_capsule *capsule) {
             if (!mich_socket_stream_send(capsule->accepted_handle, &data)) {
                 capsule->passive_received = 8;
                 mich_write("Mich virtio-net: external passive echo pass\n");
+                virtio_net_timing_mark(capsule, "passive-echo");
             }
         }
+    }
+    if (capsule->timing_enabled && capsule->accepted_handle &&
+        capsule->passive_received < 8 && !capsule->passive_wait_reported) {
+        capsule->passive_wait_reported = 1;
+        virtio_net_timing_mark(capsule, "passive-wait");
     }
     if (capsule->accepted_handle &&
         capsule->passive_received == sizeof(passive_message) + 1 &&
@@ -361,6 +455,7 @@ int probes_poll(struct virtio_net_capsule *capsule) {
             (state.readiness & SOCKET_READY_HANGUP)) {
             capsule->passive_closed = 1;
             mich_write("Mich virtio-net: external passive close pass\n");
+            virtio_net_timing_mark(capsule, "passive-close");
         }
     }
     if (capsule->ipv6_dad_complete && !capsule->ipv6_slaac_ready)

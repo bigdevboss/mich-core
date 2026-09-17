@@ -62,47 +62,74 @@ if [ "$profile" = "msi" ] || [ "$profile" = "msi-restart" ] ||
     passive_result="$(mktemp)"
     if [ "$profile" = "msi-restart" ]; then passive_expected=2; else passive_expected=1; fi
     python3 - "$passive_result" "$qemu_timeout" "$log" "$passive_expected" <<'PY' &
+import os
 import socket
 import sys
 import time
 
 result, timeout, log, expected = sys.argv[1:]
-deadline = time.monotonic() + int(timeout) - 5
+deadline = time.monotonic() + int(timeout)
 ready_marker = "Mich virtio-net: passive listener ready"
+trace_path = os.environ.get("MICH_QEMU_PASSIVE_TRACE")
+trace_start = time.monotonic()
+
+def trace(event):
+    if not trace_path:
+        return
+    try:
+        with open(trace_path, "a", encoding="ascii") as output:
+            elapsed = time.monotonic() - trace_start
+            output.write(f"{elapsed:.3f}s {event}\n")
+    except OSError:
+        pass
+
 expected = int(expected)
 completed = 0
+observed_ready = 0
+trace("passive peer started")
 while time.monotonic() < deadline:
     try:
         with open(log, "r", encoding="ascii", errors="replace") as input:
             ready = input.read().count(ready_marker)
     except OSError:
         ready = 0
+    if ready > observed_ready:
+        observed_ready = ready
+        trace(f"serial passive listener count={ready}")
     if ready <= completed:
         time.sleep(0.1)
         continue
     connection = None
     try:
+        trace(f"passive session {completed + 1} connect")
         connection = socket.create_connection(("127.0.0.1", 10080), 0.2)
-        connection.settimeout(5)
+        connection.settimeout(0.2)
         connection.sendall(b"PASSIVE")
+        trace(f"passive session {completed + 1} sent")
         data = b""
-        while len(data) < 7:
-            chunk = connection.recv(7 - len(data))
+        while len(data) < 7 and time.monotonic() < deadline:
+            try:
+                chunk = connection.recv(7 - len(data))
+            except socket.timeout:
+                continue
             if not chunk:
                 break
             data += chunk
+        trace(f"passive session {completed + 1} received={data!r}")
         if data == b"PASSIVE":
             completed += 1
             if completed == expected:
                 with open(result, "w", encoding="ascii") as output:
                     output.write("PASS")
+                trace("passive peer pass")
                 break
-    except OSError:
-        pass
+    except OSError as error:
+        trace(f"passive session {completed + 1} error={error.__class__.__name__}")
     finally:
         if connection is not None:
             connection.close()
     time.sleep(0.1)
+trace(f"passive peer deadline completed={completed}")
 PY
     passive_pid=$!
 fi

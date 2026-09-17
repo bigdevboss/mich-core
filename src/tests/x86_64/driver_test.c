@@ -22,6 +22,7 @@ static u32 driver_test_stops;
 static u32 supervisor_test_quiesces;
 static u32 supervisor_test_resets;
 static u32 supervisor_test_revokes;
+static int supervisor_test_quiesce_fail;
 static u32 stress_irq_masks;
 static u32 stress_irq_releases;
 
@@ -43,7 +44,16 @@ static int supervisor_test_spawn(const struct driver_domain *d) {
 static int supervisor_test_quiesce(struct kernel_object *device) {
     if (!pci_resource_get(device)) return -1;
     supervisor_test_quiesces++;
-    return 0;
+    return supervisor_test_quiesce_fail ? -1 : 0;
+}
+
+static int supervisor_test_recovery_audit_clear(
+    const struct driver_recovery_audit *audit) {
+    if (!audit) return 0;
+    const u8 *bytes = (const u8 *)audit;
+    for (usize_t index = 0; index < sizeof(*audit); index++)
+        if (bytes[index]) return 0;
+    return 1;
 }
 
 static int supervisor_test_reset(struct kernel_object *device) {
@@ -508,6 +518,7 @@ static int driver_crash_passport_self_test(
         status.fallback_enabled && !status.fallback_used &&
         status.fallback_triggers == DRIVER_RECOVERY_TRIGGER_ALL &&
         status.image_id == manifest->image_id &&
+        status.recovery_audit.outcome == DRIVER_RECOVERY_AUDIT_NONE &&
         !status.crash_repeat_count && !status.crash_repeat_deadline;
     int released = !driver_domain_admin_release(domain);
     domain = driver_passport_domain(device, manifest, 0, 0, 0, 0, 8);
@@ -598,13 +609,95 @@ static int driver_recovery_launch_decision_self_test(
         return -1;
     }
     struct driver_domain_status status;
-    int valid = driver_domain_start(domain) < 0 &&
+    int primary_failed = driver_domain_start(domain) < 0 &&
         !driver_domain_status(domain, &status) &&
         status.state == DRIVER_DOMAIN_FAILED && status.pid == -1 &&
         status.terminal_reason == DRIVER_TERMINAL_LAUNCH_FAILURE &&
-        status.last_decision == DRIVER_RECOVERY_DECISION_LAUNCH_FAILURE;
+        status.last_decision == DRIVER_RECOVERY_DECISION_LAUNCH_FAILURE &&
+        status.recovery_audit.outcome == DRIVER_RECOVERY_AUDIT_NONE;
     driver_domain_destroy(domain);
-    return valid ? 0 : -1;
+
+    struct driver_recovery_profile fallback;
+    fallback.image_id = 15;
+    fallback.capabilities = 0;
+    fallback.argument = 0x4C41554E4348ULL;
+    domain = driver_passport_domain(
+        device, source, &fallback, 0,
+        DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT, 0, 8);
+    if (!domain) return -1;
+    int pid = domain->pid;
+    driver_supervisor_report_user_fault(pid, 6, 0, 0x400600, 0, 600);
+    driver_supervisor_task_died(pid, 134, 600);
+    driver_supervisor_tick(domain->restart_deadline);
+    pid = domain->pid;
+    driver_supervisor_report_user_fault(pid, 6, 0, 0x400600, 0, 602);
+    driver_supervisor_task_died(pid, 134, 602);
+    int fallback_pending = !driver_domain_status(domain, &status) &&
+        status.state == DRIVER_DOMAIN_BACKOFF && status.pid == -1 &&
+        status.generation == 2 && status.image_id == fallback.image_id &&
+        status.fallback_used &&
+        status.recovery_audit.trigger == DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT &&
+        status.recovery_audit.outcome == DRIVER_RECOVERY_AUDIT_SELECTED &&
+        status.recovery_audit.profile.image_id == fallback.image_id &&
+        status.recovery_audit.profile.argument == fallback.argument &&
+        status.recovery_audit.passport.generation == 2 &&
+        status.recovery_audit.passport.ticks == 602 &&
+        status.recovery_audit.passport.rip == 0x400600;
+    driver_supervisor_tick(domain->restart_deadline);
+    int fallback_failed = !driver_domain_status(domain, &status) &&
+        status.state == DRIVER_DOMAIN_FAILED && status.pid == -1 &&
+        status.generation == 2 && status.image_id == fallback.image_id &&
+        status.fallback_used &&
+        status.terminal_reason == DRIVER_TERMINAL_LAUNCH_FAILURE &&
+        status.last_decision == DRIVER_RECOVERY_DECISION_LAUNCH_FAILURE &&
+        status.recovery_audit.trigger == DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT &&
+        status.recovery_audit.outcome == DRIVER_RECOVERY_AUDIT_SELECTED &&
+        status.recovery_audit.profile.image_id == fallback.image_id &&
+        status.recovery_audit.passport.generation == 2 &&
+        status.recovery_audit.passport.ticks == 602 &&
+        status.recovery_audit.passport.rip == 0x400600;
+    driver_domain_destroy(domain);
+    return primary_failed && fallback_pending && fallback_failed ? 0 : -1;
+}
+
+static int driver_recovery_teardown_audit_self_test(
+    struct kernel_object *device, const struct driver_user_manifest *manifest) {
+    struct driver_recovery_profile fallback;
+    fallback.image_id = 7;
+    fallback.capabilities = 0;
+    fallback.argument = 0x54454152444F574EULL;
+    struct driver_domain *domain = driver_passport_domain(
+        device, manifest, &fallback, 0,
+        DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT, 0, 8);
+    if (!domain) return -1;
+    struct driver_domain *slot = domain;
+    int pid = domain->pid;
+    supervisor_test_quiesce_fail = 1;
+    driver_supervisor_report_user_fault(pid, 6, 0, 0x400610, 0, 610);
+    driver_supervisor_task_died(pid, 134, 610);
+    supervisor_test_quiesce_fail = 0;
+    struct driver_domain_status status;
+    int quarantined = !driver_domain_status(domain, &status) &&
+        status.state == DRIVER_DOMAIN_QUARANTINED && status.pid == -1 &&
+        status.generation == 1 && status.fallback_enabled &&
+        !status.fallback_used &&
+        status.terminal_reason == DRIVER_TERMINAL_TEARDOWN_FAILURE &&
+        status.last_decision == DRIVER_RECOVERY_DECISION_TEARDOWN_QUARANTINE &&
+        status.last_crash.kind == DRIVER_CRASH_USER_EXCEPTION &&
+        status.last_crash.generation == 1 && status.last_crash.ticks == 610 &&
+        status.last_crash.rip == 0x400610 &&
+        status.recovery_audit.outcome == DRIVER_RECOVERY_AUDIT_NONE;
+    for (u32 index = 0; index < DRIVER_DOMAIN_RESOURCE_MAX; index++)
+        if (domain->issued_handles[index]) quarantined = 0;
+    int released = !driver_domain_admin_release(domain);
+
+    struct driver_domain *reused = driver_passport_domain(
+        device, manifest, 0, 0, 0, 0, 8);
+    int clean_reuse = reused == slot && !driver_domain_status(reused, &status) &&
+        status.state == DRIVER_DOMAIN_RUNNING && status.generation == 1 &&
+        supervisor_test_recovery_audit_clear(&status.recovery_audit);
+    if (reused) driver_domain_destroy(reused);
+    return quarantined && released && clean_reuse ? 0 : -1;
 }
 
 static int driver_recovery_fallback_self_test(
@@ -1160,6 +1253,7 @@ static __attribute__((cold, noinline, optimize("Os"))) int driver_supervisor(
     supervisor_test_quiesces = 0;
     supervisor_test_resets = 0;
     supervisor_test_revokes = 0;
+    supervisor_test_quiesce_fail = 0;
     driver_supervisor_init(supervisor_test_spawn, supervisor_test_quiesce,
                            supervisor_test_reset, supervisor_test_revoke,
                            supervisor_test_terminate);
@@ -1385,13 +1479,16 @@ static __attribute__((cold, noinline, optimize("Os"))) int driver_supervisor(
     int passport_test = driver_crash_passport_self_test(device, &manifest);
     int policy_test = driver_crash_policy_self_test(device, &manifest);
     int launch_test = driver_recovery_launch_decision_self_test(device, &manifest);
+    int teardown_audit_test =
+        driver_recovery_teardown_audit_self_test(device, &manifest);
     int fallback_test = driver_recovery_fallback_self_test(device, &manifest);
     int selector_test = driver_recovery_selector_self_test(device, &manifest);
     int stress_test = driver_crash_stress_self_test(device);
     int graceful_test = graceful_stop64_self_test(device);
     valid = valid && !manager_register_test && !manager_fallback_test &&
-        !passport_test && !policy_test && !launch_test && !fallback_test &&
-        !selector_test && !stress_test && !graceful_test;
+        !passport_test && !policy_test && !launch_test &&
+        !teardown_audit_test && !fallback_test && !selector_test &&
+        !stress_test && !graceful_test;
     object_release(dependent_device);
     object_release(device);
     driver_supervisor_init(test_env->spawn, test_env->quiesce,
