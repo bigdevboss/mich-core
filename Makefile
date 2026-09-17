@@ -69,6 +69,7 @@ DISK64_HARDWARE = $(BIN64)/disk-hardware.img
 DISK64_HARDWARE_RESTART = $(BIN64)/disk-hardware-restart.img
 DISK64_HARDWARE_CIRCUIT = $(BIN64)/disk-hardware-circuit.img
 DISK64_HARDWARE_RECOVERY = $(BIN64)/disk-hardware-recovery.img
+RECOVERY_STABILITY_RUNS ?= 3
 DISK64_PANIC = $(BIN64)/disk-panic.img
 UEFI64_OBJ = $(OBJ64)/uefi.o
 UEFI64_EFI = $(BIN64)/BOOTX64.EFI
@@ -525,6 +526,15 @@ test64-msi-circuit: $(DISK64_HARDWARE_CIRCUIT)
 test64-msi-recovery: $(DISK64_HARDWARE_RECOVERY)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_HARDWARE_RECOVERY) 256M msi-recovery
 
+test64-msi-restart-stability: $(DISK64_HARDWARE_RESTART)
+	sh ./scripts/qemu-recovery-stability.sh $(DISK64_HARDWARE_RESTART) 256M msi-restart $(RECOVERY_STABILITY_RUNS)
+
+test64-msi-circuit-stability: $(DISK64_HARDWARE_CIRCUIT)
+	sh ./scripts/qemu-recovery-stability.sh $(DISK64_HARDWARE_CIRCUIT) 256M msi-circuit $(RECOVERY_STABILITY_RUNS)
+
+test64-msi-recovery-stability: $(DISK64_HARDWARE_RECOVERY)
+	sh ./scripts/qemu-recovery-stability.sh $(DISK64_HARDWARE_RECOVERY) 256M msi-recovery $(RECOVERY_STABILITY_RUNS)
+
 test64-pcie: $(DISK64_TEST)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_TEST) 256M pcie
 
@@ -563,4 +573,4 @@ DEPFILES = $(OBJS:.o=.d) $(OBJS64:.o=.d) $(OBJS64_TEST:.o=.d) $(PORTABLE64_OBJS:
 clean:
 	rm -rf $(BIN_DIR)
 
-.PHONY: all run test run64 test64 test64-uefi test64-prod test64-unit test64-highmem test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-pcie test64-panic release-check clean
+.PHONY: all run test run64 test64 test64-uefi test64-prod test64-unit test64-highmem test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-msi-restart-stability test64-msi-circuit-stability test64-msi-recovery-stability test64-pcie test64-panic release-check clean

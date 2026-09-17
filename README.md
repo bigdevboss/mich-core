@@ -124,6 +124,15 @@ A driver manifest may set the graceful stop flag. Without the flag, the supervis
 
 The in-kernel driver tests cover the acknowledged path and the timeout fallback.
 
+### Experimental recovery laboratory
+
+The x86-64 QEMU laboratory can select one pretrusted, independently linked
+`virtio-net-safe.elf` artifact after a repeated exact primary-capsule crash
+fingerprint. The selection is one-shot and fail-closed; it does not patch or
+recompile driver code. See [Recovery Laboratory](docs/recovery-laboratory.md)
+for the selection contract, failure boundaries, audit record, and QEMU proof
+profiles.
+
 ### Network interface objects
 
 `KOBJECT_NET_INTERFACE` represents a registered network interface with:
@@ -742,6 +751,12 @@ Run dedicated x86-64 profiles:
 make test64-highmem
 make test64-hardware
 make test64-msi
+make test64-msi-restart
+make test64-msi-circuit
+make test64-msi-recovery
+make test64-msi-restart-stability
+make test64-msi-circuit-stability
+make test64-msi-recovery-stability
 make test64-pcie
 make test64-iommu
 make test64-amd-iommu

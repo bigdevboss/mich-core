@@ -20,6 +20,7 @@
 #define VIRTIO_NET_BATCH_MAX 16
 #define VIRTIO_NET_DRIVER_BATCH 8
 #define VIRTIO_NET_IWR_WAKE_CAP 32
+#define VIRTIO_NET_PASSIVE_PORT 8082
 #define DHCP_STATE_SELECTING 0
 #define DHCP_STATE_REQUESTING 1
 #define DHCP_STATE_BOUND 2
@@ -71,6 +72,7 @@ struct virtio_net_capsule {
     unsigned int config_generation;
     unsigned int external_probe_enabled;
     unsigned int restart_test_enabled;
+    unsigned int timing_enabled;
     unsigned int circuit_test_enabled;
     unsigned int recovery_test_enabled;
     unsigned int restart_count;
@@ -101,8 +103,23 @@ struct virtio_net_capsule {
     unsigned int stream_received;
     unsigned int readiness_reported;
     unsigned int listener_handle;
+    unsigned int listener_timer_snapshot_pending;
+    unsigned int listener_snapshot_due;
+    unsigned int listener_snapshot_reported;
+    unsigned int listener_rx_packets;
+    unsigned int listener_rx_drops;
+    unsigned int passive_ingress_syn_seen;
+    unsigned int passive_ingress_ack_seen;
+    unsigned int passive_ingress_data_seen;
     unsigned int accepted_handle;
     unsigned int passive_received;
+    unsigned int passive_receive_polled;
+    unsigned int passive_wait_reported;
+    unsigned int passive_wake_reported;
+    unsigned int passive_empty_snapshot_reported;
+    unsigned int passive_wake_snapshot_reported;
+    unsigned int passive_rx_packets;
+    unsigned int passive_rx_drops;
     unsigned int passive_closed;
     unsigned int offered_address;
     unsigned int offered_netmask;
@@ -129,7 +146,9 @@ struct virtio_net_capsule {
     unsigned int itr_reported;
 };
 
-// QEMU integration traffic. Not virtio device work.
+// QEMU integration support. Not virtio device work.
+void virtio_net_timing_mark(const struct virtio_net_capsule *capsule,
+                            const char *phase);
 void probes_on_ipv4_up(struct virtio_net_capsule *capsule);
 void probes_on_slaac(struct virtio_net_capsule *capsule);
 int probes_poll(struct virtio_net_capsule *capsule);
