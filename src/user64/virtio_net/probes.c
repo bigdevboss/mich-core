@@ -237,6 +237,7 @@ void probes_on_slaac(struct virtio_net_capsule *capsule) {
         return;
     capsule->ipv6_slaac_ready = 1;
     mich_write("Mich virtio-net: external IPv6 RA and SLAAC pass\n");
+    virtio_net_timing_mark(capsule, "ipv6-echo-initial");
     if (!mich_net_interface_ipv6_send_echo(
             capsule->interface_handle)) {
         capsule->ipv6_ping_sent = 1;
@@ -465,11 +466,18 @@ int probes_poll(struct virtio_net_capsule *capsule) {
                 capsule->interface_handle)) {
             capsule->ipv6_ping_complete = 1;
             mich_write("Mich virtio-net: external IPv6 ping reply pass\n");
+            virtio_net_timing_mark(capsule, "ipv6-echo-reply");
         } else if (capsule->ipv6_ping_retries < 3) {
             unsigned int now = mich_ticks();
             if ((int)(now - capsule->ipv6_ping_retry_at) >= 0) {
                 capsule->ipv6_ping_retry_at = now + 1000;
                 capsule->ipv6_ping_retries++;
+                if (capsule->ipv6_ping_retries == 1)
+                    virtio_net_timing_mark(capsule, "ipv6-echo-retry-1");
+                else if (capsule->ipv6_ping_retries == 2)
+                    virtio_net_timing_mark(capsule, "ipv6-echo-retry-2");
+                else
+                    virtio_net_timing_mark(capsule, "ipv6-echo-retry-3");
                 mich_net_interface_ipv6_send_echo(capsule->interface_handle);
             }
         }

@@ -5,6 +5,8 @@
 #include "elf64.h"
 #include "task.h"
 #include "arch_task.h"
+#include "posix_fd.h"
+#include "posix_profile.h"
 #include "scheduler.h"
 #include "service.h"
 #include "capability.h"
@@ -91,7 +93,7 @@
 #define BOOT_MODULE_PANIC_TEST (1u << 31)
 #define IOMMU_FAULT_BATCH 8
 /* The primary capsule's sole test ud2; its source location is intentionally fixed. */
-#define VIRTIO_NET_RECOVERY_TEST_RIP 0x100000E3EULL
+#define VIRTIO_NET_RECOVERY_TEST_RIP 0x100002756ULL
 
 static const struct driver_manager_recovery_config
     virtio_net_recovery_catalog[] = {
@@ -141,6 +143,7 @@ u32 timer_ticks;
 static const u8 *spawn_images[SPAWN_IMAGE_MAX];
 static u32 spawn_image_sizes[SPAWN_IMAGE_MAX];
 static u32 spawn_image_capabilities[SPAWN_IMAGE_MAX];
+static u32 spawn_image_flags[SPAWN_IMAGE_MAX];
 static u32 spawn_image_count;
 
 static int supervisor64_spawn(const struct driver_domain *domain);
@@ -882,6 +885,11 @@ static int spawn64_image(u32 image_id, int parent_id, u32 capabilities,
     task->parent_id = parent_id;
     task->capabilities = capabilities;
     task_set_name(task, name);
+    if ((spawn_image_flags[image_id] & BD_MODULE_POSIX_PROFILE) &&
+        posix_profile_admit(task)) {
+        task_free_slot(task);
+        return -1;
+    }
     context->rdi = argument;
     context->rsp = stack_top;
     context->rip = entry;
@@ -922,6 +930,10 @@ int fork64(void) {
     child->parent_id = parent->id;
     child->capabilities = 0;
     task_set_name(child, parent->name);
+    if (posix_fd_fork(parent, child) || posix_profile_fork(parent, child)) {
+        task_free_slot(child);
+        return -1;
+    }
     return child->id;
 }
 
@@ -968,6 +980,8 @@ int exec64(u64 path_address, u64 argument) {
         return ENOMEM;
     }
     object_release(node);
+    posix_fd_close_cloexec(task);
+    posix_profile_release(task);
     handle_close_all(task);
     u32 old_space = context->vm_space;
     context->vm_space = space;
@@ -1220,6 +1234,17 @@ void exception64_dispatch(struct exception_frame64 *frame) {
     serial64_write(" rip=");
     serial64_hex(frame->rip);
     serial64_write("\n");
+#ifdef MICH_TEST_BUILD
+    if (frame->vector == 14) {
+        serial64_write("Mich x86_64: user page fault error=");
+        serial64_hex(frame->error);
+        serial64_write(" cr2=");
+        serial64_hex(cr2);
+        serial64_write(" rsp=");
+        serial64_hex(frame->rsp);
+        serial64_write("\n");
+    }
+#endif
     struct task_context64 *context = &task_contexts[current_task_slot];
     context->rax = frame->rax;
     context->rbx = frame->rbx;
@@ -1422,6 +1447,7 @@ void kernel64_main(u32 magic, struct bd_info *info) {
         spawn_image_sizes[index] = modules[index].end - modules[index].start;
         spawn_image_capabilities[index] =
             modules[index].flags & CAP_BOOT_ALLOWED;
+        spawn_image_flags[index] = modules[index].flags;
     }
     pmm_init((uptr_t)info->mmap_ptr, (usize_t)info->mmap_count * 24,
              24, (paddr_t)(uptr_t)&_bss_end);
@@ -1442,6 +1468,8 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     service_init();
     object_init();
     vfs_init();
+    posix_fd_init();
+    posix_profile_init();
     if (bootfs64_init(modules, info->mods_count)) KERNEL_PANIC("bootfs mount");
     resource_init();
     iommu_init();
@@ -1498,6 +1526,10 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     test_env.terminate = supervisor64_terminate;
     if (tests64_run(&test_env)) KERNEL_PANIC("independent kernel tests");
     if (tests64_run_network(&test_env)) KERNEL_PANIC("independent network tests");
+    if ((spawn_image_flags[0] & BD_MODULE_POSIX_PROFILE) &&
+        !posix_profile_admitted(&task_pool[1]) &&
+        posix_profile_admit(&task_pool[1]))
+        KERNEL_PANIC("POSIX profile restore");
 #endif
     if (network_runtime_init()) KERNEL_PANIC("network runtime init");
     serial64_write("Mich x86_64: network runtime ready\n");

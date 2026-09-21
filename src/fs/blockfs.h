@@ -13,8 +13,9 @@ int blockfs_attach(u32 mount, struct kernel_object *device);
 void blockfs_detach(u32 mount);
 u32 blockfs_inode_count(u32 mount);
 int blockfs_inode_get(u32 mount, u32 inode, u32 *used, u32 *type, u32 *size,
-                      u32 *parent, char *name);
-int blockfs_inode_create(u32 mount, const char *name, u32 parent, u32 *inode);
+                      u32 *parent, u32 *mode, char *name);
+int blockfs_inode_create(u32 mount, const char *name, u32 parent, u32 type,
+                         u32 mode, u32 *inode);
 int blockfs_inode_remove(u32 mount, u32 inode);
 int blockfs_read(u32 mount, u32 inode, u32 offset, void *buffer,
                  u32 length, u32 *transferred);

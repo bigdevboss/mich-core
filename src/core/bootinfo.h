@@ -6,6 +6,7 @@
 #define BD_MAGIC 0x58424442u
 #define BD_VERSION 2u
 #define BD_VERSION_UEFI 3u
+#define BD_MODULE_POSIX_PROFILE (1u << 25)
 
 struct bd_module {
     u32 start;

@@ -10,6 +10,22 @@
 #define MICH_SYS_GETPID 16
 #define MICH_SYS_YIELD 23
 #define MICH_SYS_SPAWN 32
+#define MICH_SYS_POSIX_OPEN 186
+#define MICH_SYS_POSIX_CLOSE 187
+#define MICH_SYS_POSIX_READ 188
+#define MICH_SYS_POSIX_WRITE 189
+#define MICH_SYS_POSIX_LSEEK 190
+#define MICH_SYS_POSIX_DUP 191
+#define MICH_SYS_POSIX_DUP2 192
+#define MICH_SYS_POSIX_FCNTL 193
+#define MICH_SYS_POSIX_STAT 194
+#define MICH_SYS_POSIX_FSTAT 195
+#define MICH_SYS_POSIX_MKDIR 196
+#define MICH_SYS_POSIX_RMDIR 197
+#define MICH_SYS_POSIX_UNLINK 198
+#define MICH_SYS_POSIX_CHDIR 199
+#define MICH_SYS_POSIX_GETCWD 200
+#define MICH_SYS_POSIX_TRUNCATE 201
 
 long mich_syscall0(unsigned long number);
 long mich_syscall1(unsigned long number, unsigned long arg0);

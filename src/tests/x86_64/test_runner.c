@@ -16,10 +16,24 @@ int tests64_run(const struct test64_env *env) {
     serial64_write("Mich test64: firmware lookup service pass\n");
     serial64_write("Mich test64: VFS file lifetime pass\n");
     serial64_write("Mich test64: VFS unlink-open semantics pass\n");
+    serial64_write("Mich test64: VFS append transaction pass\n");
     serial64_write("Mich test64: VFS absolute and relative paths pass\n");
     serial64_write("Mich test64: VFS root escape protection pass\n");
     serial64_write("Mich test64: VFS path component bounds pass\n");
     serial64_write("Mich test64: VFS path mutation stress pass\n");
+    if (test_report_record(TEST_ID_POSIX_FD,
+                           test_posix_fd64(env->owner, env->target)))
+        return -1;
+    serial64_write("Mich test64: POSIX FD/OFD substrate pass\n");
+    serial64_write("Mich test64: POSIX FD lifecycle cleanup pass\n");
+    if (test_report_record(TEST_ID_POSIX_PROFILE,
+                           test_posix_profile64(env->owner, env->target)))
+        return -1;
+    serial64_write("Mich test64: POSIX profile cwd and authority pass\n");
+    if (test_report_record(TEST_ID_POSIX_VFS,
+                           test_posix_vfs64(env->owner, env->target)))
+        return -1;
+    serial64_write("Mich test64: POSIX VFS authority and mode pass\n");
     if (test_report_record(TEST_ID_BLOCK, test_block64())) return -1;
     serial64_write("Mich test64: block device objects pass\n");
     serial64_write("Mich test64: ramdisk read and write pass\n");
@@ -31,6 +45,8 @@ int tests64_run(const struct test64_env *env) {
     if (test_report_record(TEST_ID_BLOCKFS, test_blockfs64())) return -1;
     serial64_write("Mich test64: blockfs format and mount pass\n");
     serial64_write("Mich test64: blockfs file io pass\n");
+    serial64_write("Mich test64: blockfs busy unmount lifetime pass\n");
+    serial64_write("Mich test64: blockfs stale vnode generation pass\n");
     if (test_report_record(TEST_ID_RESOURCE, test_resource64())) return -1;
     serial64_write("Mich test64: resource object layer pass\n");
     if (test_report_record(TEST_ID_PAGE, test_page64(env))) return -1;

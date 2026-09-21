@@ -18,6 +18,9 @@
 #include <mich/vfs.h>
 #include <mich/firmware.h>
 #include <mich/block.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 typedef unsigned long long u64;
 
@@ -38,6 +41,46 @@ static void vfs_path_set(struct mich_vfs_path_request *request,
         index++;
     }
     while (index < MICH_VFS_PATH_MAX) request->path[index++] = 0;
+}
+
+static int posix_user_test(void) {
+    const char path[] = "/posix-user-file";
+    const char directory[] = "/posix-user-dir";
+    const char payload[] = "abc";
+    char readback[4];
+    char cwd[32];
+    struct stat info;
+    int descriptor = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (descriptor != 0) return -1;
+    if (write(descriptor, payload, 3) != 3 || lseek(descriptor, 0, 0) != 0 ||
+        read(descriptor, readback, 3) != 3 || readback[0] != 'a' ||
+        readback[1] != 'b' || readback[2] != 'c') {
+        mich_write("Mich x86_64: POSIX user IO FAIL\n");
+        return -1;
+    }
+    if (fstat(descriptor, &info) || !S_ISREG(info.st_mode) ||
+        (info.st_mode & 0777u) != 0600u || fcntl(descriptor, F_GETFD) !=
+        FD_CLOEXEC || fcntl(descriptor, F_SETFD, 0) ||
+        fcntl(descriptor, F_GETFD) != 0 || truncate(path, 1) ||
+        fstat(descriptor, &info) || info.st_size != 1 || close(descriptor)) {
+        mich_write("Mich x86_64: POSIX user stat FAIL\n");
+        return -1;
+    }
+    descriptor = open(path, O_RDONLY);
+    if (descriptor != 0 || dup(descriptor) != 1 || close(1) || close(descriptor)) {
+        mich_write("Mich x86_64: POSIX user dup FAIL\n");
+        return -1;
+    }
+    if (mkdir(directory, 0700) || chdir(directory) || !getcwd(cwd, sizeof(cwd)) ||
+        cwd[0] != '/' || cwd[1] != 'p' || cwd[2] != 'o' || cwd[3] != 's' ||
+        cwd[4] != 'i' || cwd[5] != 'x' || cwd[6] != '-' || cwd[7] != 'u' ||
+        cwd[8] != 's' || cwd[9] != 'e' || cwd[10] != 'r' || cwd[11] != '-' ||
+        cwd[12] != 'd' || cwd[13] != 'i' || cwd[14] != 'r' || cwd[15] ||
+        chdir("/") || unlink(path) || rmdir(directory)) {
+        mich_write("Mich x86_64: POSIX user path FAIL\n");
+        return -1;
+    }
+    return 0;
 }
 
 int main(u64 role) {
@@ -1151,6 +1194,8 @@ int main(u64 role) {
     mich_write("Mich x86_64: address spaces pass\n");
     mich_write("Mich x86_64: FPU context pass\n");
     mich_write("Mich x86_64: context switch pass\n");
+    if (posix_user_test()) stop();
+    mich_write("Mich x86_64: POSIX userspace facade pass\n");
     mich_syscall0(4);
     stop();
     return 0;
