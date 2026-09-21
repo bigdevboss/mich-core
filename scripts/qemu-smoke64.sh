@@ -281,14 +281,23 @@ for marker in \
     "Mich test64: firmware lookup service pass" \
     "Mich test64: VFS file lifetime pass" \
     "Mich test64: VFS unlink-open semantics pass" \
+    "Mich test64: VFS append transaction pass" \
     "Mich test64: VFS absolute and relative paths pass" \
     "Mich test64: VFS root escape protection pass" \
     "Mich test64: VFS path component bounds pass" \
     "Mich test64: VFS path mutation stress pass" \
+    "Mich test64: POSIX FD/OFD substrate pass" \
+    "Mich test64: POSIX FD lifecycle cleanup pass" \
+    "Mich test64: POSIX profile cwd and authority pass" \
+    "Mich test64: POSIX VFS authority and mode pass" \
     "Mich test64: block device objects pass" \
     "Mich test64: ramdisk read and write pass" \
     "Mich test64: block request generation pass" \
     "Mich test64: block bounds and revoke pass" \
+    "Mich test64: blockfs format and mount pass" \
+    "Mich test64: blockfs file io pass" \
+    "Mich test64: blockfs busy unmount lifetime pass" \
+    "Mich test64: blockfs stale vnode generation pass" \
     "Mich test64: resource object layer pass" \
     "Mich test64: page and shared memory objects pass" \
     "Mich test64: scatter-gather objects pass" \
@@ -426,6 +435,7 @@ for marker in \
     "Mich x86_64: address spaces pass" \
     "Mich x86_64: FPU context pass" \
     "Mich x86_64: context switch pass" \
+    "Mich x86_64: POSIX userspace facade pass" \
     "Mich x86_64: syscall/sysret pass" \
     "Mich x86_64: user exception contained" \
     "Mich x86_64: process lifecycle pass" \

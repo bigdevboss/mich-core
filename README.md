@@ -6,10 +6,11 @@ Version 0.1.0 includes an in-kernel virtual NIC with a cycle-accurate netbench a
 optimizes the VNIC packet path: the kernel now spends **224 cycles per 64-byte
 packet** and **328 cycles per 1500-byte packet** on the NIC abstraction
 (RX, KVM single-CPU, min) — a 31% to 82% reduction over the unoptimized path.
-It also includes a minimal VFS, bootfs firmware loading, graceful driver stop,
-and the networking stack (userspace `virtio-net` capsule, modern virtio
-PCI, split virtqueues, interrupt-driven RX/TX, DHCPv4, IPv4/IPv6, UDP/UDPv6,
-TCP, stream sockets).
+It also includes a bounded VFS (ramfs, immutable bootfs, and persistent
+blockfs), bootfs firmware loading, a static x86-64 POSIX filesystem facade,
+graceful driver stop, and the networking stack (userspace `virtio-net`
+capsule, modern virtio PCI, split virtqueues, interrupt-driven RX/TX, DHCPv4,
+IPv4/IPv6, UDP/UDPv6, TCP, stream sockets).
 
 The x86-64 port is the main development target. The i386 port remains a working
 legacy and reference backend. AArch64 and RISC-V 64 are planned.
@@ -34,6 +35,45 @@ The current rules are:
 - Performance claims must distinguish QEMU measurements from real wire throughput.
 
 The long-term target is a POSIX-oriented desktop system for x86-64, AArch64, and RISC-V 64.
+
+### Static POSIX filesystem profile (x86-64 v0)
+
+Mich provides a bounded POSIX-oriented **source** compatibility profile for
+statically linked applications built specifically for Mich on x86-64. It is not
+Linux syscall or binary compatibility, a dynamic linker, or a bundled
+shell/userland.
+
+The kernel VFS remains intentionally in kernel space. The profile is a separate,
+narrow per-task authority above VFS files and the POSIX FD/OFD layer; it does
+not grant `CAP_VFS_ADMIN`, native raw-VFS access, mount administration,
+task administration, driver/resource access, or hardware privilege. Only an
+executable image carrying the POSIX-profile boot metadata is admitted. Native
+fork preserves the profile and descriptor state; task teardown releases both.
+
+The public headers are `<fcntl.h>`, `<unistd.h>`, `<sys/stat.h>`, and
+`<errno.h>`. The v0 filesystem interface provides:
+
+```text
+open, close, read, write, lseek
+dup, dup2, fcntl(F_GETFD/F_SETFD)
+stat, fstat
+mkdir, rmdir, unlink
+chdir, getcwd, truncate
+```
+
+`O_CREAT`, `O_TRUNC`, `O_APPEND`, and `O_CLOEXEC` are supported. File
+permissions are stored in ramfs and persistent blockfs. Because v0 has no
+UID/GID model, every admitted profile is treated as the owner: only owner
+`0400`, `0200`, and `0100` bits grant read, write, and directory-search access.
+Group and other bits remain stored and are reported through `st_mode`, but do
+not grant access. `O_APPEND` uses VFS-level append serialization.
+
+The ABI uses bounded request records internally; public `read` and `write`
+wrappers chunk larger transfers. Mich does not claim POSIX certification or
+complete POSIX conformance. POSIX `execve` with an `argv`/`envp` initial stack,
+`waitpid`, pipes, `mmap`, polling, sockets, signals, threads, terminal
+semantics, UID/GID, `umask`, `chmod`, ACLs, and Linux ABI compatibility remain
+outside this v0 filesystem profile.
 
 ## 0.1.0
 
@@ -70,19 +110,27 @@ For reference, the unoptimized path was 326 (64 B), 790 (512 B), and 1780
 reduction. The protocol stack (Ethernet → ARP → IP → TCP/UDP) adds on top of
 these numbers; the VNIC is the NIC abstraction the stack sits on.
 
-### Minimal VFS
+### Bounded VFS and blockfs
 
 The x86-64 port initializes a kernel VFS on the same object and handle model as the rest of the kernel:
 
 - `KOBJECT_VNODE` and `KOBJECT_DIRECTORY` nodes, `KOBJECT_FILE` open files, `KOBJECT_MOUNT` mount points
 - Up to 64 nodes, 32 open files, and 8 mounts
 - 31-character names, 255-character paths, 32 path components
-- Regular files up to 4 KiB, I/O transfers up to 512 bytes per operation
+- Regular files up to 4 KiB; native VFS I/O requests up to 512 bytes
 - Generation counters on nodes and mounts, so stale handles fail lookup
+- Stored mode bits on files and directories
+- Serialized append transactions and unlink-open file lifetime semantics
 
-The root of the tree is a ramfs directory. At boot, every boot module is published read-only under `/boot` as a bootfs mount, up to 16 modules of 1 MiB each.
+The root of the tree is a ramfs directory. At boot, every boot module is
+published read-only under `/boot` as a bootfs mount, up to 16 modules of 1 MiB
+each. The bounded blockfs backend stores regular files, directories, parent
+links, modes, and file data on block devices; mount reconstruction validates
+persistent hierarchy and mount generations protect against stale open files.
 
-Path resolution accepts absolute and relative paths from any start handle. `.` and `..` are honored, `..` at the root stays at the root, and components longer than 31 characters are rejected.
+Path resolution accepts absolute and relative paths from any start handle. `.`
+and `..` are honored, `..` at the root stays at the root, and components longer
+than 31 characters are rejected.
 
 The userspace VFS ABI is handle based:
 
@@ -101,7 +149,7 @@ The userspace VFS ABI is handle based:
 166  unlink path
 ```
 
-`CAP_VFS_ADMIN` gates create, unlink, and path operations. Lookup of a bootfs node also requires the capability, so a non-admin process holds the root handle without write rights and reaches boot files through the firmware interface.
+`CAP_VFS_ADMIN` gates create, unlink, and path operations. Lookup of a bootfs node also requires the capability, so a non-admin process holds the root handle without write rights and reaches boot files through the firmware interface. This native handle ABI is distinct from the restricted POSIX filesystem profile described above.
 
 ### Firmware loading
 
@@ -606,8 +654,9 @@ This prevents an MSI-X interrupt from corrupting a queue or causing a lost wakeu
 | Driver quarantine and reset policy | No | Yes |
 | Packet pools and virtual NIC | Reference build | Yes |
 | Userspace `virtio-net` driver | No | Yes |
-| VFS (ramfs and bootfs) | Reference build | Yes |
-| Block layer | No | Yes |
+| VFS (ramfs, bootfs, and bounded blockfs) | Reference build | Yes |
+| Static POSIX filesystem profile | No | Yes |
+| Block layer and bounded blockfs | No | Yes |
 | Firmware loading | Reference build | Yes |
 | Graceful driver stop | No | Yes |
 | External IPv4 | No | Yes |
@@ -677,13 +726,15 @@ Do not publish an unpatched vulnerability before the maintainer has had reasonab
 
 Mich Core 0.1.0 does not include:
 
-- A real filesystem (only ramfs and bootfs exist, and both are bounded and in-memory)
-- A block layer or disk I/O
+- A general-purpose production filesystem: ramfs, bootfs, and blockfs are
+  bounded implementations with deliberately small limits
 - USB
 - Audio
 - A desktop or shell
-- A complete POSIX ABI
-- A complete POSIX ABI (x86-64 now has fork, exec, and copy-on-write)
+- POSIX `execve` initial-stack construction (`argv`/`envp`), `waitpid`, or a
+  complete POSIX process/runtime ABI
+- POSIX certification, complete POSIX conformance, or Linux binary/syscall ABI
+  compatibility
 - Independently written Linux Kernel API compatibility headers
 - UEFI
 - SMP
@@ -803,7 +854,12 @@ The suites cover:
 - Process lifecycle and PID generations
 - IPC modes, timeout, deadlock, and death notification
 - Handle rights, transfer, revoke, and generation stress
-- VFS nodes, mounts, paths, unlink-open semantics, and root escape protection
+- VFS nodes, mounts, paths, modes, append serialization, unlink-open semantics,
+  and root escape protection
+- Persistent blockfs file and directory hierarchy reconstruction, mode restore,
+  live-open unmount protection, and stale-generation rejection
+- POSIX FD/OFD lifetime, `FD_CLOEXEC`, cwd/detached-cwd behavior, owner-mode
+  enforcement, and the userspace POSIX filesystem facade
 - Firmware allowlist, lookup, and crash handle revocation
 - Graceful driver stop, stop timeout fallback, and stop-ack path
 - Event and Driver Bridge IRQ race protection
@@ -844,7 +900,9 @@ Important source modules:
 
 ```text
 src/core/                 types, boot info, serial API, and page memory
-src/process/              tasks, scheduler, fork/exec, IPC, capabilities
+src/process/              tasks, scheduler, fork/exec, IPC, capabilities, POSIX FD/profile facade
+src/user64/lib/posix.c    static POSIX userspace wrappers and errno
+src/user64/include/       Mich APIs and the bounded POSIX public headers
 src/objects/              kernel objects, resources, events, rings, completions
 src/net/                  full protocol stack (ARP through TCP, sockets)
 src/driver/               driver domains, supervisor, manager, virtio ABI
@@ -879,55 +937,6 @@ src/fs/firmware.c         driver firmware loading from bootfs
 src/arch/x86_64/drivers/virtio_pci.c modern virtio PCI and split virtqueues
 src/user64/virtio_net/    userspace virtio-net capsule
 ```
-
-## Roadmap
-
-### 0.6.0
-
-- Graceful driver stop protocol
-- Userspace driver capsules
-- Minimal VFS (ramfs and bootfs)
-- Firmware loading from bootfs
-- Independently written compatibility headers for a supported Linux Kernel API subset (carried over, not yet present)
-
-### 0.1.0 (current)
-
-- In-kernel virtual NIC (`KOBJECT_VNIC`) with a cycle-accurate netbench
-- VNIC packet-path optimization: SIMD frame copy, cached ring resource
-  pointer, cached pool state (224 cycles/64 B, 328 cycles/1500 B on RX, KVM
-  single-CPU, min — 31% to 82% reduction)
-- SSE2 on x86-64 for payload and checksum paths
-- Batched driver RX and TX handoff
-- SACK-based recovery and BBR congestion control
-- Per-connection TCP timer deadlines
-- Adaptive interrupt moderation in the virtio-net capsule
-
-### After 0.1.0
-
-- Block layer
-- Asynchronous block I/O
-- Page cache
-- First in-kernel filesystem on the VFS
-
-### Later 0.x
-
-- UEFI
-- SMP and per-CPU storage
-- IOMMU-backed DMA
-- Higher-half kernel and complete W^X
-- SMEP, SMAP, guard pages, and KASLR
-- RSS and multiple network queue pairs
-- NUMA-aware packet memory
-- AArch64
-- RISC-V 64
-- Desktop services
-- Stable POSIX and driver-facing ABIs
-
-### 1.0.0
-
-Mich Core 1.0.0 is planned to support x86-64, AArch64, and RISC-V 64 with a shared process, object, capability, IPC, VFS, and driver model.
-
-Architecture support does not imply support for every board or peripheral.
 
 ## Network performance direction
 
@@ -997,8 +1006,8 @@ Contributions are accepted under GPLv3.
 
 ## License
 
-Mich Core is licensed under the [GNU General Public License v3.0](LICENSE).
+All Mich Core code is available under the [GNU General Public License v3.0](LICENSE), except for the bitmap glyph data in `src/arch/x86/i386/font.h`.
 
-See [LICENSE](LICENSE) for the full terms.
+Commercial dual licensing is also available under terms discussed separately by email: [mich-licensing@protonmail.com](mailto:mich-licensing@protonmail.com) or [shiftluckyxd@mail.ru](mailto:shiftluckyxd@mail.ru).
 
-The bitmap glyph data in `src/arch/x86/i386/font.h` is derived from Terminus Font 4.39 and remains under the SIL Open Font License 1.1. It is not licensed under GPLv3.
+See [LICENSE](LICENSE) for the GPLv3 terms. The bitmap glyph data in `src/arch/x86/i386/font.h` is derived from Terminus Font 4.39 and remains under the SIL Open Font License 1.1; it is not licensed under GPLv3.

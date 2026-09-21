@@ -116,10 +116,14 @@ peer timeline at the same path with `.passive` appended.
 
 The restart, circuit, and recovery primary capsules emit bounded
 `Mich virtio-net: timing <phase> ticks=0x...` diagnostics around the passive
-peer exchange and recovery transition. Passive phases include listener, accept,
-the first receive poll, payload availability, an empty-receive wait, its first
-wake, echo, and close. If the listener is still unaccepted at its first
-existing IPv6-timer wake, one listener `passive snapshot` records its
+peer exchange, IPv6 echo gate, and recovery transition. Passive phases include
+listener, accept, the first receive poll, payload availability, an
+empty-receive wait, its first wake, echo, and close. IPv6 phases mark the
+initial echo submission attempt, each existing bounded retry (`retry-1`
+through `retry-3`), and userspace observation of the ICMPv6 reply counter.
+They neither add retries nor assert packet transmission, on-wire delivery, or
+reply correlation. If the listener is still unaccepted at its first existing
+IPv6-timer wake, one listener `passive snapshot` records its
 state/readiness/error/EOF and RX completion progress from listener creation.
 On a first successful empty receive and on the first post-wake receive attempt,
 bounded `passive snapshot` records expose the accepted socket

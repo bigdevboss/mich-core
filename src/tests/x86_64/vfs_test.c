@@ -13,7 +13,9 @@ int test_vfs64(void) {
     struct kernel_object *directory = root ?
         vfs_create(root, "etc", VFS_NODE_DIRECTORY) : 0;
     struct kernel_object *node = directory ?
-        vfs_create(directory, "config", VFS_NODE_REGULAR) : 0;
+        vfs_create_mode(directory, "config", VFS_NODE_REGULAR, 0640) : 0;
+    struct kernel_object *invalid_mode = directory ?
+        vfs_create_mode(directory, "bad-mode", VFS_NODE_REGULAR, 01000) : 0;
     struct kernel_object *duplicate = directory ?
         vfs_create(directory, "config", VFS_NODE_REGULAR) : 0;
     struct kernel_object *invalid = root ?
@@ -25,6 +27,9 @@ int test_vfs64(void) {
     u8 received[32];
     for (u32 index = 0; index < sizeof(payload); index++) payload[index] = (u8)index;
     u32 transferred = 0;
+    u32 appended_position = 0;
+    u8 append_first[2] = { 'a', 'b' };
+    u8 append_second[2] = { 'c', 'd' };
     struct kernel_object *boot_directory = root ?
         vfs_resolve(root, "/boot") : 0;
     struct kernel_object *boot_node = root ?
@@ -40,15 +45,18 @@ int test_vfs64(void) {
         !firmware_open("../init64", &firmware_size) &&
         !vfs_stat(boot_file, &boot_info) &&
         boot_info.filesystem == VFS_FILESYSTEM_BOOTFS && boot_info.readonly &&
+        boot_info.mode == VFS_MODE_REGULAR_READONLY &&
         !vfs_read(boot_file, 0, received, 4, &transferred) && transferred == 4 &&
         received[0] == 0x7F && received[1] == 'E' &&
         received[2] == 'L' && received[3] == 'F' &&
         vfs_write(boot_file, 0, payload, 1, &transferred) < 0 &&
+        vfs_append(boot_file, payload, 1, &transferred,
+                   &appended_position) < 0 &&
         vfs_truncate(boot_file, 0) < 0 &&
         !vfs_create(boot_directory, "mutable", VFS_NODE_REGULAR) &&
         vfs_unlink(root, "boot") < 0;
     int valid = boot_valid && root && mount && directory && node &&
-        !duplicate && !invalid && lookup == node && opened &&
+        !duplicate && !invalid && !invalid_mode && lookup == node && opened &&
         !vfs_write(opened, 0, payload, sizeof(payload), &transferred) &&
         transferred == sizeof(payload) &&
         !vfs_read(opened, 0, received, sizeof(received), &transferred) &&
@@ -58,13 +66,23 @@ int test_vfs64(void) {
     struct vfs_node_info info;
     valid = valid && !vfs_stat(opened, &info) &&
         info.type == VFS_NODE_REGULAR && info.size == sizeof(payload) &&
-        info.linked && !vfs_truncate(opened, 8) &&
+        info.mode == 0640 && info.linked && !vfs_truncate(opened, 8) &&
         !vfs_stat(node, &info) && info.size == 8 &&
+        !vfs_append(opened, append_first, sizeof(append_first), &transferred,
+                    &appended_position) &&
+        transferred == sizeof(append_first) && appended_position == 10 &&
+        !vfs_truncate(opened, 9) &&
+        !vfs_append(opened, append_second, sizeof(append_second), &transferred,
+                    &appended_position) &&
+        transferred == sizeof(append_second) && appended_position == 11 &&
+        !vfs_stat(node, &info) && info.size == 11 &&
         vfs_unlink(root, "etc") < 0 &&
         !vfs_unlink(directory, "config") &&
         !vfs_stat(opened, &info) && !info.linked &&
         !vfs_read(opened, 0, received, sizeof(received), &transferred) &&
-        transferred == 8 && !vfs_unlink(root, "etc");
+        transferred == 11 && received[8] == append_first[0] &&
+        received[9] == append_second[0] && received[10] == append_second[1] &&
+        !vfs_unlink(root, "etc");
     struct kernel_object *usr = root ?
         vfs_create_path(root, "/usr", VFS_NODE_DIRECTORY) : 0;
     struct kernel_object *lib = root ?

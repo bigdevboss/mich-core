@@ -24,8 +24,8 @@ struct blockfs_inode {
     u32 sectors;
     u32 parent;
     char name[32];
-    u32 reserved0;
-    u32 reserved1;
+    u32 mode;
+    u32 reserved;
 };
 
 struct blockfs_mount {
@@ -53,8 +53,8 @@ static void inode_pack(u8 *raw, const struct blockfs_inode *in) {
     w[4] = in->sectors;
     w[5] = in->parent;
     copy_bytes(raw + 24, (const u8 *)in->name, 32);
-    w[14] = in->reserved0;
-    w[15] = in->reserved1;
+    w[14] = in->mode;
+    w[15] = in->reserved;
 }
 
 static void inode_unpack(struct blockfs_inode *in, const u8 *raw) {
@@ -66,8 +66,8 @@ static void inode_unpack(struct blockfs_inode *in, const u8 *raw) {
     in->sectors = w[4];
     in->parent = w[5];
     copy_bytes((u8 *)in->name, raw + 24, 32);
-    in->reserved0 = w[14];
-    in->reserved1 = w[15];
+    in->mode = w[14];
+    in->reserved = w[15];
 }
 
 static struct blockfs_mount *mount_at(u32 mount) {
@@ -180,8 +180,8 @@ int blockfs_format(struct kernel_object *device) {
     root.start_lba = 0;
     root.sectors = 0;
     root.parent = 0;
-    root.reserved0 = 0;
-    root.reserved1 = 0;
+    root.mode = VFS_MODE_DIRECTORY_DEFAULT;
+    root.reserved = 0;
     inode_pack(sector, &root);
     return block_cache_write(device, super.inode_lba, sector, 1) ||
            block_cache_flush(device);
@@ -220,7 +220,7 @@ u32 blockfs_inode_count(u32 mount) {
 }
 
 int blockfs_inode_get(u32 mount, u32 inode, u32 *used, u32 *type, u32 *size,
-                      u32 *parent, char *name) {
+                      u32 *parent, u32 *mode, char *name) {
     struct blockfs_mount *m = mount_at(mount);
     struct blockfs_inode in;
     if (!m || load_inode(m, inode, &in)) return -1;
@@ -228,14 +228,23 @@ int blockfs_inode_get(u32 mount, u32 inode, u32 *used, u32 *type, u32 *size,
     if (type) *type = in.type;
     if (size) *size = in.size;
     if (parent) *parent = in.parent;
+    if (mode) *mode = in.mode;
     if (name)
         for (u32 i = 0; i < 32; i++) name[i] = in.name[i];
     return 0;
 }
 
-int blockfs_inode_create(u32 mount, const char *name, u32 parent, u32 *inode) {
+int blockfs_inode_create(u32 mount, const char *name, u32 parent, u32 type,
+                         u32 mode, u32 *inode) {
     struct blockfs_mount *m = mount_at(mount);
-    if (!m || !name || !name[0] || !inode) return -1;
+    if (!m || !name || !name[0] || !inode || parent >= m->inode_count ||
+        (type != VFS_NODE_REGULAR && type != VFS_NODE_DIRECTORY) ||
+        (mode & ~VFS_MODE_MASK))
+        return -1;
+    struct blockfs_inode parent_inode;
+    if (load_inode(m, parent, &parent_inode) || !parent_inode.used ||
+        parent_inode.type != VFS_NODE_DIRECTORY)
+        return -1;
     for (u32 i = 1; i < m->inode_count; i++) {
         struct blockfs_inode in;
         if (load_inode(m, i, &in)) return -1;
@@ -243,13 +252,13 @@ int blockfs_inode_create(u32 mount, const char *name, u32 parent, u32 *inode) {
         for (u32 n = 0; n < 32; n++) in.name[n] = 0;
         for (u32 n = 0; name[n] && n < 31; n++) in.name[n] = name[n];
         in.used = 1;
-        in.type = VFS_NODE_REGULAR;
+        in.type = type;
         in.size = 0;
         in.start_lba = 0;
         in.sectors = 0;
         in.parent = parent;
-        in.reserved0 = 0;
-        in.reserved1 = 0;
+        in.mode = mode;
+        in.reserved = 0;
         if (store_inode(m, i, &in)) return -1;
         *inode = i;
         return 0;
@@ -267,6 +276,7 @@ int blockfs_inode_remove(u32 mount, u32 inode) {
     in.sectors = 0;
     in.parent = 0;
     for (u32 n = 0; n < 32; n++) in.name[n] = 0;
+    in.mode = 0;
     return store_inode(m, inode, &in);
 }
 

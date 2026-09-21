@@ -1,5 +1,9 @@
 #include "task.h"
 #include "arch_task.h"
+#ifdef __x86_64__
+#include "posix_fd.h"
+#include "posix_profile.h"
+#endif
 
 struct task task_pool[MAX_TASKS];
 int task_pool_count = 0;
@@ -56,6 +60,10 @@ struct task *task_alloc_slot(void) {
 
 void task_free_slot(struct task *t) {
     unsigned int g = t->gen;
+#ifdef __x86_64__
+    posix_fd_close_all(t);
+    posix_profile_release(t);
+#endif
     arch_task_release(t);
     task_clear_dynamic(t);
     t->esp = 0;
@@ -69,6 +77,10 @@ void task_free_slot(struct task *t) {
 }
 
 void task_mark_zombie(struct task *t, int code) {
+#ifdef __x86_64__
+    posix_fd_close_all(t);
+    posix_profile_release(t);
+#endif
     t->exit_code = code;
     t->on_cpu = TASK_CPU_NONE;
     t->state = TASK_ZOMBIE;

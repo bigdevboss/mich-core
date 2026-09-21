@@ -21,6 +21,12 @@
 #define VFS_BOOTFS_ENTRY_MAX 16
 #define VFS_BOOTFS_FILE_SIZE_MAX 0x100000
 
+#define VFS_MODE_MASK 0777u
+#define VFS_MODE_REGULAR_DEFAULT 0666u
+#define VFS_MODE_DIRECTORY_DEFAULT 0777u
+#define VFS_MODE_REGULAR_READONLY 0444u
+#define VFS_MODE_DIRECTORY_READONLY 0555u
+
 struct vfs_node_info {
     u32 type;
     u32 generation;
@@ -29,6 +35,7 @@ struct vfs_node_info {
     u32 linked;
     u32 filesystem;
     u32 readonly;
+    u32 mode;
     char name[VFS_NAME_MAX];
 };
 
@@ -48,6 +55,8 @@ int vfs_mount_blockfs(struct kernel_object *directory,
 int vfs_unmount(struct kernel_object *directory);
 struct kernel_object *vfs_create(struct kernel_object *directory,
                                  const char *name, u32 type);
+struct kernel_object *vfs_create_mode(struct kernel_object *directory,
+                                      const char *name, u32 type, u32 mode);
 struct kernel_object *vfs_lookup(struct kernel_object *directory,
                                  const char *name);
 struct kernel_object *vfs_resolve(struct kernel_object *start,
@@ -62,6 +71,8 @@ int vfs_read(struct kernel_object *file, u32 offset,
              void *buffer, u32 length, u32 *transferred);
 int vfs_write(struct kernel_object *file, u32 offset,
               const void *buffer, u32 length, u32 *transferred);
+int vfs_append(struct kernel_object *file, const void *buffer, u32 length,
+               u32 *transferred, u32 *position);
 int vfs_truncate(struct kernel_object *file, u32 size);
 int vfs_stat(struct kernel_object *object, struct vfs_node_info *info);
 u32 vfs_node_active_count(void);
