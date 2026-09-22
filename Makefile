@@ -7,7 +7,6 @@ OBJCOPY = objcopy
 OBJDUMP = objdump
 PYTHON = python3
 
-ARCH32 = src/arch/x86/i386
 CORE = src/core
 PROCESS = src/process
 OBJECTS = src/objects
@@ -27,34 +26,15 @@ ARCH64_KERNEL = $(ARCH64)/kernel
 ARCH64_INCLUDES = -I$(ARCH64) -I$(ARCH64_CPU) -I$(ARCH64_MEMORY) \
 	-I$(ARCH64_PLATFORM) -I$(ARCH64_DRIVERS) -I$(ARCH64_KERNEL)
 TEST64 = src/tests/x86_64
-CFLAGS = -m32 -mno-sse -mno-sse2 -mno-mmx -mno-3dnow -nostdlib -nostdinc -fno-builtin -fno-stack-protector -nostartfiles -nodefaultlibs -ffreestanding -fno-pie -fno-pic -fno-asynchronous-unwind-tables -MMD -MP -Wall -Wextra -O2 -Isrc $(PORTABLE_INCLUDES) -I$(ARCH32)
-USER_CFLAGS = $(CFLAGS) -Isrc/user/include
-ASFLAGS = -f elf32
-LDFLAGS = -m elf_i386 -T $(ARCH32)/linker.ld
-USER_LDFLAGS = -m elf_i386 -T src/user/linker.ld
 # x86-64 baseline hardware includes SSE2; it is used for payload and
-# checksum copies. The i386 build keeps SSE disabled (not guaranteed there).
-# proc.c, ipc.c, uaccess.c, and scheduler.c still use the i386 paging/elf
-# API; they are not part of the x86-64 kernel. Fork/exec on x86-64 live in
-# vm64/kernel.c.
-# GCC's own include directory provides the SSE2 intrinsics headers, which
-# are self-contained under -nostdinc.
+# checksum copies. GCC's own include directory provides the SSE2 intrinsics
+# headers, which are self-contained under -nostdinc.
 GCC_INCLUDE = $(shell $(CC) -print-file-name=include)
 CFLAGS64 = -m64 -mno-red-zone -msse2 -mno-mmx -nostdlib -nostdinc -fno-builtin -fno-stack-protector -nostartfiles -nodefaultlibs -ffreestanding -fno-pie -fno-pic -fno-asynchronous-unwind-tables -MMD -MP -Wall -Wextra -O2 -Isrc -I$(GCC_INCLUDE) $(ARCH64_INCLUDES) $(PORTABLE_INCLUDES) -I$(TEST64)
 USER64_CFLAGS = $(CFLAGS64) -mcmodel=large -Isrc/user64/include
 LDFLAGS64 = -m elf_x86_64 -T $(ARCH64_BOOT)/linker.ld
 
 BIN_DIR = bin
-OBJ_DIR = $(BIN_DIR)/obj
-USER_DIR = $(BIN_DIR)/user
-USER_OBJ_DIR = $(USER_DIR)/obj
-KERNEL_ELF = $(BIN_DIR)/mich-kernel.elf
-KERNEL_FLAT = $(BIN_DIR)/mich-kernel.bin
-BDB1 = $(BIN_DIR)/bdb1.bin
-BDB2 = $(BIN_DIR)/bdb2.bin
-DISK_IMAGE = $(BIN_DIR)/disk.img
-INIT_ELF = $(USER_DIR)/init.elf
-INIT_OBJS = $(USER_OBJ_DIR)/crt0.o $(USER_OBJ_DIR)/syscall.o $(USER_OBJ_DIR)/init.o
 BIN64 = $(BIN_DIR)/x86_64
 OBJ64 = $(BIN64)/obj
 KERNEL64_ELF = $(BIN64)/mich-kernel.elf
@@ -97,67 +77,10 @@ PORTABLE64_DIR = $(BIN64)/portable
 PORTABLE64_NAMES = task posix_fd posix_profile posix_vfs posix_process service object resource driver driver_supervisor driver_manager ring completion timer_object net_buffer vnic net_interface ethernet arp ipv4 ipv6 icmp icmpv6 loopback udp udpv6 tcp tcp_cc pmtu route socket vfs blockfs block cache firmware event endpoint bridge pmm
 PORTABLE64_OBJS = $(addprefix $(PORTABLE64_DIR)/,$(addsuffix .o,$(PORTABLE64_NAMES)))
 
-OBJ_NAMES = boot kernel gdt idt irq gfx interrupt exceptions exception timer paging pmm mem uaccess task tss syscall syscall_asm double_fault elf scheduler scheduler_core ipc proc service object resource driver driver_supervisor driver_manager ring completion timer_object net_buffer vnic net_interface ethernet arp ipv4 ipv6 icmp icmpv6 loopback udp udpv6 tcp tcp_cc pmtu route socket vfs firmware event endpoint bridge platform serial
-OBJS = $(addprefix $(OBJ_DIR)/,$(addsuffix .o,$(OBJ_NAMES)))
+all: $(DISK64) $(PORTABLE64_OBJS)
 
-all: $(DISK_IMAGE) $(DISK64) $(PORTABLE64_OBJS)
-
-$(BIN_DIR) $(OBJ_DIR) $(USER_DIR) $(USER_OBJ_DIR) $(BIN64) $(OBJ64) $(PORTABLE64_DIR) $(USER64_DIR) $(USER64_OBJ_DIR):
+$(BIN_DIR) $(BIN64) $(OBJ64) $(PORTABLE64_DIR) $(USER64_DIR) $(USER64_OBJ_DIR):
 	mkdir -p $@
-
-$(KERNEL_ELF): $(OBJS) $(ARCH32)/linker.ld | $(BIN_DIR)
-	$(LD) $(LDFLAGS) -o $@ $(OBJS)
-
-$(KERNEL_FLAT): $(KERNEL_ELF)
-	$(OBJCOPY) -O binary $< $@
-
-$(BDB1): $(ARCH32)/bdb1.asm | $(BIN_DIR)
-	$(AS) -f bin $< -o $@
-
-$(BDB2): $(ARCH32)/bdb2.asm | $(BIN_DIR)
-	$(AS) -f bin $< -o $@
-
-$(USER_OBJ_DIR)/crt0.o: src/user/lib/crt0.asm | $(USER_OBJ_DIR)
-	$(AS) $(ASFLAGS) $< -o $@
-
-$(USER_OBJ_DIR)/syscall.o: src/user/lib/syscall.asm | $(USER_OBJ_DIR)
-	$(AS) $(ASFLAGS) $< -o $@
-
-$(USER_OBJ_DIR)/init.o: src/user/init/main.c src/user/include/mich/syscall.h src/user/include/mich/service.h src/user/include/mich/exception.h src/user/include/mich/ipc.h src/user/include/mich/capability.h | $(USER_OBJ_DIR)
-	$(CC) $(USER_CFLAGS) -c $< -o $@
-
-$(INIT_ELF): $(INIT_OBJS) src/user/linker.ld | $(USER_DIR)
-	$(LD) $(USER_LDFLAGS) -o $@ $(INIT_OBJS)
-
-$(DISK_IMAGE): mkboot.py $(KERNEL_ELF) $(KERNEL_FLAT) $(BDB1) $(BDB2) $(INIT_ELF)
-	$(PYTHON) mkboot.py $@ init:0x59=$(INIT_ELF)
-
-$(OBJ_DIR)/%.o: $(CORE)/%.c | $(OBJ_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(OBJ_DIR)/%.o: $(PROCESS)/%.c | $(OBJ_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(OBJ_DIR)/%.o: $(OBJECTS)/%.c | $(OBJ_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(OBJ_DIR)/%.o: $(NET)/%.c | $(OBJ_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(OBJ_DIR)/%.o: $(DRIVER)/%.c | $(OBJ_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(OBJ_DIR)/%.o: $(FS)/%.c | $(OBJ_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(OBJ_DIR)/%.o: $(ARCH32)/%.c | $(OBJ_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(OBJ_DIR)/%.o: $(ARCH32)/%.asm | $(OBJ_DIR)
-	$(AS) $(ASFLAGS) $< -o $@
-
-$(OBJ_DIR)/gfx.o: $(ARCH32)/font.h
-$(OBJ_DIR)/kernel.o: $(CORE)/version.h
 
 $(PORTABLE64_DIR)/%.o: $(CORE)/%.c | $(PORTABLE64_DIR)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
@@ -554,12 +477,6 @@ $(DISK64_HARDWARE_RECOVERY): mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FL
 $(DISK64_PANIC): mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(BDB1_64) $(BDB2_64) $(INIT64_ELF)
 	$(PYTHON) mkboot64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) $@ init64:0x800000C9=$(INIT64_ELF)
 
-run: $(DISK_IMAGE)
-	qemu-system-i386 -drive file=$(DISK_IMAGE),format=raw,if=ide,index=0,media=disk -boot c -serial stdio
-
-test: $(DISK_IMAGE)
-	sh ./scripts/qemu-smoke.sh $(DISK_IMAGE)
-
 run64: $(DISK64)
 	qemu-system-x86_64 -drive file=$(DISK64),format=raw,if=ide,index=0,media=disk -boot c -serial stdio
 
@@ -620,7 +537,6 @@ test64-panic: $(DISK64_PANIC)
 release-check:
 	$(MAKE) clean
 	$(MAKE) all
-	$(MAKE) test
 	$(MAKE) test64
 	$(MAKE) test64-prod
 	$(MAKE) test64-unit
@@ -635,8 +551,8 @@ release-check:
 	grep -q '#define MICH_VERSION_STRING "0.1.0"' src/core/version.h
 	git diff --check
 
-DEPFILES = $(OBJS:.o=.d) $(OBJS64:.o=.d) $(OBJS64_TEST:.o=.d) $(PORTABLE64_OBJS:.o=.d) \
-           $(INIT_OBJS:.o=.d) $(INIT64_OBJS:.o=.d) $(VIRTIO_NET64_OBJ:.o=.d) \
+DEPFILES = $(OBJS64:.o=.d) $(OBJS64_TEST:.o=.d) $(PORTABLE64_OBJS:.o=.d) \
+           $(INIT64_OBJS:.o=.d) $(VIRTIO_NET64_OBJ:.o=.d) \
            $(VIRTIO_NET_SAFE64_OBJ:.o=.d) $(VIRTIO_NET64_PROBES_OBJ:.o=.d) \
            $(POSIXAPP64_OBJS:.o=.d) $(POSIXDEMO64_OBJS:.o=.d) $(UEFI64_OBJ:.o=.d)
 -include $(DEPFILES)
@@ -644,4 +560,4 @@ DEPFILES = $(OBJS:.o=.d) $(OBJS64:.o=.d) $(OBJS64_TEST:.o=.d) $(PORTABLE64_OBJS:
 clean:
 	rm -rf $(BIN_DIR)
 
-.PHONY: all run test run64 test64 test64-uefi test64-prod test64-unit test64-highmem test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-msi-restart-stability test64-msi-circuit-stability test64-msi-recovery-stability test64-pcie test64-panic release-check clean
+.PHONY: all run64 test64 test64-uefi test64-prod test64-unit test64-highmem test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-msi-restart-stability test64-msi-circuit-stability test64-msi-recovery-stability test64-pcie test64-panic release-check clean
