@@ -3,12 +3,14 @@
 
 #include "types.h"
 #include "object.h"
+#include "resource.h"
 
 #define VFS_NODE_MAX 64
 #define VFS_FILE_MAX 32
 #define VFS_MOUNT_MAX 8
 #define VFS_NAME_MAX 32
-#define VFS_FILE_SIZE_MAX 4096
+/* Ramfs regular files are page-backed, so the bound is the page resource. */
+#define VFS_FILE_SIZE_MAX (RESOURCE_PAGE_PAGES_MAX * 4096u)
 #define VFS_PATH_MAX 256
 #define VFS_PATH_COMPONENT_MAX 32
 

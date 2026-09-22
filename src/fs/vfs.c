@@ -1,14 +1,13 @@
 #include "vfs.h"
 #include "spinlock.h"
-#ifdef __x86_64__
+#include "resource.h"
 #include "blockfs.h"
 #include "entropy.h"
-#endif
 
 struct vfs_node_state {
     struct kernel_object *self;
     const u8 *external_data;
-    u8 data[VFS_FILE_SIZE_MAX];
+    struct kernel_object *pages;
     char name[VFS_NAME_MAX];
     u32 parent;
     u32 type;
@@ -108,16 +107,12 @@ static struct vfs_mount_state *mount_for_root(
 }
 
 static int node_backing_live(const struct vfs_node_state *node) {
-#ifdef __x86_64__
     if (node && node->filesystem == VFS_FILESYSTEM_BLOCKFS) {
         if (!node->mount || node->mount >= VFS_MOUNT_MAX) return 0;
         const struct vfs_mount_state *mount = &mounts[node->mount];
         return mount->active && mount->filesystem == VFS_FILESYSTEM_BLOCKFS &&
                mount->generation == node->mount_generation;
     }
-#else
-    (void)node;
-#endif
     return 1;
 }
 
@@ -148,7 +143,10 @@ static void node_destroy(struct kernel_object *object) {
     if (!node->active || node->self != object) return;
     node->self = 0;
     node->external_data = 0;
-    for (u32 index = 0; index < VFS_FILE_SIZE_MAX; index++) node->data[index] = 0;
+    if (node->pages) {
+        object_release(node->pages);
+        node->pages = 0;
+    }
     for (u32 index = 0; index < VFS_NAME_MAX; index++) node->name[index] = 0;
     node->parent = VFS_NODE_MAX;
     node->type = 0;
@@ -187,10 +185,8 @@ static void mount_destroy(struct kernel_object *object) {
     struct vfs_mount_state *mount = &mounts[mount_index];
     if (!mount->active || mount->self != object) return;
     mount->self = 0;
-#ifdef __x86_64__
     if (mount->filesystem == VFS_FILESYSTEM_BLOCKFS)
         blockfs_detach(mount_index);
-#endif
     if (mount_index) {
         for (u32 index = 1; index < VFS_NODE_MAX; index++) {
             struct vfs_node_state *node = &nodes[index];
@@ -221,6 +217,7 @@ void vfs_init(void) {
     for (u32 index = 0; index < VFS_NODE_MAX; index++) {
         nodes[index].self = 0;
         nodes[index].external_data = 0;
+        nodes[index].pages = 0;
         nodes[index].parent = VFS_NODE_MAX;
         nodes[index].type = 0;
         nodes[index].generation = 1;
@@ -391,7 +388,6 @@ int vfs_mount_bootfs(struct kernel_object *directory,
     return 0;
 }
 
-#ifdef __x86_64__
 int vfs_mount_blockfs(struct kernel_object *directory,
                       struct kernel_object *device) {
     struct vfs_node_state *point = node_for(directory);
@@ -533,14 +529,6 @@ int vfs_mount_blockfs(struct kernel_object *directory,
     }
     return 0;
 }
-#else
-int vfs_mount_blockfs(struct kernel_object *directory,
-                      struct kernel_object *device) {
-    (void)directory;
-    (void)device;
-    return -1;
-}
-#endif
 
 struct kernel_object *vfs_create_mode(struct kernel_object *directory,
                                       const char *name, u32 type, u32 mode) {
@@ -560,6 +548,7 @@ struct kernel_object *vfs_create_mode(struct kernel_object *directory,
         struct vfs_node_state *node = &nodes[index];
         if (node->active) continue;
         node->external_data = 0;
+        node->pages = 0;
         node->parent = parent_index;
         node->type = type;
         node->size = 0;
@@ -574,7 +563,6 @@ struct kernel_object *vfs_create_mode(struct kernel_object *directory,
         node->active = 1;
         for (u32 byte = 0; byte < VFS_NAME_MAX; byte++) node->name[byte] = 0;
         for (u32 byte = 0; name[byte]; byte++) node->name[byte] = name[byte];
-#ifdef __x86_64__
         if (parent->filesystem == VFS_FILESYSTEM_BLOCKFS &&
             blockfs_inode_create(parent->mount, name, parent->fs_id, type,
                                  mode, &node->fs_id)) {
@@ -582,26 +570,21 @@ struct kernel_object *vfs_create_mode(struct kernel_object *directory,
             node->active = 0;
             return 0;
         }
-#endif
         u32 object_type = type == VFS_NODE_DIRECTORY ?
             KOBJECT_DIRECTORY : KOBJECT_VNODE;
         struct kernel_object *object = object_create(
             object_type, index + 1, node_destroy);
         if (!object) {
-#ifdef __x86_64__
             if (node->fs_id)
                 blockfs_inode_remove(parent->mount, node->fs_id);
-#endif
             node->linked = 0;
             node->active = 0;
             return 0;
         }
         node->self = object;
         if (object_retain(object)) {
-#ifdef __x86_64__
             if (node->fs_id)
                 blockfs_inode_remove(parent->mount, node->fs_id);
-#endif
             node->linked = 0;
             object_release(object);
             return 0;
@@ -618,7 +601,6 @@ struct kernel_object *vfs_create(struct kernel_object *directory,
     return vfs_create_mode(directory, name, type, mode);
 }
 
-#ifdef __x86_64__
 struct kernel_object *vfs_create_urandom(struct kernel_object *directory) {
     struct kernel_object *object = vfs_create_mode(
         directory, "urandom", VFS_NODE_REGULAR, VFS_MODE_REGULAR_READONLY);
@@ -629,12 +611,6 @@ struct kernel_object *vfs_create_urandom(struct kernel_object *directory) {
     node->size = VFS_FILE_SIZE_MAX;
     return object;
 }
-#else
-struct kernel_object *vfs_create_urandom(struct kernel_object *directory) {
-    (void)directory;
-    return 0;
-}
-#endif
 
 struct kernel_object *vfs_lookup(struct kernel_object *directory,
                                  const char *name) {
@@ -808,11 +784,9 @@ int vfs_unlink(struct kernel_object *directory, const char *name) {
         if (node->readonly || mount_for_point(node->self) ||
             (node->type == VFS_NODE_DIRECTORY && child_count(index)))
             return -1;
-#ifdef __x86_64__
         if (node->filesystem == VFS_FILESYSTEM_BLOCKFS && node->fs_id &&
             blockfs_inode_remove(node->mount, node->fs_id))
             return -1;
-#endif
         node->linked = 0;
         node->parent = VFS_NODE_MAX;
         object_release(node->self);
@@ -826,7 +800,9 @@ int vfs_image(struct kernel_object *object, const u8 **data, u32 *size) {
     if (!node || !node_backing_live(node) ||
         node->type != VFS_NODE_REGULAR || !node->size || !data || !size)
         return -1;
-    *data = node->external_data ? node->external_data : node->data;
+    // Page-backed files have no single contiguous image; bootfs modules do.
+    if (!node->external_data) return -1;
+    *data = node->external_data;
     *size = node->size;
     return 0;
 }
@@ -867,31 +843,49 @@ int vfs_read(struct kernel_object *object, u32 offset,
     struct vfs_file_state *file = file_for(object);
     struct vfs_node_state *node = file ? node_for(file->node) : 0;
     if (!node || !node_backing_live(node) || !buffer || !transferred) return -1;
-#ifdef __x86_64__
     if (node->filesystem == VFS_FILESYSTEM_BLOCKFS)
         return blockfs_read(node->mount, node->fs_id, offset, buffer,
                             length, transferred);
-#endif
-#ifdef __x86_64__
     if (node->special == VFS_SPECIAL_URANDOM) {
         /* Character-device semantics: every read returns fresh bytes and
            the file offset carries no meaning. */
         u32 count = length;
-        if (count > VFS_FILE_SIZE_MAX) count = VFS_FILE_SIZE_MAX;
+        if (count > ENTROPY_FILL_MAX) count = ENTROPY_FILL_MAX;
         if (entropy_fill(buffer, count)) return -1;
         *transferred = count;
         return 0;
     }
-#endif
     if (offset >= node->size) {
         *transferred = 0;
         return 0;
     }
     u32 count = node->size - offset;
     if (count > length) count = length;
-    const u8 *source = node->external_data ? node->external_data : node->data;
-    for (u32 index = 0; index < count; index++)
-        ((u8 *)buffer)[index] = source[offset + index];
+    if (node->external_data) {
+        for (u32 index = 0; index < count; index++)
+            ((u8 *)buffer)[index] = node->external_data[offset + index];
+        *transferred = count;
+        return 0;
+    }
+    struct page_resource *resource =
+        node->pages ? page_resource_get(node->pages) : 0;
+    u32 done = 0;
+    while (done < count) {
+        u32 position = offset + done;
+        u32 within = position % 4096;
+        u32 chunk = 4096 - within;
+        if (chunk > count - done) chunk = count - done;
+        const u8 *source = 0;
+        if (resource && position / 4096 < resource->pages)
+            source = (const u8 *)(uptr_t)resource->physical[position / 4096];
+        if (source)
+            for (u32 index = 0; index < chunk; index++)
+                ((u8 *)buffer)[done + index] = source[within + index];
+        else
+            for (u32 index = 0; index < chunk; index++)
+                ((u8 *)buffer)[done + index] = 0;
+        done += chunk;
+    }
     *transferred = count;
     return 0;
 }
@@ -902,7 +896,6 @@ static int write_node(struct vfs_node_state *node, u32 offset,
         node->external_data || !buffer || !transferred ||
         offset > VFS_FILE_SIZE_MAX || length > VFS_FILE_SIZE_MAX - offset)
         return -1;
-#ifdef __x86_64__
     if (node->filesystem == VFS_FILESYSTEM_BLOCKFS) {
         u32 size = node->size;
         int result = blockfs_write(node->mount, node->fs_id, offset, buffer,
@@ -910,10 +903,31 @@ static int write_node(struct vfs_node_state *node, u32 offset,
         if (!result) node->size = size;
         return result;
     }
-#endif
-    for (u32 index = 0; index < length; index++)
-        node->data[offset + index] = ((const u8 *)buffer)[index];
-    if (offset + length > node->size) node->size = offset + length;
+    u32 end = offset + length;
+    if (length) {
+        if (!node->pages) {
+            node->pages = page_resource_create();
+            if (!node->pages) return -1;
+        }
+        struct page_resource *resource = page_resource_get(node->pages);
+        if (!resource) return -1;
+        u32 needed = (end + 4095) / 4096;
+        if (needed > resource->pages &&
+            page_resource_grow(node->pages, needed))
+            return -1;
+        u32 done = 0;
+        while (done < length) {
+            u32 position = offset + done;
+            u32 within = position % 4096;
+            u32 chunk = 4096 - within;
+            if (chunk > length - done) chunk = length - done;
+            u8 *target = (u8 *)(uptr_t)resource->physical[position / 4096];
+            for (u32 index = 0; index < chunk; index++)
+                target[within + index] = ((const u8 *)buffer)[done + index];
+            done += chunk;
+        }
+    }
+    if (end > node->size) node->size = end;
     *transferred = length;
     return 0;
 }
@@ -945,18 +959,26 @@ static int truncate_node(struct vfs_node_state *node, u32 size) {
     if (!node || !node_backing_live(node) || node->readonly ||
         node->external_data || size > VFS_FILE_SIZE_MAX)
         return -1;
-#ifdef __x86_64__
     if (node->filesystem == VFS_FILESYSTEM_BLOCKFS) {
         u32 new_size = 0;
         int result = blockfs_truncate(node->mount, node->fs_id, size, &new_size);
         if (!result) node->size = new_size;
         return result;
     }
-#endif
-    if (size < node->size)
-        for (u32 index = size; index < node->size; index++) node->data[index] = 0;
-    else
-        for (u32 index = node->size; index < size; index++) node->data[index] = 0;
+    if (node->pages) {
+        struct page_resource *resource = page_resource_get(node->pages);
+        u32 kept = (size + 4095) / 4096;
+        if (resource && kept < resource->pages &&
+            page_resource_trim(node->pages, kept))
+            return -1;
+        if (size % 4096) {
+            u8 *bytes = resource && kept - 1 < resource->pages ?
+                (u8 *)(uptr_t)resource->physical[kept - 1] : 0;
+            if (bytes)
+                for (u32 index = size % 4096; index < 4096; index++)
+                    bytes[index] = 0;
+        }
+    }
     node->size = size;
     return 0;
 }

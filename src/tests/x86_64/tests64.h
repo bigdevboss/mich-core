@@ -23,6 +23,7 @@ struct test64_env {
 };
 
 int test_vfs64(void);
+int test_vfs_pages64(void);
 int test_posix_fd64(struct task *owner, struct task *child);
 int test_posix_profile64(struct task *owner, struct task *child);
 int test_posix_vfs64(struct task *owner, struct task *child);
@@ -35,6 +36,7 @@ int test_virtio_blk64(void);
 int test_object64(struct task *owner, struct task *target);
 int test_resource64(void);
 int test_page64(const struct test64_env *env);
+int test_page_grow64(void);
 int test_sg64(void);
 int test_ring64(const struct test64_env *env);
 int test_async64(const struct test64_env *env);

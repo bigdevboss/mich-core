@@ -21,6 +21,9 @@ int tests64_run(const struct test64_env *env) {
     serial64_write("Mich test64: VFS root escape protection pass\n");
     serial64_write("Mich test64: VFS path component bounds pass\n");
     serial64_write("Mich test64: VFS path mutation stress pass\n");
+    if (test_report_record(TEST_ID_VFS_PAGES, test_vfs_pages64()))
+        return -1;
+    serial64_write("Mich test64: VFS page-backed files pass\n");
     if (test_report_record(TEST_ID_POSIX_FD,
                            test_posix_fd64(env->owner, env->target)))
         return -1;
@@ -56,6 +59,9 @@ int tests64_run(const struct test64_env *env) {
     serial64_write("Mich test64: resource object layer pass\n");
     if (test_report_record(TEST_ID_PAGE, test_page64(env))) return -1;
     serial64_write("Mich test64: page and shared memory objects pass\n");
+    if (test_report_record(TEST_ID_PAGE_GROW, test_page_grow64()))
+        return -1;
+    serial64_write("Mich test64: page grow and trim pass\n");
     if (test_report_record(TEST_ID_SG, test_sg64())) return -1;
     serial64_write("Mich test64: scatter-gather objects pass\n");
     serial64_write("Mich test64: scatter-gather rollback pass\n");

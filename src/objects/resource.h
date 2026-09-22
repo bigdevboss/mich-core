@@ -9,7 +9,7 @@
 #define RESOURCE_DMA_MAX 32
 #define RESOURCE_PCI_MAX 64
 #define RESOURCE_MSIX_MAX 32
-#define RESOURCE_PAGE_MAX 32
+#define RESOURCE_PAGE_MAX 64
 #define RESOURCE_PAGE_PAGES_MAX 64
 #define RESOURCE_SG_MAX 32
 #define RESOURCE_SG_ENTRY_MAX 32
@@ -166,6 +166,8 @@ struct page_resource *page_resource_get(const struct kernel_object *object);
 int page_resource_pin(struct kernel_object *object);
 int page_resource_unpin(struct kernel_object *object);
 int page_resource_revoke(struct kernel_object *object);
+int page_resource_grow(struct kernel_object *object, u32 pages);
+int page_resource_trim(struct kernel_object *object, u32 pages);
 int page_resource_mapping_open(struct kernel_object *object);
 void page_resource_mapping_close(struct kernel_object *object);
 struct kernel_object *sg_resource_create(struct kernel_object **pages,

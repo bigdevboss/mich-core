@@ -1,8 +1,6 @@
 #include "object.h"
 #include "task.h"
-#ifdef __x86_64__
 #include "posix_fd.h"
-#endif
 
 struct handle_slot {
     struct kernel_object *object;
@@ -141,9 +139,7 @@ u32 handle_duplicate(struct task *source, struct task *target,
 
 u32 handle_revoke_object(struct kernel_object *object) {
     if (!object || !object->active) return 0;
-#ifdef __x86_64__
     posix_fd_revoke_object(object);
-#endif
     u32 revoked = 0;
     for (u32 owner = 0; owner < MAX_TASKS; owner++) {
         for (u32 index = 0; index < KHANDLE_MAX; index++) {

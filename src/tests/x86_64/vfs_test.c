@@ -1,5 +1,6 @@
 #include "types.h"
 #include "object.h"
+#include "pmm.h"
 #include "vfs.h"
 #include "firmware.h"
 
@@ -148,5 +149,97 @@ int test_vfs64(void) {
         vfs_node_active_count() == nodes &&
         vfs_file_active_count() == files &&
         vfs_mount_active_count() == mounts;
+    return valid ? 0 : -1;
+}
+
+
+int test_vfs_pages64(void) {
+    u32 objects = object_active_count();
+    u32 nodes = vfs_node_active_count();
+    u32 files = vfs_file_active_count();
+    u32 free_pages = pmm_free_pages();
+    static u8 payload[3 * 4096 + 100];
+    static u8 received[3 * 4096 + 100];
+    struct kernel_object *root = vfs_root();
+    struct kernel_object *directory = root ?
+        vfs_create(root, "page-files", VFS_NODE_DIRECTORY) : 0;
+    struct kernel_object *node = directory ?
+        vfs_create(directory, "blob", VFS_NODE_REGULAR) : 0;
+    struct kernel_object *opened = node ? vfs_open(node) : 0;
+    u32 transferred = 0;
+    u32 appended_position = 0;
+    u32 span = sizeof(payload);
+    for (u32 index = 0; index < span; index++)
+        payload[index] = (u8)(index * 7 + 3);
+    struct vfs_node_info info;
+    int valid = root && directory && node && opened &&
+        !vfs_write(opened, 0, payload, span, &transferred) &&
+        transferred == span &&
+        !vfs_stat(node, &info) && info.size == span;
+    for (u32 index = 0; index < span; index++) received[index] = 0;
+    valid = valid && !vfs_read(opened, 0, received, span, &transferred) &&
+        transferred == span;
+    for (u32 index = 0; index < span; index++)
+        if (received[index] != payload[index]) valid = 0;
+    valid = valid && !vfs_read(opened, 4090, received, 12, &transferred) &&
+        transferred == 12;
+    for (u32 index = 0; index < 12; index++)
+        if (received[index] != payload[4090 + index]) valid = 0;
+    valid = valid && !vfs_append(opened, payload, 5, &transferred,
+                                 &appended_position) &&
+        transferred == 5 && appended_position == span + 5;
+    for (u32 index = 0; index < 7000; index++) received[index] = 0xA5;
+    valid = valid && !vfs_write(opened, 20000, payload, 5, &transferred) &&
+        transferred == 5 &&
+        !vfs_stat(node, &info) && info.size == 20005 &&
+        !vfs_read(opened, span + 5, received, 20000 - span - 5,
+                  &transferred) &&
+        transferred == 20000 - span - 5;
+    for (u32 index = span + 5; index < 20000; index++)
+        if (received[index - span - 5] != 0) valid = 0;
+    valid = valid && !vfs_read(opened, 20000, received, 5, &transferred) &&
+        transferred == 5;
+    for (u32 index = 0; index < 5; index++)
+        if (received[index] != payload[index]) valid = 0;
+    valid = valid && !vfs_truncate(opened, 5000) &&
+        !vfs_stat(node, &info) && info.size == 5000 &&
+        !vfs_truncate(opened, 8000) &&
+        !vfs_read(opened, 0, received, 8000, &transferred) &&
+        transferred == 8000;
+    for (u32 index = 0; index < 5000; index++)
+        if (received[index] != payload[index]) valid = 0;
+    for (u32 index = 5000; index < 8000; index++)
+        if (received[index] != 0) valid = 0;
+    valid = valid && !vfs_write(opened, 4990, payload, 20, &transferred) &&
+        transferred == 20 &&
+        !vfs_read(opened, 4990, received, 20, &transferred) &&
+        transferred == 20;
+    for (u32 index = 0; index < 20; index++)
+        if (received[index] != payload[index]) valid = 0;
+    valid = valid && !vfs_truncate(opened, 0) &&
+        !vfs_stat(node, &info) && info.size == 0 &&
+        !vfs_write(opened, 4096, payload, 4096, &transferred) &&
+        transferred == 4096 &&
+        !vfs_read(opened, 0, received, 8192, &transferred) &&
+        transferred == 8192;
+    for (u32 index = 0; index < 4096; index++)
+        if (received[index] != 0) valid = 0;
+    for (u32 index = 4096; index < 8192; index++)
+        if (received[index] != payload[index - 4096]) valid = 0;
+    valid = valid &&
+        vfs_write(opened, VFS_FILE_SIZE_MAX, payload, 1, &transferred) < 0 &&
+        vfs_write(opened, VFS_FILE_SIZE_MAX - 4, payload, 8,
+                  &transferred) < 0 &&
+        vfs_truncate(opened, VFS_FILE_SIZE_MAX + 1) < 0;
+    if (opened) object_release(opened);
+    valid = valid && !vfs_unlink(directory, "blob");
+    if (node) object_release(node);
+    if (directory) object_release(directory);
+    valid = valid && !vfs_unlink(root, "page-files");
+    if (root) object_release(root);
+    valid = valid && object_active_count() == objects &&
+        vfs_node_active_count() == nodes &&
+        vfs_file_active_count() == files &&
+        pmm_free_pages() == free_pages;
     return valid ? 0 : -1;
 }
