@@ -286,6 +286,7 @@ for marker in \
     "Mich test64: VFS root escape protection pass" \
     "Mich test64: VFS path component bounds pass" \
     "Mich test64: VFS path mutation stress pass" \
+    "Mich test64: VFS page-backed files pass" \
     "Mich test64: POSIX FD/OFD substrate pass" \
     "Mich test64: POSIX FD lifecycle cleanup pass" \
     "Mich test64: POSIX profile cwd and authority pass" \
@@ -302,6 +303,7 @@ for marker in \
     "Mich test64: blockfs stale vnode generation pass" \
     "Mich test64: resource object layer pass" \
     "Mich test64: page and shared memory objects pass" \
+    "Mich test64: page grow and trim pass" \
     "Mich test64: scatter-gather objects pass" \
     "Mich test64: scatter-gather rollback pass" \
     "Mich test64: shared zero-copy rings pass" \

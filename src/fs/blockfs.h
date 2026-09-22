@@ -7,6 +7,7 @@
 #define BLOCKFS_MAGIC 0x3146484Du
 #define BLOCKFS_INODE_MAX 16
 #define BLOCKFS_FILE_SECTORS 8
+#define BLOCKFS_FILE_SIZE_MAX (BLOCKFS_FILE_SECTORS * BLOCK_SECTOR_SIZE)
 
 int blockfs_format(struct kernel_object *device);
 int blockfs_attach(u32 mount, struct kernel_object *device);

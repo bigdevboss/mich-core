@@ -319,7 +319,7 @@ int blockfs_write(u32 mount, u32 inode, u32 offset, const void *buffer,
         load_inode(m, inode, &in) || !in.used ||
         in.type != VFS_NODE_REGULAR)
         return -1;
-    if (offset > VFS_FILE_SIZE_MAX || length > VFS_FILE_SIZE_MAX - offset)
+    if (offset > BLOCKFS_FILE_SIZE_MAX || length > BLOCKFS_FILE_SIZE_MAX - offset)
         return -1;
     if (ensure_extent(m, &in)) return -1;
     u32 end = offset + length;
@@ -348,7 +348,7 @@ int blockfs_write(u32 mount, u32 inode, u32 offset, const void *buffer,
 int blockfs_truncate(u32 mount, u32 inode, u32 size, u32 *new_size) {
     struct blockfs_mount *m = mount_at(mount);
     struct blockfs_inode in;
-    if (!m || !new_size || size > VFS_FILE_SIZE_MAX ||
+    if (!m || !new_size || size > BLOCKFS_FILE_SIZE_MAX ||
         load_inode(m, inode, &in) || !in.used ||
         in.type != VFS_NODE_REGULAR)
         return -1;

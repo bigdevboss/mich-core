@@ -257,3 +257,51 @@ int test_ring64(const struct test64_env *env) {
         vm64_object_mapping_count(env->target_space) == mappings_two;
     return valid ? 0 : -1;
 }
+
+
+int test_page_grow64(void) {
+    u32 objects = object_active_count();
+    u32 free_pages = pmm_free_pages();
+    struct kernel_object *page = page_resource_create();
+    struct page_resource *resource = page ? page_resource_get(page) : 0;
+    int valid = page && resource && resource->pages == 1 &&
+        page_resource_grow(page, 0) < 0 &&
+        page_resource_grow(page, 1) < 0 &&
+        page_resource_grow(page, RESOURCE_PAGE_PAGES_MAX + 1) < 0;
+    u8 *bytes = resource ? (u8 *)(uptr_t)resource->physical[0] : 0;
+    if (bytes)
+        for (u32 index = 0; index < 4096; index++)
+            bytes[index] = (u8)(index ^ 0x5A);
+    valid = valid && bytes && !page_resource_grow(page, 4);
+    struct page_resource *grown = page ? page_resource_get(page) : 0;
+    valid = valid && grown && grown->pages == 4;
+    if (valid && grown) {
+        bytes = (u8 *)(uptr_t)grown->physical[0];
+        for (u32 index = 0; index < 4096; index++)
+            if (bytes[index] != (u8)(index ^ 0x5A)) valid = 0;
+        for (u32 page_index = 1; page_index < 4; page_index++) {
+            u8 *fresh = (u8 *)(uptr_t)grown->physical[page_index];
+            for (u32 index = 0; index < 4096; index++)
+                if (fresh[index] != 0) valid = 0;
+        }
+    }
+    valid = valid && page_resource_trim(page, 4) < 0 &&
+        !page_resource_trim(page, 2);
+    struct page_resource *trimmed = page ? page_resource_get(page) : 0;
+    valid = valid && trimmed && trimmed->pages == 2;
+    if (valid && trimmed) {
+        bytes = (u8 *)(uptr_t)trimmed->physical[0];
+        for (u32 index = 0; index < 4096; index++)
+            if (bytes[index] != (u8)(index ^ 0x5A)) valid = 0;
+    }
+    valid = valid && !page_resource_trim(page, 0);
+    struct page_resource *empty = page ? page_resource_get(page) : 0;
+    valid = valid && empty && empty->pages == 0 &&
+        !page_resource_grow(page, 3);
+    struct page_resource *regrown = page ? page_resource_get(page) : 0;
+    valid = valid && regrown && regrown->pages == 3;
+    if (page) object_release(page);
+    valid = valid && object_active_count() == objects &&
+        pmm_free_pages() == free_pages;
+    return valid ? 0 : -1;
+}

@@ -528,6 +528,44 @@ int page_resource_revoke(struct kernel_object *object) {
     return resource->map_count || resource->pin_count ? -1 : 0;
 }
 
+int page_resource_grow(struct kernel_object *object, u32 pages) {
+    struct page_resource *resource = page_resource_get(object);
+    if (!resource || resource->revoked || pages <= resource->pages ||
+        pages > RESOURCE_PAGE_PAGES_MAX)
+        return -1;
+    u32 grown = resource->pages;
+    while (grown < pages) {
+        paddr_t physical = pmm_alloc_page();
+        if (!physical) break;
+        resource->physical[grown++] = physical;
+    }
+    if (grown != pages) {
+        while (grown > resource->pages)
+            pmm_free_page(resource->physical[--grown]);
+        return -1;
+    }
+    // pmm recycles frames; zero on attach so a hole never leaks prior data.
+    for (u32 page = resource->pages; page < pages; page++) {
+        u8 *bytes = (u8 *)(uptr_t)resource->physical[page];
+        for (u32 index = 0; index < 4096; index++) bytes[index] = 0;
+    }
+    resource->pages = pages;
+    return 0;
+}
+
+int page_resource_trim(struct kernel_object *object, u32 pages) {
+    struct page_resource *resource = page_resource_get(object);
+    if (!resource || resource->revoked || pages >= resource->pages ||
+        resource->map_count || resource->pin_count)
+        return -1;
+    for (u32 page = pages; page < resource->pages; page++) {
+        pmm_free_page(resource->physical[page]);
+        resource->physical[page] = 0;
+    }
+    resource->pages = pages;
+    return 0;
+}
+
 int page_resource_mapping_open(struct kernel_object *object) {
     struct page_resource *resource = page_resource_get(object);
     if (!resource || resource->revoked ||
