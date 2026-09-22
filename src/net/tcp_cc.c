@@ -2,7 +2,7 @@
 
 //
 // Exact 64-by-32 division (the kernel has no libgcc; 64-bit / would
-// otherwise emit a __udivdi3 reference that fails to link on i386).
+// otherwise emit a __udivdi3 reference that fails to link).
 //
 static u32 div64_by_32(u64 n, u32 d) {
     u32 rem = (u32)(n >> 32);

@@ -9,7 +9,7 @@
 
 // Freestanding kernel: no libc. The compiler lowers some struct copies to a
 // memcpy call (the lowering depends on the host gcc version), so the symbol
-// must exist for the link. x86-64 uses SSE2 16-byte moves; i386 stays scalar.
+// must exist for the link. The x86-64 build uses SSE2 16-byte moves.
 void *memcpy(void *dst, const void *src, usize_t length) {
     u8 *d = (u8 *)dst;
     const u8 *s = (const u8 *)src;

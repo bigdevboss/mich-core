@@ -176,6 +176,7 @@ Verification (clean rebuild, instrumentation removed):
   `burst` stable, `syscall/sysret pass`; the OQ-1 fault is gone across
   repeated runs.
 - `make test64`: PASS.
-- `make release-check`: fails on the pre-existing i386 legacy smoke
-  (`PANIC scratch map failed`), identical on unmodified HEAD `1993f45`;
-  x86_64 targets are unaffected.
+- `make release-check`: at the time of this audit it failed on the
+  pre-existing i386 legacy smoke (`PANIC scratch map failed`), identical on
+  unmodified HEAD `1993f45`; x86_64 targets were unaffected. The i386 port
+  has since been retired, which removes that failure from the check.

@@ -12,8 +12,7 @@ graceful driver stop, and the networking stack (userspace `virtio-net`
 capsule, modern virtio PCI, split virtqueues, interrupt-driven RX/TX, DHCPv4,
 IPv4/IPv6, UDP/UDPv6, TCP, stream sockets).
 
-The x86-64 port is the main development target. The i386 port remains a working
-legacy and reference backend. AArch64 and RISC-V 64 are planned.
+x86-64 is the only supported architecture. AArch64 and RISC-V 64 are planned.
 
 Mich Core is still a development kernel. Do not use it for production systems or important data.
 
@@ -640,46 +639,47 @@ This prevents an MSI-X interrupt from corrupting a queue or causing a lost wakeu
 
 ## Support matrix
 
-| Feature | i386 | x86-64 |
-| --- | --- | --- |
-| BIOS boot through BigDevBoot | Yes | Yes |
-| Ring 3 processes | Yes | Yes |
-| Timer preemption | Yes | Yes |
-| ELF userspace | ELF32 | ELF64 |
-| E820 physical memory manager | Yes | Yes |
-| PID generations | Yes | Yes |
-| Exit, wait, kill, and reparenting | Yes | Yes |
-| Fork and exec | Yes | Yes |
-| Copy-on-write fork | Yes | Yes |
-| Blocking and nonblocking IPC | Yes | Yes |
-| Service registry and capabilities | Yes | Yes |
-| Kernel objects and generated handles | Yes | Yes |
-| Shared pages, SG lists, rings, completions, and timers | Reference build | Yes |
-| ACPI, PCI, and PCIe ECAM | No | Yes |
-| Local APIC and I/O APIC | No | Yes |
-| MSI and MSI-X | No | Yes |
-| Userspace driver supervisor | No | Yes |
-| Automatic PCI driver binding | No | Yes |
-| Driver quarantine and reset policy | No | Yes |
-| Packet pools and virtual NIC | Reference build | Yes |
-| Userspace `virtio-net` driver | No | Yes |
-| VFS (ramfs, bootfs, and bounded blockfs) | Reference build | Yes |
-| Static POSIX application profile | No | Yes |
-| Block layer and bounded blockfs | No | Yes |
-| Firmware loading | Reference build | Yes |
-| Graceful driver stop | No | Yes |
-| External IPv4 | No | Yes |
-| DHCPv4 | No | Yes |
-| External IPv6 and SLAAC | No | Yes |
-| UDP and UDPv6 | Reference build | Yes |
-| TCP and stream sockets | Reference build | Yes |
-| Panic register dump | Basic | Yes |
-| FPU context switching | No | FXSAVE and FXRSTOR |
-| UEFI | No | No |
-| SMP | No | No |
-| IOMMU | No | Intel VT-d and AMD-Vi coherent DMA |
-| AArch64 | Planned | Planned |
-| RISC-V 64 | Planned | Planned |
+| Feature | x86-64 |
+| --- | --- |
+| --- | --- |
+| BIOS boot through BigDevBoot | Yes |
+| Ring 3 processes | Yes |
+| Timer preemption | Yes |
+| ELF userspace | ELF64 |
+| E820 physical memory manager | Yes |
+| PID generations | Yes |
+| Exit, wait, kill, and reparenting | Yes |
+| Fork and exec | Yes |
+| Copy-on-write fork | Yes |
+| Blocking and nonblocking IPC | Yes |
+| Service registry and capabilities | Yes |
+| Kernel objects and generated handles | Yes |
+| Shared pages, SG lists, rings, completions, and timers | Yes |
+| ACPI, PCI, and PCIe ECAM | Yes |
+| Local APIC and I/O APIC | Yes |
+| MSI and MSI-X | Yes |
+| Userspace driver supervisor | Yes |
+| Automatic PCI driver binding | Yes |
+| Driver quarantine and reset policy | Yes |
+| Packet pools and virtual NIC | Yes |
+| Userspace `virtio-net` driver | Yes |
+| VFS (ramfs, bootfs, and bounded blockfs) | Yes |
+| Static POSIX application profile | Yes |
+| Block layer and bounded blockfs | Yes |
+| Firmware loading | Yes |
+| Graceful driver stop | Yes |
+| External IPv4 | Yes |
+| DHCPv4 | Yes |
+| External IPv6 and SLAAC | Yes |
+| UDP and UDPv6 | Yes |
+| TCP and stream sockets | Yes |
+| Panic register dump | Yes |
+| FPU context switching | FXSAVE and FXRSTOR |
+| UEFI | No |
+| SMP | No |
+| IOMMU | Intel VT-d and AMD-Vi coherent DMA |
+| AArch64 | Planned |
+| RISC-V 64 | Planned |
 
 ## Security model
 
@@ -760,7 +760,7 @@ The disk images are test systems, not installable operating systems.
 Use a Linux host with:
 
 - GNU Make
-- GCC with i386 multilib support
+- GCC
 - GNU binutils
 - NASM
 - Python 3
@@ -830,7 +830,6 @@ make release-check
 
 The release check performs a clean build and runs:
 
-- i386 smoke test
 - x86-64 smoke test with 128 MiB
 - x86-64 high-memory test with 768 MiB
 - Hardware-destructive interrupt profile
@@ -1017,8 +1016,8 @@ Contributions are accepted under GPLv3.
 
 ## License
 
-All Mich Core code is available under the [GNU General Public License v3.0](LICENSE), except for the bitmap glyph data in `src/arch/x86/i386/font.h`.
+All Mich Core code is available under the [GNU General Public License v3.0](LICENSE).
 
 Commercial dual licensing is also available under terms discussed separately by email: [mich-licensing@protonmail.com](mailto:mich-licensing@protonmail.com) or [shiftluckyxd@mail.ru](mailto:shiftluckyxd@mail.ru).
 
-See [LICENSE](LICENSE) for the GPLv3 terms. The bitmap glyph data in `src/arch/x86/i386/font.h` is derived from Terminus Font 4.39 and remains under the SIL Open Font License 1.1; it is not licensed under GPLv3.
+See [LICENSE](LICENSE) for the GPLv3 terms.
