@@ -26,6 +26,7 @@ int test_vfs64(void);
 int test_posix_fd64(struct task *owner, struct task *child);
 int test_posix_profile64(struct task *owner, struct task *child);
 int test_posix_vfs64(struct task *owner, struct task *child);
+int test_posix_process64(void);
 int test_block64(void);
 int test_cache64(void);
 int test_blockfs64(void);

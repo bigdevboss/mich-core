@@ -20,7 +20,9 @@
 #include <mich/block.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 typedef unsigned long long u64;
 
@@ -80,6 +82,152 @@ static int posix_user_test(void) {
         mich_write("Mich x86_64: POSIX user path FAIL\n");
         return -1;
     }
+    return 0;
+}
+
+static int posix_user_process_test(void) {
+    const char directory[] = "/posix-proc";
+    char *const empty_env[] = { 0 };
+    char *const args_missing[] = { "/boot/absent-image", 0 };
+    char *const args_fixture[] = { "/boot/posixapp", "alpha", "beta", 0 };
+    char *const env_fixture[] = { "POSIXAPP=stage5", 0 };
+    char *many[34];
+    static char huge[2050];
+    static const char payload[] = "mich-posix-stage5";
+    char buffer[32];
+    int status = -1;
+
+    if (mkdir(directory, 0700)) return -1;
+    /* Fixture contract: 0 sync flag, 1 payload, 2 CLOEXEC victim. */
+    int sync_fd = open("/posix-proc/sync", O_RDWR | O_CREAT, 0600);
+    int data_fd = open("/posix-proc/data", O_RDWR | O_CREAT, 0600);
+    int gone_fd = open("/posix-proc/gone", O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (sync_fd != 0 || data_fd != 1 || gone_fd != 2) return -1;
+    if (write(sync_fd, "w", 1) != 1 ||
+        write(data_fd, payload, sizeof(payload) - 1) !=
+        (ssize_t)(sizeof(payload) - 1))
+        return -1;
+    if (chdir(directory)) return -1;
+
+    errno = 0;
+    if (execve("/boot/absent-image", args_missing, empty_env) != -1 ||
+        errno != ENOENT)
+        return -1;
+    errno = 0;
+    if (execve("/boot", args_fixture, empty_env) != -1 || errno != EISDIR)
+        return -1;
+    for (int index = 0; index < 33; index++) many[index] = "x";
+    many[33] = 0;
+    errno = 0;
+    if (execve("/boot/posixapp", many, empty_env) != -1 || errno != E2BIG)
+        return -1;
+    for (int index = 0; index < 2049; index++) huge[index] = 'h';
+    huge[2049] = 0;
+    char *const args_huge[] = { huge, 0 };
+    errno = 0;
+    if (execve("/boot/posixapp", args_huge, empty_env) != -1 || errno != E2BIG)
+        return -1;
+    errno = 0;
+    char **volatile bad_argv = (char **)(u64)1;
+    if (execve("/boot/posixapp", bad_argv, empty_env) != -1 ||
+        errno != EINVAL)
+        return -1;
+    /* Every failed execve above must leave descriptors and image intact. */
+    if (lseek(data_fd, 0, 0) != 0 ||
+        read(data_fd, buffer, sizeof(payload) - 1) !=
+        (ssize_t)(sizeof(payload) - 1))
+        return -1;
+    if (fcntl(gone_fd, F_GETFD) != FD_CLOEXEC) return -1;
+
+    if (getpid() != 1 || getppid() != 0) return -1;
+    int child = fork();
+    if (child < 0) return -1;
+    if (!child) {
+        execve("/boot/posixapp", args_fixture, env_fixture);
+        _exit(9);
+    }
+    /* The child parks on the sync flag, so it cannot exit before this
+       WNOHANG poll observes it alive. */
+    if (waitpid(child, &status, WNOHANG) != 0) return -1;
+    if (lseek(sync_fd, 0, 0) != 0 || write(sync_fd, "g", 1) != 1) return -1;
+    if (waitpid(child, &status, 0) != child) return -1;
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 7) return -1;
+    errno = 0;
+    if (waitpid(child, &status, 0) != -1 || errno != ECHILD) return -1;
+    errno = 0;
+    if (waitpid(9999, &status, 0) != -1 || errno != ECHILD) return -1;
+
+    if (close(sync_fd) || close(data_fd) || close(gone_fd)) return -1;
+    if (chdir("/") || unlink("/posix-proc/sync") ||
+        unlink("/posix-proc/data") || unlink("/posix-proc/gone") ||
+        rmdir(directory))
+        return -1;
+    return 0;
+}
+
+
+/* TEMPORARY OQ-1 REPRO - not part of any commit. */
+__attribute__((noinline)) static void stress_putdec(u32 value) {
+    char digits[12];
+    u32 count = 0;
+    do { digits[count++] = (char)('0' + value % 10u); value /= 10u; } while (value);
+    while (count) {
+        char pair[2] = {digits[--count], 0};
+        mich_write(pair);
+    }
+}
+
+__attribute__((noinline)) static int stress_fd_rounds(void) {
+    for (int round = 0; round < 2; round++) {
+        for (;;) {
+            int fd = open("/stress-fd", O_RDWR | O_CREAT | O_TRUNC, 0600);
+            if (fd < 0) break;
+        }
+        for (int fd = 0; fd < 32; fd++) close(fd);
+        unlink("/stress-fd");
+    }
+    return 0;
+}
+
+__attribute__((noinline)) static int fork_burst(int exit_code) {
+    int count = 0;
+    for (;;) {
+        int child = fork();
+        if (child < 0) break;
+        if (!child) _exit(exit_code);
+        count++;
+    }
+    for (;;) {
+        int status;
+        if (waitpid(-1, &status, 0) < 0) break;
+    }
+    return count;
+}
+
+__attribute__((noinline)) static int posix_stress_test(void) {
+    if (stress_fd_rounds()) return -1;
+    mich_write("Mich stress: fd exhaustion stable\n");
+    int n = fork_burst(3);
+    mich_write("Mich stress: burst=");
+    stress_putdec((u32)n);
+    mich_write("\n");
+    return 0;
+}
+
+static int posix_application_test(void) {
+    char *const demo_argv[] = { "/boot/posixdemo", "demo", 0 };
+    char *const demo_envp[] = { "POSIXDEMO=stage6", 0 };
+    int status = -1;
+    int child = fork();
+    if (child < 0) return -1;
+    if (!child) {
+        execve("/boot/posixdemo", demo_argv, demo_envp);
+        _exit(9);
+    }
+    /* The application runs to completion without a sync contract, so a
+       blocking wait is the honest rendezvous here. */
+    if (waitpid(child, &status, 0) != child) return -1;
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return -1;
     return 0;
 }
 
@@ -1196,6 +1344,11 @@ int main(u64 role) {
     mich_write("Mich x86_64: context switch pass\n");
     if (posix_user_test()) stop();
     mich_write("Mich x86_64: POSIX userspace facade pass\n");
+    if (posix_user_process_test()) stop();
+    mich_write("Mich x86_64: POSIX userspace process pass\n");
+    if (posix_application_test()) stop();
+    mich_write("Mich x86_64: POSIX static application pass\n");
+    if (posix_stress_test()) stop();
     mich_syscall0(4);
     stop();
     return 0;

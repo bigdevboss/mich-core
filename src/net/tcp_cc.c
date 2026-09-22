@@ -65,8 +65,6 @@ static u32 bbr_bdp(struct tcp_connection *c) {
     return bdp;
 }
 
-// ------------------------------ Reno ------------------------------
-
 static void reno_init(struct tcp_connection *c) {
     (void)c;
 }
@@ -116,8 +114,6 @@ static const struct tcp_cc_ops reno_ops = {
 const struct tcp_cc_ops *tcp_cc_reno(void) {
     return &reno_ops;
 }
-
-// ------------------------------ BBR -------------------------------
 
 static const u32 bbr_probe_gains[8] = {
     1024, 1024, 1024, 1280, 1024, 1024, 1280, 1024

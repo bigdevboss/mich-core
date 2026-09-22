@@ -7,6 +7,8 @@
 #include "arch_task.h"
 #include "posix_fd.h"
 #include "posix_profile.h"
+#include "posix_process.h"
+#include "spinlock.h"
 #include "scheduler.h"
 #include "service.h"
 #include "capability.h"
@@ -847,6 +849,7 @@ static void fpu64_init_context(struct task_context64 *context) {
     fpu64_save(context);
 }
 
+
 static int spawn64_image(u32 image_id, int parent_id, u32 capabilities,
                          const char *name, u64 argument) {
     if (image_id >= SPAWN_IMAGE_MAX || image_id >= spawn_image_count ||
@@ -894,6 +897,7 @@ static int spawn64_image(u32 image_id, int parent_id, u32 capabilities,
     context->rsp = stack_top;
     context->rip = entry;
     context->rflags = 0x202;
+    context->user_break = VM64_HEAP_BASE;
     fpu64_init_context(context);
     return task->id;
 }
@@ -1005,7 +1009,194 @@ int exec64(u64 path_address, u64 argument) {
     context->r15 = 0;
     context->rsp = VM64_STACK_TOP;
     context->rip = entry;
+    context->user_break = VM64_HEAP_BASE;
     context->rflags = 0x202;
+    fpu64_init_context(context);
+    task_set_name(task, path);
+    return 0;
+}
+
+/* Scratch for argv/envp staging plus the initial stack page. One static
+   record under one lock: execve is rare, every path that holds the lock is
+   bounded and non-sleeping, and no other lock is ever taken through it in
+   reverse order. */
+static struct {
+    struct spinlock lock;
+    struct posix_exec_vectors vectors;
+    char arena[POSIX_ARG_BYTES_MAX];
+    u8 stack_page[POSIX_STACK_PAGE];
+} posix_exec_stage;
+
+static int copy_stage_string(u64 address) {
+    struct task *task = &task_pool[current_task_slot];
+    if (posix_exec_stage.vectors.arena_bytes >= POSIX_ARG_BYTES_MAX)
+        return POSIX_PROCESS_E2BIG;
+    u32 base = posix_exec_stage.vectors.arena_bytes;
+    u32 cursor = base;
+    for (;;) {
+        char byte;
+        if (vm64_copy_from(task->page_dir, &byte, address + (cursor - base),
+                           1))
+            return POSIX_PROCESS_EINVAL;
+        posix_exec_stage.arena[cursor] = byte;
+        cursor++;
+        if (!byte) break;
+        if (cursor >= POSIX_ARG_BYTES_MAX) return POSIX_PROCESS_E2BIG;
+    }
+    posix_exec_stage.vectors.arena_bytes = cursor;
+    return 0;
+}
+
+static int copy_stage_vector(u64 array, const char **slots, u32 *count) {
+    struct task *task = &task_pool[current_task_slot];
+    if (!array) return POSIX_PROCESS_EINVAL;
+    for (u32 index = 0; index < POSIX_ARG_COUNT_MAX; index++) {
+        u64 string_address;
+        if (vm64_copy_from(task->page_dir, &string_address, array + index * 8,
+                           8))
+            return POSIX_PROCESS_EINVAL;
+        if (!string_address) {
+            *count = index;
+            return 0;
+        }
+        u32 offset = posix_exec_stage.vectors.arena_bytes;
+        int result = copy_stage_string(string_address);
+        if (result) return result;
+        slots[index] = posix_exec_stage.arena + offset;
+    }
+    return POSIX_PROCESS_E2BIG;
+}
+
+int posix_execve64(u64 path_address, u64 argv_address, u64 envp_address) {
+    struct task *task = &task_pool[current_task_slot];
+    struct task_context64 *context = &task_contexts[current_task_slot];
+    if (!context->vm_valid) return POSIX_PROCESS_EINVAL;
+
+    spin_lock(&posix_exec_stage.lock);
+    posix_exec_stage.vectors.argc = 0;
+    posix_exec_stage.vectors.envc = 0;
+    posix_exec_stage.vectors.arena_bytes = 0;
+    posix_exec_stage.vectors.arena = posix_exec_stage.arena;
+
+    char path[VFS_PATH_MAX];
+    for (u32 index = 0; index < VFS_PATH_MAX; index++) path[index] = 0;
+    u32 length = 0;
+    for (;;) {
+        char byte;
+        if (length >= VFS_PATH_MAX - 1 ||
+            vm64_copy_from(task->page_dir, &byte, path_address + length, 1)) {
+            spin_unlock(&posix_exec_stage.lock);
+            return POSIX_PROCESS_EINVAL;
+        }
+        path[length] = byte;
+        if (!byte) break;
+        length++;
+    }
+    if (!path[0]) {
+        spin_unlock(&posix_exec_stage.lock);
+        return POSIX_PROCESS_EINVAL;
+    }
+
+    int result = copy_stage_vector(argv_address, posix_exec_stage.vectors.argv,
+                                   &posix_exec_stage.vectors.argc);
+    if (!result)
+        result = copy_stage_vector(envp_address,
+                                   posix_exec_stage.vectors.envp,
+                                   &posix_exec_stage.vectors.envc);
+    if (result) {
+        spin_unlock(&posix_exec_stage.lock);
+        return result;
+    }
+
+    /* Resolution honors the caller's cwd, including the detached-cwd
+       contract; profile codes are errno-compatible negatives and pass
+       through unchanged. */
+    struct kernel_object *node = 0;
+    result = posix_profile_resolve(task, path, &node);
+    if (result) {
+        spin_unlock(&posix_exec_stage.lock);
+        return result;
+    }
+    struct vfs_node_info info;
+    const u8 *image = 0;
+    u32 size = 0;
+    if (vfs_stat(node, &info)) result = POSIX_PROCESS_ENOENT;
+    else if (info.type == VFS_NODE_DIRECTORY) result = POSIX_PROCESS_EISDIR;
+    /* A present non-directory node without image backing is not a valid
+       static Mich image; v0 maps that to EINVAL rather than inventing an
+       exec-permission error surface. */
+    else if (vfs_image(node, &image, &size)) result = POSIX_PROCESS_EINVAL;
+    if (result) {
+        object_release(node);
+        spin_unlock(&posix_exec_stage.lock);
+        return result;
+    }
+
+    u32 space;
+    if (vm64_create_space(&space)) {
+        object_release(node);
+        spin_unlock(&posix_exec_stage.lock);
+        return ENOMEM;
+    }
+    vaddr_t entry;
+    if (elf64_load(space, image, size, &entry)) {
+        vm64_destroy_space(space);
+        object_release(node);
+        spin_unlock(&posix_exec_stage.lock);
+        return POSIX_PROCESS_EINVAL;
+    }
+    paddr_t stack = vm64_alloc_page();
+    if (!stack || vm64_map(space, VM64_STACK_TOP - 4096, stack, 1, 0)) {
+        if (stack) vm64_free_page(stack);
+        vm64_destroy_space(space);
+        object_release(node);
+        spin_unlock(&posix_exec_stage.lock);
+        return ENOMEM;
+    }
+    u64 stack_rsp = 0;
+    if (posix_process_build_stack(posix_exec_stage.stack_page,
+                                  &posix_exec_stage.vectors,
+                                  VM64_STACK_TOP - 4096, &stack_rsp) ||
+        vm64_copy_to(vm64_root(space), VM64_STACK_TOP - 4096,
+                     posix_exec_stage.stack_page, POSIX_STACK_PAGE)) {
+        vm64_destroy_space(space);
+        object_release(node);
+        spin_unlock(&posix_exec_stage.lock);
+        return POSIX_PROCESS_E2BIG;
+    }
+    spin_unlock(&posix_exec_stage.lock);
+    object_release(node);
+
+    /* Commit: nothing below can fail, so descriptors and the old image are
+       intact for every failure path above. POSIX keeps non-CLOEXEC
+       descriptors and the profile across execve; native handles follow the
+       exec64 policy. */
+    posix_fd_close_cloexec(task);
+    handle_close_all(task);
+    u32 old_space = context->vm_space;
+    context->vm_space = space;
+    context->vm_valid = 1;
+    task->page_dir = vm64_root(space);
+    vm64_destroy_space(old_space);
+    context->rax = 0;
+    context->rbx = 0;
+    context->rcx = 0;
+    context->rdx = 0;
+    context->rsi = 0;
+    context->rdi = 0;
+    context->rbp = 0;
+    context->r8 = 0;
+    context->r9 = 0;
+    context->r10 = 0;
+    context->r11 = 0;
+    context->r12 = 0;
+    context->r13 = 0;
+    context->r14 = 0;
+    context->r15 = 0;
+    context->rsp = stack_rsp;
+    context->rip = entry;
+    context->rflags = 0x202;
+    context->user_break = VM64_HEAP_BASE;
     fpu64_init_context(context);
     task_set_name(task, path);
     return 0;
@@ -1107,7 +1298,19 @@ static int wake_waiting_parent(u32 child_slot) {
     int code = child->exit_code;
     parent->wait_pid = -1;
     parent->state = TASK_RUNNING;
-    task_contexts[parent_slot].rax = (u64)(u32)code;
+    if (parent->wait_posix) {
+        parent->wait_posix = 0;
+        u64 status_address = parent->wait_status_address;
+        parent->wait_status_address = 0;
+        /* Match the 4-byte int status contract; a wider store would
+           clobber the woken parent's frame past the status slot. */
+        u32 status = (u32)((u32)code & 0xFFu) << 8;
+        if (status_address)
+            vm64_copy_to(parent->page_dir, status_address, &status, 4);
+        task_contexts[parent_slot].rax = (u64)(u32)child->id;
+    } else {
+        task_contexts[parent_slot].rax = (u64)(u32)code;
+    }
     task_free_slot(child);
     return code;
 }
@@ -1342,6 +1545,12 @@ void timer64_dispatch(struct interrupt_frame64 *frame) {
         serial64_write("Mich x86_64: kernel stack failure\n");
         for (;;) __asm__ volatile("cli; hlt");
     }
+    /* Same-privilege frames carry no SS/RSP, so a save/load round trip
+       would corrupt the context. The IF protocol (no sti in ring 0,
+       MSR_FMASK clears IF on syscall entry) means this should never
+       fire; the guard keeps a future sti from turning a tick into
+       silent context corruption, mirroring the AP path above. */
+    if ((frame->cs & 3) != 3) return;
     interrupt_save(&task_contexts[current_task_slot], frame);
     fpu64_save(&task_contexts[current_task_slot]);
     scheduler64_set_running(scheduler64_next_slot());
@@ -1394,11 +1603,13 @@ static int bootfs64_init(const struct bd_module *modules, u32 count) {
     return result;
 }
 
+
 void arch_task_release(struct task *task) {
     u32 slot = (u32)(task - task_pool);
     if (slot >= MAX_TASKS) return;
-    if (task_contexts[slot].vm_valid)
+    if (task_contexts[slot].vm_valid) {
         vm64_destroy_space(task_contexts[slot].vm_space);
+    }
     u8 *bytes = (u8 *)&task_contexts[slot];
     for (usize_t i = 0; i < sizeof(task_contexts[slot]); i++) bytes[i] = 0;
 }

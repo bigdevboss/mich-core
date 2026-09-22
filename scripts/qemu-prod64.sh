@@ -24,6 +24,9 @@ for marker in \
     "Mich x86_64: network runtime ready" \
     "Mich x86_64: external init64 task one" \
     "Mich x86_64: userspace runtime pass" \
+    "Mich x86_64: POSIX userspace facade pass" \
+    "Mich x86_64: POSIX userspace process pass" \
+    "Mich x86_64: POSIX static application pass" \
     "Mich x86_64: syscall/sysret pass"
 do
     grep -Fq "$marker" "$log" || {

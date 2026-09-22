@@ -72,6 +72,7 @@
 #include "posix_fd.h"
 #include "posix_profile.h"
 #include "posix_vfs.h"
+#include "posix_process.h"
 #include "kernel64_internal.h"
 
 u64 syscall64_validate_return(u64 result) {
@@ -150,6 +151,60 @@ static int posix_fd_error(struct task *task, int descriptor, u32 access) {
     return result == -2 ? POSIX_VFS_EACCES : 0;
 }
 
+static u64 exit64_dispatch(u64 code) {
+    fpu64_save(&task_contexts[current_task_slot]);
+    terminate64(current_task_slot, (int)code);
+    u32 next = scheduler64_next_slot();
+    if (next == current_task_slot || task_pool[next].state != TASK_RUNNING) {
+        serial64_write("Mich x86_64: no runnable task\n");
+        for (;;) __asm__ volatile("cli; hlt");
+    }
+    scheduler64_set_running(next);
+    fpu64_load(&task_contexts[current_task_slot]);
+    context_load(&task_contexts[current_task_slot]);
+    return task_contexts[current_task_slot].rax;
+}
+
+/* Page-granular grow-only program break inside the bounded heap window.
+   Linux-style contract: the current break is returned for zero, unchanged
+   on any rejection, so malloc can detect growth failure without errno. */
+static u64 posix_brk(struct task_context64 *context, u64 new_break) {
+    if (!context->user_break) context->user_break = VM64_HEAP_BASE;
+    u64 current = context->user_break;
+    if (!new_break || new_break == current) return current;
+    if (new_break < current || new_break > VM64_HEAP_LIMIT) return current;
+    u64 old_ceiling = (current + 0xFFF) & ~0xFFFULL;
+    u64 new_ceiling = (new_break + 0xFFF) & ~0xFFFULL;
+    if (new_ceiling <= old_ceiling) {
+        context->user_break = new_break;
+        return new_break;
+    }
+    u64 pages = (new_ceiling - old_ceiling) >> 12;
+    if (vm64_available_pages() < pages) return current;
+    for (u64 address = old_ceiling; address < new_ceiling; address += 0x1000) {
+        paddr_t page = vm64_alloc_page();
+        if (!page || vm64_map(context->vm_space, address, page, 1, 0)) {
+            if (page) vm64_free_page(page);
+            for (u64 undo = old_ceiling; undo < address; undo += 0x1000)
+                vm64_unmap(context->vm_space, undo);
+            return current;
+        }
+    }
+    context->user_break = new_break;
+    return new_break;
+}
+
+static u64 posix_waitpid_reaped(struct task *parent, u64 status_address,
+                                int pid, int code) {
+    /* The user contract is a 4-byte int status slot: never widen this
+       store, it would clobber the caller's frame past the slot. */
+    u32 status = (u32)((u32)code & 0xFFu) << 8;
+    if (status_address &&
+        vm64_copy_to(parent->page_dir, status_address, &status, 4))
+        return (u64)(i64)POSIX_PROCESS_EINVAL;
+    return (u64)(u32)pid;
+}
+
 u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
     if (smp64_catch_ap_user(number)) {
         for (;;)
@@ -176,19 +231,8 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         context_load(&task_contexts[current_task_slot]);
         return 0;
     }
-    if (number == 14) {
-        fpu64_save(&task_contexts[current_task_slot]);
-        terminate64(current_task_slot, (int)arg0);
-        u32 next = scheduler64_next_slot();
-        if (next == current_task_slot || task_pool[next].state != TASK_RUNNING) {
-            serial64_write("Mich x86_64: no runnable task\n");
-            for (;;) __asm__ volatile("cli; hlt");
-        }
-        scheduler64_set_running(next);
-        fpu64_load(&task_contexts[current_task_slot]);
-        context_load(&task_contexts[current_task_slot]);
-        return task_contexts[current_task_slot].rax;
-    }
+    if (number == 14)
+        return exit64_dispatch(arg0);
     if (number == 15) {
         int pid = (int)arg0;
         struct task *parent = &task_pool[current_task_slot];
@@ -222,6 +266,8 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             }
         }
         parent->wait_pid = pid;
+        parent->wait_posix = 0;
+        parent->wait_status_address = 0;
         parent->state = TASK_BLOCKED_WAIT;
         if (scheduler_pick_next((int)current_task_slot) < 0) {
             parent->wait_pid = -1;
@@ -2058,7 +2104,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         object_release(object);
         return handle ? handle : (u64)-1;
     }
-    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_TRUNCATE) {
+    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_BRK) {
         struct task *task = &task_pool[current_task_slot];
         if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
         if (number == POSIX_SYSCALL_OPEN) {
@@ -2241,6 +2287,82 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             return (u64)(i64)posix_vfs_truncate_path(task, request.path,
                                                       request.size);
         }
+        if (number == POSIX_SYSCALL_FORK)
+            return (u64)(i64)fork64();
+        if (number == POSIX_SYSCALL_EXECVE) {
+            int result = posix_execve64(arg0, arg1, arg2);
+            if (result) return (u64)(i64)result;
+            context_load(&task_contexts[current_task_slot]);
+            return 0;
+        }
+        if (number == POSIX_SYSCALL_EXIT)
+            return exit64_dispatch(arg0);
+        if (number == POSIX_SYSCALL_WAITPID) {
+            struct task *parent = &task_pool[current_task_slot];
+            int pid = (int)arg0;
+            u64 status_address = arg1;
+            u32 options = (u32)arg2;
+            if (options & ~POSIX_WAIT_NOHANG || pid == 0 || pid < -1)
+                return (u64)(i64)POSIX_PROCESS_EINVAL;
+            if (status_address &&
+                vm64_user_access(parent->page_dir, status_address, 4, 1))
+                return (u64)(i64)POSIX_PROCESS_EINVAL;
+            struct task *child = 0;
+            if (pid == -1) {
+                for (int index = 1; index < task_pool_count; index++) {
+                    struct task *candidate = &task_pool[index];
+                    if (candidate->state == TASK_FREE ||
+                        candidate->parent_id != parent->id)
+                        continue;
+                    if (candidate->state == TASK_ZOMBIE) {
+                        int code;
+                        if (task_reap_zombie(parent, candidate->id, &code))
+                            return (u64)(i64)POSIX_PROCESS_ECHILD;
+                        return posix_waitpid_reaped(parent, status_address,
+                                                    candidate->id, code);
+                    }
+                    child = candidate;
+                }
+            } else {
+                u32 slot = PID_SLOT((u32)pid);
+                if (slot == 0 || slot >= (u32)task_pool_count)
+                    return (u64)(i64)POSIX_PROCESS_ECHILD;
+                child = &task_pool[slot];
+                if (child->state == TASK_FREE || child->id != pid ||
+                    child->parent_id != parent->id)
+                    return (u64)(i64)POSIX_PROCESS_ECHILD;
+                if (child->state == TASK_ZOMBIE) {
+                    int code;
+                    if (task_reap_zombie(parent, pid, &code))
+                        return (u64)(i64)POSIX_PROCESS_ECHILD;
+                    return posix_waitpid_reaped(parent, status_address, pid,
+                                                code);
+                }
+            }
+            if (!child) return (u64)(i64)POSIX_PROCESS_ECHILD;
+            if (options & POSIX_WAIT_NOHANG) return 0;
+            /* A blocking dispatch frame is abandoned on switch, so the wake
+               path delivers the pid and publishes the status word itself. */
+            parent->wait_pid = pid;
+            parent->wait_posix = 1;
+            parent->wait_status_address = status_address;
+            parent->state = TASK_BLOCKED_WAIT;
+            if (scheduler_pick_next((int)current_task_slot) < 0) {
+                parent->wait_pid = -1;
+                parent->wait_posix = 0;
+                parent->wait_status_address = 0;
+                parent->state = TASK_RUNNING;
+                return (u64)(i64)POSIX_PROCESS_EINVAL;
+            }
+            scheduler64_switch();
+            return task_contexts[current_task_slot].rax;
+        }
+        if (number == POSIX_SYSCALL_GETPID)
+            return (u64)(u32)task_pool[current_task_slot].id;
+        if (number == POSIX_SYSCALL_GETPPID)
+            return (u64)(u32)task_pool[current_task_slot].parent_id;
+        if (number == POSIX_SYSCALL_BRK)
+            return posix_brk(&task_contexts[current_task_slot], arg0);
     }
     if (number == 4) {
         serial64_write("Mich x86_64: syscall/sysret pass\n");

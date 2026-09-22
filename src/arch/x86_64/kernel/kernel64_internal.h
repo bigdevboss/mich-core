@@ -7,6 +7,7 @@
 struct task_context64 {
     u32 vm_space;
     u32 vm_valid;
+    u64 user_break;
     u64 rax;
     u64 rbx;
     u64 rcx;
@@ -43,6 +44,7 @@ u64 scheduler64_switch_count(void);
 int spawn64(int parent_id, u32 caps, const char *name, u64 arg);
 int fork64(void);
 int exec64(u64 path, u64 argument);
+int posix_execve64(u64 path_address, u64 argv_address, u64 envp_address);
 void terminate64(u32 slot, int code);
 
 #endif

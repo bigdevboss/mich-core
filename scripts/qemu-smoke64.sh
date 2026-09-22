@@ -290,6 +290,7 @@ for marker in \
     "Mich test64: POSIX FD lifecycle cleanup pass" \
     "Mich test64: POSIX profile cwd and authority pass" \
     "Mich test64: POSIX VFS authority and mode pass" \
+    "Mich test64: POSIX process stack layout pass" \
     "Mich test64: block device objects pass" \
     "Mich test64: ramdisk read and write pass" \
     "Mich test64: block request generation pass" \
@@ -436,6 +437,17 @@ for marker in \
     "Mich x86_64: FPU context pass" \
     "Mich x86_64: context switch pass" \
     "Mich x86_64: POSIX userspace facade pass" \
+    "Mich x86_64: POSIX userspace process pass" \
+    "Mich x86_64: POSIX application alive" \
+    "Mich x86_64: POSIX application IO pass" \
+    "Mich x86_64: POSIX application cwd pass" \
+    "Mich x86_64: POSIX application errno pass" \
+    "Mich x86_64: POSIX application process pass" \
+    "Mich x86_64: POSIX libc string pass" \
+    "Mich x86_64: POSIX libc stdio pass" \
+    "Mich x86_64: POSIX libc heap pass" \
+    "Mich x86_64: POSIX libc file pass" \
+    "Mich x86_64: POSIX static application pass" \
     "Mich x86_64: syscall/sysret pass" \
     "Mich x86_64: user exception contained" \
     "Mich x86_64: process lifecycle pass" \

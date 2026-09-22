@@ -26,9 +26,14 @@
 #define MICH_SYS_POSIX_CHDIR 199
 #define MICH_SYS_POSIX_GETCWD 200
 #define MICH_SYS_POSIX_TRUNCATE 201
+#define MICH_SYS_POSIX_BRK 208
 
 long mich_syscall0(unsigned long number);
 long mich_syscall1(unsigned long number, unsigned long arg0);
+long mich_syscall2(unsigned long number, unsigned long arg0,
+                   unsigned long arg1);
+long mich_syscall3(unsigned long number, unsigned long arg0,
+                   unsigned long arg1, unsigned long arg2);
 int mich_write(const char *text);
 int mich_memfree(void);
 void mich_exit(int code) __attribute__((noreturn));

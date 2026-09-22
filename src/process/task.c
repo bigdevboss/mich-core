@@ -19,6 +19,8 @@ static void task_clear_dynamic(struct task *t) {
     t->parent_id = -1;
     t->exit_code = 0;
     t->wait_pid = -1;
+    t->wait_posix = 0;
+    t->wait_status_address = 0;
     t->kstack_phys = 0;
     t->exec_gate = 0;
     t->recv_expect = 0;
@@ -91,6 +93,8 @@ void task_mark_zombie(struct task *t, int code) {
     t->send_deadline = 0;
     t->next = 0;
     t->wait_pid = -1;
+    t->wait_posix = 0;
+    t->wait_status_address = 0;
     t->capabilities = 0;
     t->irq_rights = 0;
 }

@@ -67,6 +67,11 @@ struct task {
     int parent_id;
     int exit_code;
     int wait_pid;
+    // POSIX waitpid waiter state: the blocking dispatch frame is abandoned
+    // on switch, so the wake path itself must deliver the reaped pid and
+    // publish the encoded status word into the waiter's memory.
+    int wait_posix;
+    uptr_t wait_status_address;
     paddr_t kstack_phys;
     u32 exec_gate;
     u32 recv_expect;
