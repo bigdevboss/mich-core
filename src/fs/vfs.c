@@ -2,6 +2,7 @@
 #include "spinlock.h"
 #ifdef __x86_64__
 #include "blockfs.h"
+#include "entropy.h"
 #endif
 
 struct vfs_node_state {
@@ -18,6 +19,7 @@ struct vfs_node_state {
     u32 mount_generation;
     u32 readonly;
     u32 mode;
+    u32 special;
     u32 linked;
     u32 fs_id;
     u32 active;
@@ -156,6 +158,7 @@ static void node_destroy(struct kernel_object *object) {
     node->mount_generation = 0;
     node->readonly = 0;
     node->mode = 0;
+    node->special = VFS_SPECIAL_NONE;
     node->linked = 0;
     node->fs_id = 0;
     node->active = 0;
@@ -565,6 +568,7 @@ struct kernel_object *vfs_create_mode(struct kernel_object *directory,
         node->mount_generation = parent->mount_generation;
         node->readonly = 0;
         node->mode = mode;
+        node->special = VFS_SPECIAL_NONE;
         node->linked = 1;
         node->fs_id = 0;
         node->active = 1;
@@ -613,6 +617,24 @@ struct kernel_object *vfs_create(struct kernel_object *directory,
         VFS_MODE_REGULAR_DEFAULT;
     return vfs_create_mode(directory, name, type, mode);
 }
+
+#ifdef __x86_64__
+struct kernel_object *vfs_create_urandom(struct kernel_object *directory) {
+    struct kernel_object *object = vfs_create_mode(
+        directory, "urandom", VFS_NODE_REGULAR, VFS_MODE_REGULAR_READONLY);
+    if (!object) return 0;
+    struct vfs_node_state *node = node_for(object);
+    node->special = VFS_SPECIAL_URANDOM;
+    node->readonly = 1;
+    node->size = VFS_FILE_SIZE_MAX;
+    return object;
+}
+#else
+struct kernel_object *vfs_create_urandom(struct kernel_object *directory) {
+    (void)directory;
+    return 0;
+}
+#endif
 
 struct kernel_object *vfs_lookup(struct kernel_object *directory,
                                  const char *name) {
@@ -849,6 +871,17 @@ int vfs_read(struct kernel_object *object, u32 offset,
     if (node->filesystem == VFS_FILESYSTEM_BLOCKFS)
         return blockfs_read(node->mount, node->fs_id, offset, buffer,
                             length, transferred);
+#endif
+#ifdef __x86_64__
+    if (node->special == VFS_SPECIAL_URANDOM) {
+        /* Character-device semantics: every read returns fresh bytes and
+           the file offset carries no meaning. */
+        u32 count = length;
+        if (count > VFS_FILE_SIZE_MAX) count = VFS_FILE_SIZE_MAX;
+        if (entropy_fill(buffer, count)) return -1;
+        *transferred = count;
+        return 0;
+    }
 #endif
     if (offset >= node->size) {
         *transferred = 0;

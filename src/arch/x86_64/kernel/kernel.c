@@ -8,6 +8,7 @@
 #include "posix_fd.h"
 #include "posix_profile.h"
 #include "posix_process.h"
+#include "entropy.h"
 #include "spinlock.h"
 #include "scheduler.h"
 #include "service.h"
@@ -1574,6 +1575,27 @@ void timer64_dispatch(struct interrupt_frame64 *frame) {
         serial64_write("Mich x86_64: SMP dual-core userspace pass\n");
 }
 
+static int devfs64_init(void) {
+    struct kernel_object *root = vfs_root();
+    struct kernel_object *directory = root ?
+        vfs_create_mode(root, "dev", VFS_NODE_DIRECTORY,
+                        VFS_MODE_DIRECTORY_READONLY) : 0;
+    struct kernel_object *node = directory ? vfs_create_urandom(directory) : 0;
+    if (!root || !directory || !node) {
+        if (node) object_release(node);
+        if (directory) {
+            object_release(directory);
+            vfs_unlink(root, "dev");
+        }
+        if (root) object_release(root);
+        return -1;
+    }
+    object_release(node);
+    object_release(directory);
+    object_release(root);
+    return 0;
+}
+
 static int bootfs64_init(const struct bd_module *modules, u32 count) {
     if (!modules || !count || count > VFS_BOOTFS_ENTRY_MAX) return -1;
     struct kernel_object *root = vfs_root();
@@ -1681,7 +1703,9 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     vfs_init();
     posix_fd_init();
     posix_profile_init();
+    entropy_init();
     if (bootfs64_init(modules, info->mods_count)) KERNEL_PANIC("bootfs mount");
+    if (devfs64_init()) KERNEL_PANIC("dev urandom");
     resource_init();
     iommu_init();
     if (page_resource_set_revoke_backend(vm64_revoke_object_all))

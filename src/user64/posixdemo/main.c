@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/random.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <mich/syscall.h>
@@ -278,6 +279,41 @@ static int file_demo(void) {
     return unlink("/libc-file") ? -1 : 0;
 }
 
+static int entropy_demo(void) {
+    unsigned char first[256];
+    unsigned char second[256];
+    if (getrandom(first, sizeof(first), 0) != (ssize_t)sizeof(first)) return -1;
+    /* A stuck or absent generator must not look like all-zero or all-one
+       output, and the bit balance must sit near one half. */
+    unsigned int set_bits = 0;
+    unsigned int same_zero = 1;
+    unsigned int same_one = 1;
+    for (int index = 0; index < 256; index++) {
+        if (first[index]) same_zero = 0;
+        if (first[index] != 0xFF) same_one = 0;
+        for (int bit = 0; bit < 8; bit++)
+            if (first[index] & (1u << bit)) set_bits++;
+    }
+    if (same_zero || same_one) return -1;
+    if (set_bits < 896 || set_bits > 1152) return -1;
+    if (getrandom(second, sizeof(second), 0) != (ssize_t)sizeof(second)) return -1;
+    if (!memcmp(first, second, sizeof(first))) return -1;
+    /* /dev/urandom rides the same DRBG through the file facade. */
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0) return -1;
+    unsigned char third[256];
+    if (read(fd, third, sizeof(third)) != (ssize_t)sizeof(third)) return -1;
+    if (read(fd, first, 64) != 64) return -1;
+    if (!memcmp(third, second, sizeof(third))) return -1;
+    if (close(fd)) return -1;
+    /* Reserved flags and zero length are rejected with EINVAL. */
+    errno = 0;
+    if (getrandom(second, 16, 1) != -1 || errno != EINVAL) return -1;
+    errno = 0;
+    if (getrandom(second, 0, 0) != -1 || errno != EINVAL) return -1;
+    return 0;
+}
+
 static int process_demo(void) {
     static const char payload[] = "posixdemo-child-payload";
     char *const child_argv[] = { "/posixdemo", "child", 0 };
@@ -355,6 +391,8 @@ int main(int argc, char **argv) {
     mich_write("Mich x86_64: POSIX libc heap pass\n");
     if (file_demo()) return 89;
     mich_write("Mich x86_64: POSIX libc file pass\n");
+    if (entropy_demo()) return 90;
+    mich_write("Mich x86_64: POSIX entropy pass\n");
     if (process_demo()) return 85;
     mich_write("Mich x86_64: POSIX application process pass\n");
     return 0;

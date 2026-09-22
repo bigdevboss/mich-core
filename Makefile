@@ -90,8 +90,8 @@ VIRTIO_NET64_PROBES_OBJ = $(USER64_OBJ_DIR)/virtio_net_probes.o
 VIRTIO_NET64_ELF = $(USER64_DIR)/virtio-net.elf
 VIRTIO_NET64_SELECTOR_CHECK = $(USER64_DIR)/virtio-net-recovery-rip.ok
 VIRTIO_NET_SAFE64_ELF = $(USER64_DIR)/virtio-net-safe.elf
-OBJS64 = $(OBJ64)/boot.o $(OBJ64)/kernel.o $(OBJ64)/task_core.o $(OBJ64)/posix_fd_core.o $(OBJ64)/posix_profile_core.o $(OBJ64)/posix_vfs_core.o $(OBJ64)/posix_process_core.o $(OBJ64)/scheduler_core.o $(OBJ64)/service_core.o $(OBJ64)/object_core.o $(OBJ64)/resource_core.o $(OBJ64)/iommu_core.o $(OBJ64)/driver_core.o $(OBJ64)/driver_supervisor_core.o $(OBJ64)/driver_manager_core.o $(OBJ64)/ring_core.o $(OBJ64)/completion_core.o $(OBJ64)/timer_object_core.o $(OBJ64)/net_buffer_core.o $(OBJ64)/vnic_core.o $(OBJ64)/vnic_benchmark.o $(OBJ64)/net_interface_core.o $(OBJ64)/ethernet_core.o $(OBJ64)/arp_core.o $(OBJ64)/ipv4_core.o $(OBJ64)/ipv6_core.o $(OBJ64)/icmp_core.o $(OBJ64)/icmpv6_core.o $(OBJ64)/loopback_core.o $(OBJ64)/udp_core.o $(OBJ64)/udpv6_core.o $(OBJ64)/tcp_core.o $(OBJ64)/tcp_cc_core.o $(OBJ64)/pmtu_core.o $(OBJ64)/route_core.o $(OBJ64)/socket_core.o $(OBJ64)/vfs_core.o $(OBJ64)/blockfs_core.o $(OBJ64)/block_core.o $(OBJ64)/cache_core.o $(OBJ64)/firmware_core.o $(OBJ64)/event_core.o $(OBJ64)/endpoint_core.o $(OBJ64)/bridge_core.o $(OBJ64)/pmm_core.o $(OBJ64)/mem_core.o $(OBJ64)/ipc64.o $(OBJ64)/acpi64.o $(OBJ64)/vtd64.o $(OBJ64)/amd_iommu64.o $(OBJ64)/pci64.o $(OBJ64)/virtio_pci.o $(OBJ64)/virtio_blk.o $(OBJ64)/apic64.o $(OBJ64)/ioapic64.o $(OBJ64)/smp64.o $(OBJ64)/smp_tramp.o $(OBJ64)/vector64.o $(OBJ64)/msi64.o $(OBJ64)/msix64.o $(OBJ64)/panic64.o $(OBJ64)/gdt_asm.o $(OBJ64)/gdt.o $(OBJ64)/exceptions.o $(OBJ64)/interrupt.o $(OBJ64)/idt.o $(OBJ64)/vm.o $(OBJ64)/elf64.o $(OBJ64)/platform.o $(OBJ64)/serial.o $(OBJ64)/syscall_dispatch.o $(OBJ64)/syscall.o
-TEST64_OBJS = $(OBJ64)/test_runner64.o $(OBJ64)/test_object64.o $(OBJ64)/test_resource64.o $(OBJ64)/test_async64.o $(OBJ64)/test_fpu64.o $(OBJ64)/test_smp64.o $(OBJ64)/test_driver64.o $(OBJ64)/test_hardware64.o $(OBJ64)/test_network_runner64.o $(OBJ64)/test_net_support64.o $(OBJ64)/test_net_foundation64.o $(OBJ64)/test_ipv4_64.o $(OBJ64)/test_ipv6_64.o $(OBJ64)/test_tcp64.o $(OBJ64)/test_udp_socket64.o $(OBJ64)/test_net_interface64.o $(OBJ64)/test_vfs64.o $(OBJ64)/test_posix_fd64.o $(OBJ64)/test_posix_profile64.o $(OBJ64)/test_posix_vfs64.o $(OBJ64)/test_posix_process64.o $(OBJ64)/test_block64.o $(OBJ64)/test_cache64.o $(OBJ64)/test_blockfs64.o $(OBJ64)/test_virtio_blk64.o $(OBJ64)/test_net_bench64.o $(OBJ64)/test_report64.o
+OBJS64 = $(OBJ64)/boot.o $(OBJ64)/kernel.o $(OBJ64)/task_core.o $(OBJ64)/posix_fd_core.o $(OBJ64)/posix_profile_core.o $(OBJ64)/posix_vfs_core.o $(OBJ64)/posix_process_core.o $(OBJ64)/scheduler_core.o $(OBJ64)/service_core.o $(OBJ64)/object_core.o $(OBJ64)/resource_core.o $(OBJ64)/iommu_core.o $(OBJ64)/driver_core.o $(OBJ64)/driver_supervisor_core.o $(OBJ64)/driver_manager_core.o $(OBJ64)/ring_core.o $(OBJ64)/completion_core.o $(OBJ64)/timer_object_core.o $(OBJ64)/net_buffer_core.o $(OBJ64)/vnic_core.o $(OBJ64)/vnic_benchmark.o $(OBJ64)/net_interface_core.o $(OBJ64)/ethernet_core.o $(OBJ64)/arp_core.o $(OBJ64)/ipv4_core.o $(OBJ64)/ipv6_core.o $(OBJ64)/icmp_core.o $(OBJ64)/icmpv6_core.o $(OBJ64)/loopback_core.o $(OBJ64)/udp_core.o $(OBJ64)/udpv6_core.o $(OBJ64)/tcp_core.o $(OBJ64)/tcp_cc_core.o $(OBJ64)/pmtu_core.o $(OBJ64)/route_core.o $(OBJ64)/socket_core.o $(OBJ64)/vfs_core.o $(OBJ64)/blockfs_core.o $(OBJ64)/block_core.o $(OBJ64)/cache_core.o $(OBJ64)/firmware_core.o $(OBJ64)/event_core.o $(OBJ64)/endpoint_core.o $(OBJ64)/bridge_core.o $(OBJ64)/pmm_core.o $(OBJ64)/mem_core.o $(OBJ64)/entropy_core.o $(OBJ64)/ipc64.o $(OBJ64)/acpi64.o $(OBJ64)/vtd64.o $(OBJ64)/amd_iommu64.o $(OBJ64)/pci64.o $(OBJ64)/virtio_pci.o $(OBJ64)/virtio_blk.o $(OBJ64)/apic64.o $(OBJ64)/ioapic64.o $(OBJ64)/smp64.o $(OBJ64)/smp_tramp.o $(OBJ64)/vector64.o $(OBJ64)/msi64.o $(OBJ64)/msix64.o $(OBJ64)/panic64.o $(OBJ64)/gdt_asm.o $(OBJ64)/gdt.o $(OBJ64)/exceptions.o $(OBJ64)/interrupt.o $(OBJ64)/idt.o $(OBJ64)/vm.o $(OBJ64)/elf64.o $(OBJ64)/platform.o $(OBJ64)/serial.o $(OBJ64)/syscall_dispatch.o $(OBJ64)/syscall.o
+TEST64_OBJS = $(OBJ64)/test_runner64.o $(OBJ64)/test_object64.o $(OBJ64)/test_resource64.o $(OBJ64)/test_async64.o $(OBJ64)/test_fpu64.o $(OBJ64)/test_smp64.o $(OBJ64)/test_driver64.o $(OBJ64)/test_hardware64.o $(OBJ64)/test_network_runner64.o $(OBJ64)/test_net_support64.o $(OBJ64)/test_net_foundation64.o $(OBJ64)/test_ipv4_64.o $(OBJ64)/test_ipv6_64.o $(OBJ64)/test_tcp64.o $(OBJ64)/test_udp_socket64.o $(OBJ64)/test_net_interface64.o $(OBJ64)/test_vfs64.o $(OBJ64)/test_posix_fd64.o $(OBJ64)/test_posix_profile64.o $(OBJ64)/test_posix_vfs64.o $(OBJ64)/test_posix_process64.o $(OBJ64)/test_block64.o $(OBJ64)/test_cache64.o $(OBJ64)/test_entropy64.o $(OBJ64)/test_blockfs64.o $(OBJ64)/test_virtio_blk64.o $(OBJ64)/test_net_bench64.o $(OBJ64)/test_report64.o
 OBJS64_TEST = $(OBJ64)/boot.o $(OBJ64)/kernel_test.o $(filter-out $(OBJ64)/boot.o $(OBJ64)/kernel.o,$(OBJS64)) $(TEST64_OBJS)
 PORTABLE64_DIR = $(BIN64)/portable
 PORTABLE64_NAMES = task posix_fd posix_profile posix_vfs posix_process service object resource driver driver_supervisor driver_manager ring completion timer_object net_buffer vnic net_interface ethernet arp ipv4 ipv6 icmp icmpv6 loopback udp udpv6 tcp tcp_cc pmtu route socket vfs blockfs block cache firmware event endpoint bridge pmm
@@ -294,7 +294,7 @@ $(OBJ64)/route_core.o: $(NET)/route.c $(NET)/route.h | $(OBJ64)
 $(OBJ64)/socket_core.o: $(NET)/socket.c $(NET)/socket.h $(NET)/udp.h $(NET)/route.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/vfs_core.o: $(FS)/vfs.c $(FS)/vfs.h $(FS)/blockfs.h $(OBJECTS)/object.h | $(OBJ64)
+$(OBJ64)/vfs_core.o: $(FS)/vfs.c $(FS)/vfs.h $(FS)/blockfs.h $(OBJECTS)/object.h $(CORE)/entropy.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
 $(OBJ64)/blockfs_core.o: $(FS)/blockfs.c $(FS)/blockfs.h $(FS)/vfs.h $(BLOCK)/block.h $(BLOCK)/cache.h | $(OBJ64)
@@ -380,6 +380,9 @@ $(OBJ64)/test_block64.o: $(TEST64)/block_test.c $(TEST64)/tests64.h $(BLOCK)/blo
 
 $(OBJ64)/test_cache64.o: $(TEST64)/cache_test.c $(TEST64)/tests64.h $(BLOCK)/cache.h $(BLOCK)/block.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
+$(OBJ64)/test_entropy64.o: $(TEST64)/entropy_test.c $(TEST64)/tests64.h $(CORE)/entropy.h | $(OBJ64)
+	$(CC) $(CFLAGS64) -Werror -c $< -o $@
+
 
 $(OBJ64)/test_blockfs64.o: $(TEST64)/blockfs_test.c $(TEST64)/tests64.h $(FS)/vfs.h $(FS)/blockfs.h $(BLOCK)/block.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
@@ -404,6 +407,9 @@ $(OBJ64)/pmm_core.o: $(CORE)/pmm.c $(CORE)/pmm.h | $(OBJ64)
 
 $(OBJ64)/mem_core.o: $(CORE)/mem.c $(CORE)/types.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
+$(OBJ64)/entropy_core.o: $(CORE)/entropy.c $(CORE)/entropy.h | $(OBJ64)
+	$(CC) $(CFLAGS64) -Werror -c $< -o $@
+
 
 $(OBJ64)/gdt_asm.o: $(ARCH64_CPU)/gdt.asm | $(OBJ64)
 	$(AS) -f elf64 $< -o $@
@@ -435,7 +441,7 @@ $(USER64_OBJ_DIR)/crt0.o: src/user64/lib/crt0.asm | $(USER64_OBJ_DIR)
 $(USER64_OBJ_DIR)/syscall.o: src/user64/lib/syscall.asm | $(USER64_OBJ_DIR)
 	$(AS) -f elf64 $< -o $@
 
-$(USER64_OBJ_DIR)/posix.o: src/user64/lib/posix.c src/process/posix_abi.h src/user64/include/errno.h src/user64/include/fcntl.h src/user64/include/unistd.h src/user64/include/sys/stat.h | $(USER64_OBJ_DIR)
+$(USER64_OBJ_DIR)/posix.o: src/user64/lib/posix.c src/process/posix_abi.h src/user64/include/errno.h src/user64/include/fcntl.h src/user64/include/unistd.h src/user64/include/sys/stat.h src/user64/include/sys/random.h | $(USER64_OBJ_DIR)
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
 $(USER64_OBJ_DIR)/init.o: src/user64/init/main.c src/user64/include/mich/syscall.h src/user64/include/mich/service.h src/user64/include/mich/capability.h src/user64/include/mich/ipc.h src/user64/include/mich/event.h src/user64/include/mich/bridge.h src/user64/include/mich/hardware.h src/user64/include/mich/driver.h src/user64/include/mich/memory.h src/user64/include/mich/sg.h src/user64/include/mich/ring.h src/user64/include/mich/completion.h src/user64/include/mich/timer.h src/user64/include/mich/wait.h src/user64/include/mich/net.h src/user64/include/mich/socket.h src/user64/include/mich/net_interface.h src/user64/include/mich/virtio.h src/user64/include/mich/vfs.h src/user64/include/mich/firmware.h src/user64/include/mich/block.h | $(USER64_OBJ_DIR)
@@ -465,7 +471,7 @@ $(USER64_OBJ_DIR)/posixapp.o: src/user64/posixapp/main.c src/user64/include/errn
 $(POSIXAPP64_ELF): $(POSIXAPP64_OBJS) src/user64/linker.ld | $(USER64_DIR)
 	$(LD) -m elf_x86_64 -T src/user64/linker.ld -o $@ $(POSIXAPP64_OBJS)
 
-$(USER64_OBJ_DIR)/posixdemo.o: src/user64/posixdemo/main.c src/user64/include/errno.h src/user64/include/fcntl.h src/user64/include/unistd.h src/user64/include/string.h src/user64/include/stdio.h src/user64/include/stdlib.h src/user64/include/sys/stat.h src/user64/include/sys/wait.h src/user64/include/mich/syscall.h | $(USER64_OBJ_DIR)
+$(USER64_OBJ_DIR)/posixdemo.o:src/user64/posixdemo/main.c src/user64/include/errno.h src/user64/include/fcntl.h src/user64/include/unistd.h src/user64/include/string.h src/user64/include/stdio.h src/user64/include/stdlib.h src/user64/include/sys/stat.h src/user64/include/sys/wait.h src/user64/include/mich/syscall.h src/user64/include/sys/random.h | $(USER64_OBJ_DIR) src/user64/include/sys/random.h
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
 $(POSIXDEMO64_ELF): $(POSIXDEMO64_OBJS) src/user64/linker.ld | $(USER64_DIR)
