@@ -36,7 +36,7 @@ The current rules are:
 
 The long-term target is a POSIX-oriented desktop system for x86-64, AArch64, and RISC-V 64.
 
-### Static POSIX filesystem profile (x86-64 v0)
+### Static POSIX application profile (x86-64 v0)
 
 Mich provides a bounded POSIX-oriented **source** compatibility profile for
 statically linked applications built specifically for Mich on x86-64. It is not
@@ -50,8 +50,8 @@ task administration, driver/resource access, or hardware privilege. Only an
 executable image carrying the POSIX-profile boot metadata is admitted. Native
 fork preserves the profile and descriptor state; task teardown releases both.
 
-The public headers are `<fcntl.h>`, `<unistd.h>`, `<sys/stat.h>`, and
-`<errno.h>`. The v0 filesystem interface provides:
+The public headers are `<fcntl.h>`, `<unistd.h>`, `<sys/types.h>`,
+`<sys/wait.h>`, `<sys/stat.h>`, and `<errno.h>`. The v0 interface provides:
 
 ```text
 open, close, read, write, lseek
@@ -59,6 +59,8 @@ dup, dup2, fcntl(F_GETFD/F_SETFD)
 stat, fstat
 mkdir, rmdir, unlink
 chdir, getcwd, truncate
+fork, execve, _exit
+getpid, getppid, waitpid(WNOHANG/blocking)
 ```
 
 `O_CREAT`, `O_TRUNC`, `O_APPEND`, and `O_CLOEXEC` are supported. File
@@ -70,10 +72,9 @@ not grant access. `O_APPEND` uses VFS-level append serialization.
 
 The ABI uses bounded request records internally; public `read` and `write`
 wrappers chunk larger transfers. Mich does not claim POSIX certification or
-complete POSIX conformance. POSIX `execve` with an `argv`/`envp` initial stack,
-`waitpid`, pipes, `mmap`, polling, sockets, signals, threads, terminal
-semantics, UID/GID, `umask`, `chmod`, ACLs, and Linux ABI compatibility remain
-outside this v0 filesystem profile.
+complete POSIX conformance. Pipes, `mmap`, polling, sockets, signals, threads,
+terminal semantics, UID/GID, `umask`, `chmod`, ACLs, and Linux ABI
+compatibility remain outside this v0 application profile.
 
 ## 0.1.0
 
@@ -180,6 +181,14 @@ fingerprint. The selection is one-shot and fail-closed; it does not patch or
 recompile driver code. See [Recovery Laboratory](docs/recovery-laboratory.md)
 for the selection contract, failure boundaries, audit record, and QEMU proof
 profiles.
+
+### POSIX process audit
+
+The static POSIX application profile ships with an adversarial audit record
+covering the process facade, the blocking-layer IF-protocol invariant, PMM
+and COW refcount probes, and the stress campaign evidence. See
+[POSIX Process Audit](docs/posix-process-audit.md) for findings, fixed
+defects, and the open question register.
 
 ### Network interface objects
 
@@ -655,7 +664,7 @@ This prevents an MSI-X interrupt from corrupting a queue or causing a lost wakeu
 | Packet pools and virtual NIC | Reference build | Yes |
 | Userspace `virtio-net` driver | No | Yes |
 | VFS (ramfs, bootfs, and bounded blockfs) | Reference build | Yes |
-| Static POSIX filesystem profile | No | Yes |
+| Static POSIX application profile | No | Yes |
 | Block layer and bounded blockfs | No | Yes |
 | Firmware loading | Reference build | Yes |
 | Graceful driver stop | No | Yes |
@@ -731,8 +740,7 @@ Mich Core 0.1.0 does not include:
 - USB
 - Audio
 - A desktop or shell
-- POSIX `execve` initial-stack construction (`argv`/`envp`), `waitpid`, or a
-  complete POSIX process/runtime ABI
+- POSIX pipes, `mmap`, polling, signals, or a complete POSIX runtime ABI
 - POSIX certification, complete POSIX conformance, or Linux binary/syscall ABI
   compatibility
 - Independently written Linux Kernel API compatibility headers
@@ -859,7 +867,9 @@ The suites cover:
 - Persistent blockfs file and directory hierarchy reconstruction, mode restore,
   live-open unmount protection, and stale-generation rejection
 - POSIX FD/OFD lifetime, `FD_CLOEXEC`, cwd/detached-cwd behavior, owner-mode
-  enforcement, and the userspace POSIX filesystem facade
+  enforcement, the userspace POSIX filesystem facade, the process facade
+  (`fork`/`execve`/`waitpid`), and static application fixtures (`posixapp`,
+  `posixdemo`)
 - Firmware allowlist, lookup, and crash handle revocation
 - Graceful driver stop, stop timeout fallback, and stop-ack path
 - Event and Driver Bridge IRQ race protection
@@ -900,8 +910,9 @@ Important source modules:
 
 ```text
 src/core/                 types, boot info, serial API, and page memory
-src/process/              tasks, scheduler, fork/exec, IPC, capabilities, POSIX FD/profile facade
+src/process/              tasks, scheduler, fork/exec, IPC, capabilities, POSIX FD/profile/process facade
 src/user64/lib/posix.c    static POSIX userspace wrappers and errno
+src/user64/posixdemo/     static POSIX application fixture (step-6 showcase)
 src/user64/include/       Mich APIs and the bounded POSIX public headers
 src/objects/              kernel objects, resources, events, rings, completions
 src/net/                  full protocol stack (ARP through TCP, sockets)

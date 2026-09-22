@@ -8,6 +8,10 @@
 #define VM64_USER_BASE VM64_PROGRAM_BASE
 #define VM64_USER_LIMIT 0x120000000ULL
 #define VM64_STACK_TOP VM64_PROGRAM_LIMIT
+/* One unmapped guard page separates the single stack page from the heap so
+   a stack overflow faults instead of silently corrupting heap blocks. */
+#define VM64_HEAP_BASE (VM64_PROGRAM_LIMIT + 0x1000ULL)
+#define VM64_HEAP_LIMIT 0x101000000ULL
 #define VM64_DRIVER_BASE 0x110000000ULL
 #define VM64_DRIVER_LIMIT VM64_USER_LIMIT
 #define VM64_PAGE_PRESENT 1ULL
@@ -34,6 +38,7 @@ paddr_t vm64_alloc_page(void);
 int vm64_free_page(paddr_t phys);
 u32 vm64_available_pages(void);
 int vm64_map(u32 space, vaddr_t virt, paddr_t phys, int writable, int executable);
+int vm64_unmap(u32 space, vaddr_t virt);
 u64 vm64_user_flags(u32 space, vaddr_t virt);
 int vm64_user_access(paddr_t root, vaddr_t address, usize_t length, int writable);
 int vm64_copy_from(paddr_t root, void *kernel_dst, vaddr_t user_src, usize_t length);

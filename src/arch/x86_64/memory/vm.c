@@ -320,6 +320,21 @@ int vm64_map(u32 index, vaddr_t virtual, paddr_t physical,
     return map_page(&spaces[index], virtual, physical, flags);
 }
 
+int vm64_unmap(u32 index, vaddr_t virtual) {
+    if (index >= VM64_MAX_SPACES || !spaces[index].pml4 || (virtual & 0xFFF))
+        return -1;
+    u64 *pte = user_pte(&spaces[index], virtual, 0);
+    if (!pte || (*pte & VM64_PAGE_PRESENT) == 0 ||
+        (*pte & PAGE_OWNED) == 0)
+        return -1;
+    paddr_t phys = (paddr_t)(*pte & VM64_PHYS_MASK);
+    *pte = 0;
+    invlpg(virtual);
+    pmm_free_page(phys);
+    release_empty_pt(&spaces[index], (u32)((virtual - VM64_USER_BASE) >> 21));
+    return 0;
+}
+
 u64 vm64_user_flags(u32 index, vaddr_t virtual) {
     if (index >= VM64_MAX_SPACES) return 0;
     u64 *pte = user_pte(&spaces[index], virtual, 0);

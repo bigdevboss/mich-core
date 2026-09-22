@@ -2,6 +2,8 @@ BITS 64
 
 global mich_syscall0
 global mich_syscall1
+global mich_syscall2
+global mich_syscall3
 global mich_write
 global mich_send
 global mich_send_nb
@@ -359,6 +361,21 @@ mich_syscall0:
 mich_syscall1:
     mov rax, rdi
     mov rdi, rsi
+    syscall
+    ret
+
+mich_syscall2:
+    mov rax, rdi
+    mov rdi, rsi
+    mov rsi, rdx
+    syscall
+    ret
+
+mich_syscall3:
+    mov rax, rdi
+    mov rdi, rsi
+    mov rsi, rdx
+    mov rdx, rcx
     syscall
     ret
 

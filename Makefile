@@ -79,18 +79,22 @@ DISK64_UEFI_TEST = $(BIN64)/disk-uefi-test.img
 USER64_DIR = $(BIN64)/user
 USER64_OBJ_DIR = $(USER64_DIR)/obj
 INIT64_ELF = $(USER64_DIR)/init64.elf
-INIT64_OBJS = $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(USER64_OBJ_DIR)/posix.o $(USER64_OBJ_DIR)/init.o
+INIT64_OBJS = $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(USER64_OBJ_DIR)/posix.o $(USER64_OBJ_DIR)/process.o $(USER64_OBJ_DIR)/init.o
+POSIXAPP64_ELF = $(USER64_DIR)/posixapp64.elf
+POSIXAPP64_OBJS = $(USER64_OBJ_DIR)/crt0_posix.o $(USER64_OBJ_DIR)/syscall.o $(USER64_OBJ_DIR)/posix.o $(USER64_OBJ_DIR)/process.o $(USER64_OBJ_DIR)/string.o $(USER64_OBJ_DIR)/stdio.o $(USER64_OBJ_DIR)/stdlib.o $(USER64_OBJ_DIR)/posixapp.o
+POSIXDEMO64_ELF = $(USER64_DIR)/posixdemo64.elf
+POSIXDEMO64_OBJS = $(USER64_OBJ_DIR)/crt0_posix.o $(USER64_OBJ_DIR)/syscall.o $(USER64_OBJ_DIR)/posix.o $(USER64_OBJ_DIR)/process.o $(USER64_OBJ_DIR)/string.o $(USER64_OBJ_DIR)/stdio.o $(USER64_OBJ_DIR)/stdlib.o $(USER64_OBJ_DIR)/posixdemo.o
 VIRTIO_NET64_OBJ = $(USER64_OBJ_DIR)/virtio_net.o
 VIRTIO_NET_SAFE64_OBJ = $(USER64_OBJ_DIR)/virtio_net_safe.o
 VIRTIO_NET64_PROBES_OBJ = $(USER64_OBJ_DIR)/virtio_net_probes.o
 VIRTIO_NET64_ELF = $(USER64_DIR)/virtio-net.elf
 VIRTIO_NET64_SELECTOR_CHECK = $(USER64_DIR)/virtio-net-recovery-rip.ok
 VIRTIO_NET_SAFE64_ELF = $(USER64_DIR)/virtio-net-safe.elf
-OBJS64 = $(OBJ64)/boot.o $(OBJ64)/kernel.o $(OBJ64)/task_core.o $(OBJ64)/posix_fd_core.o $(OBJ64)/posix_profile_core.o $(OBJ64)/posix_vfs_core.o $(OBJ64)/scheduler_core.o $(OBJ64)/service_core.o $(OBJ64)/object_core.o $(OBJ64)/resource_core.o $(OBJ64)/iommu_core.o $(OBJ64)/driver_core.o $(OBJ64)/driver_supervisor_core.o $(OBJ64)/driver_manager_core.o $(OBJ64)/ring_core.o $(OBJ64)/completion_core.o $(OBJ64)/timer_object_core.o $(OBJ64)/net_buffer_core.o $(OBJ64)/vnic_core.o $(OBJ64)/vnic_benchmark.o $(OBJ64)/net_interface_core.o $(OBJ64)/ethernet_core.o $(OBJ64)/arp_core.o $(OBJ64)/ipv4_core.o $(OBJ64)/ipv6_core.o $(OBJ64)/icmp_core.o $(OBJ64)/icmpv6_core.o $(OBJ64)/loopback_core.o $(OBJ64)/udp_core.o $(OBJ64)/udpv6_core.o $(OBJ64)/tcp_core.o $(OBJ64)/tcp_cc_core.o $(OBJ64)/pmtu_core.o $(OBJ64)/route_core.o $(OBJ64)/socket_core.o $(OBJ64)/vfs_core.o $(OBJ64)/blockfs_core.o $(OBJ64)/block_core.o $(OBJ64)/cache_core.o $(OBJ64)/firmware_core.o $(OBJ64)/event_core.o $(OBJ64)/endpoint_core.o $(OBJ64)/bridge_core.o $(OBJ64)/pmm_core.o $(OBJ64)/mem_core.o $(OBJ64)/ipc64.o $(OBJ64)/acpi64.o $(OBJ64)/vtd64.o $(OBJ64)/amd_iommu64.o $(OBJ64)/pci64.o $(OBJ64)/virtio_pci.o $(OBJ64)/virtio_blk.o $(OBJ64)/apic64.o $(OBJ64)/ioapic64.o $(OBJ64)/smp64.o $(OBJ64)/smp_tramp.o $(OBJ64)/vector64.o $(OBJ64)/msi64.o $(OBJ64)/msix64.o $(OBJ64)/panic64.o $(OBJ64)/gdt_asm.o $(OBJ64)/gdt.o $(OBJ64)/exceptions.o $(OBJ64)/interrupt.o $(OBJ64)/idt.o $(OBJ64)/vm.o $(OBJ64)/elf64.o $(OBJ64)/platform.o $(OBJ64)/serial.o $(OBJ64)/syscall_dispatch.o $(OBJ64)/syscall.o
-TEST64_OBJS = $(OBJ64)/test_runner64.o $(OBJ64)/test_object64.o $(OBJ64)/test_resource64.o $(OBJ64)/test_async64.o $(OBJ64)/test_fpu64.o $(OBJ64)/test_smp64.o $(OBJ64)/test_driver64.o $(OBJ64)/test_hardware64.o $(OBJ64)/test_network_runner64.o $(OBJ64)/test_net_support64.o $(OBJ64)/test_net_foundation64.o $(OBJ64)/test_ipv4_64.o $(OBJ64)/test_ipv6_64.o $(OBJ64)/test_tcp64.o $(OBJ64)/test_udp_socket64.o $(OBJ64)/test_net_interface64.o $(OBJ64)/test_vfs64.o $(OBJ64)/test_posix_fd64.o $(OBJ64)/test_posix_profile64.o $(OBJ64)/test_posix_vfs64.o $(OBJ64)/test_block64.o $(OBJ64)/test_cache64.o $(OBJ64)/test_blockfs64.o $(OBJ64)/test_virtio_blk64.o $(OBJ64)/test_net_bench64.o $(OBJ64)/test_report64.o
+OBJS64 = $(OBJ64)/boot.o $(OBJ64)/kernel.o $(OBJ64)/task_core.o $(OBJ64)/posix_fd_core.o $(OBJ64)/posix_profile_core.o $(OBJ64)/posix_vfs_core.o $(OBJ64)/posix_process_core.o $(OBJ64)/scheduler_core.o $(OBJ64)/service_core.o $(OBJ64)/object_core.o $(OBJ64)/resource_core.o $(OBJ64)/iommu_core.o $(OBJ64)/driver_core.o $(OBJ64)/driver_supervisor_core.o $(OBJ64)/driver_manager_core.o $(OBJ64)/ring_core.o $(OBJ64)/completion_core.o $(OBJ64)/timer_object_core.o $(OBJ64)/net_buffer_core.o $(OBJ64)/vnic_core.o $(OBJ64)/vnic_benchmark.o $(OBJ64)/net_interface_core.o $(OBJ64)/ethernet_core.o $(OBJ64)/arp_core.o $(OBJ64)/ipv4_core.o $(OBJ64)/ipv6_core.o $(OBJ64)/icmp_core.o $(OBJ64)/icmpv6_core.o $(OBJ64)/loopback_core.o $(OBJ64)/udp_core.o $(OBJ64)/udpv6_core.o $(OBJ64)/tcp_core.o $(OBJ64)/tcp_cc_core.o $(OBJ64)/pmtu_core.o $(OBJ64)/route_core.o $(OBJ64)/socket_core.o $(OBJ64)/vfs_core.o $(OBJ64)/blockfs_core.o $(OBJ64)/block_core.o $(OBJ64)/cache_core.o $(OBJ64)/firmware_core.o $(OBJ64)/event_core.o $(OBJ64)/endpoint_core.o $(OBJ64)/bridge_core.o $(OBJ64)/pmm_core.o $(OBJ64)/mem_core.o $(OBJ64)/ipc64.o $(OBJ64)/acpi64.o $(OBJ64)/vtd64.o $(OBJ64)/amd_iommu64.o $(OBJ64)/pci64.o $(OBJ64)/virtio_pci.o $(OBJ64)/virtio_blk.o $(OBJ64)/apic64.o $(OBJ64)/ioapic64.o $(OBJ64)/smp64.o $(OBJ64)/smp_tramp.o $(OBJ64)/vector64.o $(OBJ64)/msi64.o $(OBJ64)/msix64.o $(OBJ64)/panic64.o $(OBJ64)/gdt_asm.o $(OBJ64)/gdt.o $(OBJ64)/exceptions.o $(OBJ64)/interrupt.o $(OBJ64)/idt.o $(OBJ64)/vm.o $(OBJ64)/elf64.o $(OBJ64)/platform.o $(OBJ64)/serial.o $(OBJ64)/syscall_dispatch.o $(OBJ64)/syscall.o
+TEST64_OBJS = $(OBJ64)/test_runner64.o $(OBJ64)/test_object64.o $(OBJ64)/test_resource64.o $(OBJ64)/test_async64.o $(OBJ64)/test_fpu64.o $(OBJ64)/test_smp64.o $(OBJ64)/test_driver64.o $(OBJ64)/test_hardware64.o $(OBJ64)/test_network_runner64.o $(OBJ64)/test_net_support64.o $(OBJ64)/test_net_foundation64.o $(OBJ64)/test_ipv4_64.o $(OBJ64)/test_ipv6_64.o $(OBJ64)/test_tcp64.o $(OBJ64)/test_udp_socket64.o $(OBJ64)/test_net_interface64.o $(OBJ64)/test_vfs64.o $(OBJ64)/test_posix_fd64.o $(OBJ64)/test_posix_profile64.o $(OBJ64)/test_posix_vfs64.o $(OBJ64)/test_posix_process64.o $(OBJ64)/test_block64.o $(OBJ64)/test_cache64.o $(OBJ64)/test_blockfs64.o $(OBJ64)/test_virtio_blk64.o $(OBJ64)/test_net_bench64.o $(OBJ64)/test_report64.o
 OBJS64_TEST = $(OBJ64)/boot.o $(OBJ64)/kernel_test.o $(filter-out $(OBJ64)/boot.o $(OBJ64)/kernel.o,$(OBJS64)) $(TEST64_OBJS)
 PORTABLE64_DIR = $(BIN64)/portable
-PORTABLE64_NAMES = task posix_fd posix_profile posix_vfs service object resource driver driver_supervisor driver_manager ring completion timer_object net_buffer vnic net_interface ethernet arp ipv4 ipv6 icmp icmpv6 loopback udp udpv6 tcp tcp_cc pmtu route socket vfs blockfs block cache firmware event endpoint bridge pmm
+PORTABLE64_NAMES = task posix_fd posix_profile posix_vfs posix_process service object resource driver driver_supervisor driver_manager ring completion timer_object net_buffer vnic net_interface ethernet arp ipv4 ipv6 icmp icmpv6 loopback udp udpv6 tcp tcp_cc pmtu route socket vfs blockfs block cache firmware event endpoint bridge pmm
 PORTABLE64_OBJS = $(addprefix $(PORTABLE64_DIR)/,$(addsuffix .o,$(PORTABLE64_NAMES)))
 
 OBJ_NAMES = boot kernel gdt idt irq gfx interrupt exceptions exception timer paging pmm mem uaccess task tss syscall syscall_asm double_fault elf scheduler scheduler_core ipc proc service object resource driver driver_supervisor driver_manager ring completion timer_object net_buffer vnic net_interface ethernet arp ipv4 ipv6 icmp icmpv6 loopback udp udpv6 tcp tcp_cc pmtu route socket vfs firmware event endpoint bridge platform serial
@@ -198,6 +202,9 @@ $(OBJ64)/posix_profile_core.o: $(PROCESS)/posix_profile.c $(PROCESS)/posix_profi
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
 $(OBJ64)/posix_vfs_core.o: $(PROCESS)/posix_vfs.c $(PROCESS)/posix_vfs.h $(PROCESS)/posix_profile.h $(PROCESS)/posix_fd.h $(FS)/vfs.h | $(OBJ64)
+	$(CC) $(CFLAGS64) -Werror -c $< -o $@
+
+$(OBJ64)/posix_process_core.o: $(PROCESS)/posix_process.c $(PROCESS)/posix_process.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
 $(OBJ64)/scheduler_core.o: $(PROCESS)/scheduler_core.c $(PROCESS)/scheduler.h $(PROCESS)/task.h | $(OBJ64)
@@ -365,6 +372,9 @@ $(OBJ64)/test_posix_profile64.o: $(TEST64)/posix_profile_test.c $(TEST64)/tests6
 $(OBJ64)/test_posix_vfs64.o: $(TEST64)/posix_vfs_test.c $(TEST64)/tests64.h $(PROCESS)/posix_vfs.h $(FS)/vfs.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
+$(OBJ64)/test_posix_process64.o: $(TEST64)/posix_process_test.c $(TEST64)/tests64.h $(PROCESS)/posix_process.h | $(OBJ64)
+	$(CC) $(CFLAGS64) -Werror -c $< -o $@
+
 $(OBJ64)/test_block64.o: $(TEST64)/block_test.c $(TEST64)/tests64.h $(BLOCK)/block.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
@@ -434,6 +444,33 @@ $(USER64_OBJ_DIR)/init.o: src/user64/init/main.c src/user64/include/mich/syscall
 $(INIT64_ELF): $(INIT64_OBJS) src/user64/linker.ld | $(USER64_DIR)
 	$(LD) -m elf_x86_64 -T src/user64/linker.ld -o $@ $(INIT64_OBJS)
 
+$(USER64_OBJ_DIR)/crt0_posix.o: src/user64/lib/crt0_posix.asm | $(USER64_OBJ_DIR)
+	$(AS) -f elf64 $< -o $@
+
+$(USER64_OBJ_DIR)/process.o: src/user64/lib/process.c src/process/posix_abi.h src/user64/include/errno.h src/user64/include/unistd.h src/user64/include/sys/wait.h src/user64/include/mich/syscall.h | $(USER64_OBJ_DIR)
+	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
+
+$(USER64_OBJ_DIR)/string.o: src/user64/lib/string.c src/user64/include/string.h | $(USER64_OBJ_DIR)
+	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
+
+$(USER64_OBJ_DIR)/stdio.o: src/user64/lib/stdio.c src/user64/include/stdio.h src/user64/include/string.h src/user64/include/stdlib.h src/user64/include/unistd.h src/user64/include/fcntl.h src/user64/include/errno.h src/user64/include/mich/syscall.h | $(USER64_OBJ_DIR)
+	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
+
+$(USER64_OBJ_DIR)/stdlib.o: src/user64/lib/stdlib.c src/user64/include/stdlib.h src/user64/include/string.h src/user64/include/errno.h src/user64/include/mich/syscall.h | $(USER64_OBJ_DIR)
+	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
+
+$(USER64_OBJ_DIR)/posixapp.o: src/user64/posixapp/main.c src/user64/include/errno.h src/user64/include/fcntl.h src/user64/include/unistd.h src/user64/include/sys/stat.h src/user64/include/mich/syscall.h | $(USER64_OBJ_DIR)
+	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
+
+$(POSIXAPP64_ELF): $(POSIXAPP64_OBJS) src/user64/linker.ld | $(USER64_DIR)
+	$(LD) -m elf_x86_64 -T src/user64/linker.ld -o $@ $(POSIXAPP64_OBJS)
+
+$(USER64_OBJ_DIR)/posixdemo.o: src/user64/posixdemo/main.c src/user64/include/errno.h src/user64/include/fcntl.h src/user64/include/unistd.h src/user64/include/string.h src/user64/include/stdio.h src/user64/include/stdlib.h src/user64/include/sys/stat.h src/user64/include/sys/wait.h src/user64/include/mich/syscall.h | $(USER64_OBJ_DIR)
+	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
+
+$(POSIXDEMO64_ELF): $(POSIXDEMO64_OBJS) src/user64/linker.ld | $(USER64_DIR)
+	$(LD) -m elf_x86_64 -T src/user64/linker.ld -o $@ $(POSIXDEMO64_OBJS)
+
 $(VIRTIO_NET64_OBJ): src/user64/virtio_net/main.c src/user64/virtio_net/capsule.h src/user64/include/mich/syscall.h src/user64/include/mich/event.h src/user64/include/mich/driver.h src/user64/include/mich/virtio.h src/user64/include/mich/net.h src/user64/include/mich/net_interface.h src/user64/include/mich/timer.h src/user64/include/mich/wait.h src/user64/include/mich/vfs.h src/user64/include/mich/firmware.h | $(USER64_OBJ_DIR)
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
@@ -480,21 +517,21 @@ $(UEFI64_EFI): $(UEFI64_OBJ) $(ARCH64_BOOT)/uefi.ld | $(BIN64)
 		--disable-reloc-section --disable-dynamicbase --disable-high-entropy-va \
 		-o $@ $(UEFI64_OBJ)
 
-$(DISK64_UEFI): mkuefi64.py mkboot64.py $(KERNEL64_ELF) $(KERNEL64_FLAT) $(UEFI64_EFI) $(INIT64_ELF)
-	$(PYTHON) mkuefi64.py --efi $(UEFI64_EFI) $@ init64:0xC9=$(INIT64_ELF)
+$(DISK64_UEFI): mkuefi64.py mkboot64.py $(KERNEL64_ELF) $(KERNEL64_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(POSIXAPP64_ELF) $(POSIXDEMO64_ELF)
+	$(PYTHON) mkuefi64.py --efi $(UEFI64_EFI) $@ init64:0x20000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF)
 
-$(DISK64_UEFI_TEST): mkuefi64.py mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF)
+$(DISK64_UEFI_TEST): mkuefi64.py mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(POSIXAPP64_ELF) $(POSIXDEMO64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
-		--efi $(UEFI64_EFI) $@ init64:0x20000C9=$(INIT64_ELF)
+		--efi $(UEFI64_EFI) $@ init64:0x20000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF)
 
-$(DISK64): mkboot64.py $(KERNEL64_ELF) $(KERNEL64_FLAT) $(BDB1_64) $(BDB2_64) $(INIT64_ELF)
-	$(PYTHON) mkboot64.py $@ init64:0xC9=$(INIT64_ELF)
+$(DISK64): mkboot64.py $(KERNEL64_ELF) $(KERNEL64_FLAT) $(BDB1_64) $(BDB2_64) $(INIT64_ELF) $(POSIXAPP64_ELF) $(POSIXDEMO64_ELF)
+	$(PYTHON) mkboot64.py $@ init64:0x20000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF)
 
-$(DISK64_TEST): mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(BDB1_64) $(BDB2_64) $(INIT64_ELF)
-	$(PYTHON) mkboot64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) $@ init64:0x20000C9=$(INIT64_ELF)
+$(DISK64_TEST): mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(BDB1_64) $(BDB2_64) $(INIT64_ELF) $(POSIXAPP64_ELF) $(POSIXDEMO64_ELF)
+	$(PYTHON) mkboot64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) $@ init64:0x20000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF)
 
-$(DISK64_UNIT): mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(BDB1_64) $(BDB2_64) $(INIT64_ELF)
-	$(PYTHON) mkboot64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) $@ init64:0x120000C9=$(INIT64_ELF)
+$(DISK64_UNIT): mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(BDB1_64) $(BDB2_64) $(INIT64_ELF) $(POSIXAPP64_ELF) $(POSIXDEMO64_ELF)
+	$(PYTHON) mkboot64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) $@ init64:0x120000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF)
 
 $(DISK64_HARDWARE): mkboot64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(BDB1_64) $(BDB2_64) $(INIT64_ELF) $(VIRTIO_NET64_ELF)
 	$(PYTHON) mkboot64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) $@ init64:0x400000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF)
@@ -594,7 +631,8 @@ release-check:
 
 DEPFILES = $(OBJS:.o=.d) $(OBJS64:.o=.d) $(OBJS64_TEST:.o=.d) $(PORTABLE64_OBJS:.o=.d) \
            $(INIT_OBJS:.o=.d) $(INIT64_OBJS:.o=.d) $(VIRTIO_NET64_OBJ:.o=.d) \
-           $(VIRTIO_NET_SAFE64_OBJ:.o=.d) $(VIRTIO_NET64_PROBES_OBJ:.o=.d) $(UEFI64_OBJ:.o=.d)
+           $(VIRTIO_NET_SAFE64_OBJ:.o=.d) $(VIRTIO_NET64_PROBES_OBJ:.o=.d) \
+           $(POSIXAPP64_OBJS:.o=.d) $(POSIXDEMO64_OBJS:.o=.d) $(UEFI64_OBJ:.o=.d)
 -include $(DEPFILES)
 
 clean:

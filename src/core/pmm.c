@@ -210,6 +210,8 @@ void pmm_free_page(paddr_t addr) {
     unsigned int page = (unsigned int)page64;
     if (!page_refs[page]) panic_str("PMM double free");
     page_refs[page]--;
+#if __SIZEOF_POINTER__ == 8
+#endif
     if (!page_refs[page]) {
         bitmap[page / 8] &= (unsigned char)~(1u << (page % 8));
         free_pages++;
@@ -224,6 +226,8 @@ int pmm_retain_page(paddr_t addr) {
     if (!page_refs[page] || page_refs[page] == 0xFFFF)
         return -1;
     page_refs[page]++;
+#if __SIZEOF_POINTER__ == 8
+#endif
     return 0;
 }
 
