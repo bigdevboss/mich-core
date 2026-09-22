@@ -45,6 +45,8 @@ int tests64_run(const struct test64_env *env) {
     serial64_write("Mich test64: deferred block service pass\n");
     if (test_report_record(TEST_ID_CACHE, test_cache64())) return -1;
     serial64_write("Mich test64: block page cache pass\n");
+    if (test_report_record(TEST_ID_ENTROPY, test_entropy64())) return -1;
+    serial64_write("Mich test64: ChaCha20 DRBG pass\n");
     if (test_report_record(TEST_ID_BLOCKFS, test_blockfs64())) return -1;
     serial64_write("Mich test64: blockfs format and mount pass\n");
     serial64_write("Mich test64: blockfs file io pass\n");

@@ -27,6 +27,7 @@
 #define MICH_SYS_POSIX_GETCWD 200
 #define MICH_SYS_POSIX_TRUNCATE 201
 #define MICH_SYS_POSIX_BRK 208
+#define MICH_SYS_POSIX_GETRANDOM 209
 
 long mich_syscall0(unsigned long number);
 long mich_syscall1(unsigned long number, unsigned long arg0);

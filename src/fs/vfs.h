@@ -15,6 +15,11 @@
 #define VFS_NODE_REGULAR 1
 #define VFS_NODE_DIRECTORY 2
 
+/* Special nodes generate their content at read time instead of storing
+   it, so size and offset carry no meaning for them. */
+#define VFS_SPECIAL_NONE 0u
+#define VFS_SPECIAL_URANDOM 1u
+
 #define VFS_FILESYSTEM_RAMFS 1
 #define VFS_FILESYSTEM_BOOTFS 2
 #define VFS_FILESYSTEM_BLOCKFS 3
@@ -55,6 +60,7 @@ int vfs_mount_blockfs(struct kernel_object *directory,
 int vfs_unmount(struct kernel_object *directory);
 struct kernel_object *vfs_create(struct kernel_object *directory,
                                  const char *name, u32 type);
+struct kernel_object *vfs_create_urandom(struct kernel_object *directory);
 struct kernel_object *vfs_create_mode(struct kernel_object *directory,
                                       const char *name, u32 type, u32 mode);
 struct kernel_object *vfs_lookup(struct kernel_object *directory,

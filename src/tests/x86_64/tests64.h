@@ -29,6 +29,7 @@ int test_posix_vfs64(struct task *owner, struct task *child);
 int test_posix_process64(void);
 int test_block64(void);
 int test_cache64(void);
+int test_entropy64(void);
 int test_blockfs64(void);
 int test_virtio_blk64(void);
 int test_object64(struct task *owner, struct task *target);

@@ -73,6 +73,7 @@
 #include "posix_profile.h"
 #include "posix_vfs.h"
 #include "posix_process.h"
+#include "entropy.h"
 #include "kernel64_internal.h"
 
 u64 syscall64_validate_return(u64 result) {
@@ -2104,7 +2105,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         object_release(object);
         return handle ? handle : (u64)-1;
     }
-    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_BRK) {
+    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_GETRANDOM) {
         struct task *task = &task_pool[current_task_slot];
         if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
         if (number == POSIX_SYSCALL_OPEN) {
@@ -2363,6 +2364,28 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             return (u64)(u32)task_pool[current_task_slot].parent_id;
         if (number == POSIX_SYSCALL_BRK)
             return posix_brk(&task_contexts[current_task_slot], arg0);
+        if (number == POSIX_SYSCALL_GETRANDOM) {
+            if (arg2 || !arg1 || arg1 > 4096)
+                return (u64)(i64)POSIX_VFS_EINVAL;
+            if (vm64_user_access(task->page_dir, arg0, (usize_t)arg1, 1))
+                return (u64)(i64)POSIX_VFS_EINVAL;
+            u8 chunk[256];
+            u64 done = 0;
+            while (done < arg1) {
+                u32 take = arg1 - done > sizeof(chunk) ?
+                    (u32)sizeof(chunk) : (u32)(arg1 - done);
+                if (entropy_fill(chunk, take)) {
+                    if (done) return done;
+                    return (u64)(i64)POSIX_VFS_EIO;
+                }
+                if (vm64_copy_to(task->page_dir, arg0 + done, chunk, take)) {
+                    if (done) return done;
+                    return (u64)(i64)POSIX_VFS_EINVAL;
+                }
+                done += take;
+            }
+            return done;
+        }
     }
     if (number == 4) {
         serial64_write("Mich x86_64: syscall/sysret pass\n");

@@ -54,6 +54,7 @@
 #define TEST_ID_SMP_USER_IRQ 77
 #define TEST_ID_SMP_LIVE 78
 #define TEST_ID_SMP_SCHED 79
+#define TEST_ID_ENTROPY 80
 
 struct test_result64 {
     u32 id;

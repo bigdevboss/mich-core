@@ -295,6 +295,7 @@ for marker in \
     "Mich test64: ramdisk read and write pass" \
     "Mich test64: block request generation pass" \
     "Mich test64: block bounds and revoke pass" \
+    "Mich test64: ChaCha20 DRBG pass" \
     "Mich test64: blockfs format and mount pass" \
     "Mich test64: blockfs file io pass" \
     "Mich test64: blockfs busy unmount lifetime pass" \
@@ -447,6 +448,7 @@ for marker in \
     "Mich x86_64: POSIX libc stdio pass" \
     "Mich x86_64: POSIX libc heap pass" \
     "Mich x86_64: POSIX libc file pass" \
+    "Mich x86_64: POSIX entropy pass" \
     "Mich x86_64: POSIX static application pass" \
     "Mich x86_64: syscall/sysret pass" \
     "Mich x86_64: user exception contained" \

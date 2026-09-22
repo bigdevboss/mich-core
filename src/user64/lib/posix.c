@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/random.h>
 #include <mich/syscall.h>
 #include <posix_abi.h>
 
@@ -210,6 +211,15 @@ char *getcwd(char *buffer, size_t size) {
     }
     for (u32 index = 0; index <= request.length; index++) buffer[index] = request.path[index];
     return buffer;
+}
+
+ssize_t getrandom(void *buffer, size_t length, unsigned int flags) {
+    long result = mich_syscall3(POSIX_SYSCALL_GETRANDOM,
+                                (unsigned long)buffer, (unsigned long)length,
+                                (unsigned long)flags);
+    if (result >= 0) return (ssize_t)result;
+    errno = (int)-result;
+    return -1;
 }
 
 int truncate(const char *path, off_t size) {
