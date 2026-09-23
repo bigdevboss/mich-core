@@ -395,6 +395,7 @@ for marker in \
     "Mich test64: TCP page send pass" \
     "Mich test64: socket send file pass" \
     "Mich test64: socket receive file pass" \
+    "Mich test64: socket send blockfs file pass" \
     "Mich test64: blockfs page-backed write-back pass" \
     "Mich test64: nvme controller and prp io pass" \
     "Mich test64: nvme scatter-gather io pass" \

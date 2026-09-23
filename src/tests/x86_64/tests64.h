@@ -59,6 +59,7 @@ int test_route_socket(const struct test64_env *env);
 int test_network_revoke(const struct test64_env *env);
 int test_net_interface(const struct test64_env *env);
 int test_socket_send_file(const struct test64_env *env);
+int test_socket_send_disk_file(const struct test64_env *env);
 int test_socket_receive_file(const struct test64_env *env);
 int test_network_fuzz(void);
 int test_net_bench(void);

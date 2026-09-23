@@ -1,5 +1,7 @@
 #include "net_test.h"
 #include "vfs.h"
+#include "block.h"
+#include "blockfs.h"
 
 static int unreachable(const struct ipv4_packet_view *packet, void *ctx) {
     return icmp_send_port_unreachable((struct icmp_context *)ctx, packet);
@@ -841,5 +843,157 @@ int test_socket_receive_file(const struct test64_env *env) {
         vnic_active_count() == vnics && ring_active_count() == rings &&
         vfs_node_active_count() == nodes &&
         vfs_file_active_count() == files;
+    return valid ? 0 : -1;
+}
+
+int test_socket_send_disk_file(const struct test64_env *env) {
+    u32 free_pages = pmm_free_pages();
+    u32 objects = object_active_count();
+    u32 sockets = socket_active_count();
+    u32 interfaces = net_interface_active_count();
+    u32 pools = packet_pool_active_count();
+    u32 vnics = vnic_active_count();
+    u32 rings = ring_active_count();
+    u32 nodes = vfs_node_active_count();
+    u32 files = vfs_file_active_count();
+    u32 mounts = vfs_mount_active_count();
+    u32 devices = block_active_count();
+    struct route_table routes;
+    route_init(&routes);
+    int valid = !net_interface_init(&routes);
+    struct driver_domain owner;
+    u8 *owner_bytes = (u8 *)&owner;
+    for (usize_t index = 0; index < sizeof(owner); index++)
+        owner_bytes[index] = 0;
+    owner.id = 80;
+    owner.pid = env->owner->id;
+    owner.state = DRIVER_DOMAIN_RUNNING;
+    owner.active = 1;
+    struct kernel_object *client_vnic = vnic_create(32, 16);
+    struct kernel_object *server_vnic = vnic_create(32, 16);
+    const u8 client_mac[6] = {0x02, 0x4D, 0x49, 0x43, 0x48, 0x25};
+    const u8 server_mac[6] = {0x02, 0x4D, 0x49, 0x43, 0x48, 0x26};
+    struct kernel_object *client_interface = client_vnic ? net_interface_create(
+        &owner, vnic_pool(client_vnic), vnic_rx_ring(client_vnic),
+        vnic_tx_ring(client_vnic), client_mac, 1500, "file4") : 0;
+    struct kernel_object *server_interface = server_vnic ?
+        net_interface_create(
+            &owner, vnic_pool(server_vnic), vnic_rx_ring(server_vnic),
+            vnic_tx_ring(server_vnic), server_mac, 1500, "file5") : 0;
+    valid = valid && client_vnic && server_vnic && client_interface &&
+        server_interface && !net_interface_register(client_interface) &&
+        !net_interface_register(server_interface);
+    int cip4 = client_interface ? net_interface_set_ipv4(
+        client_interface, &owner, 0x0A000004u, 0xFFFFFF00u) : -1;
+    int sip4 = server_interface ? net_interface_set_ipv4(
+        server_interface, &owner, 0x0A000005u, 0xFFFFFF00u) : -1;
+    int clink = client_interface ? net_interface_set_link(
+        client_interface, &owner, 1) : -1;
+    int slink = server_interface ? net_interface_set_link(
+        server_interface, &owner, 1) : -1;
+    valid = valid && !cip4 && !sip4 && !clink && !slink;
+
+    struct kernel_object *root = vfs_root();
+    struct kernel_object *mount_point = root ?
+        vfs_create(root, "sendfs", VFS_NODE_DIRECTORY) : 0;
+    struct kernel_object *dev = block_create(320, 0);
+    valid = valid && mount_point && dev && !blockfs_format(dev) &&
+        !vfs_mount_blockfs(mount_point, dev);
+    struct kernel_object *disk = valid ? vfs_lookup(root, "sendfs") : 0;
+    struct kernel_object *node = disk ?
+        vfs_create(disk, "payload.bin", VFS_NODE_REGULAR) : 0;
+    struct kernel_object *file = node ? vfs_open(node) : 0;
+
+    // Spans three pages so the send walks more than one page of the extent.
+    static u8 payload[9000];
+    for (u32 index = 0; index < sizeof(payload); index++)
+        payload[index] = (u8)(index * 11 + 5);
+    u32 transferred = 0;
+    valid = valid && file &&
+        !vfs_write(file, 0, payload, sizeof(payload), &transferred) &&
+        transferred == sizeof(payload) && !vfs_sync(file);
+
+    struct kernel_object *listener = socket_create_stream();
+    struct kernel_object *client = socket_create_stream();
+    valid = valid && listener && client &&
+        !socket_stream_listen(listener, server_interface, 8092, 1) &&
+        !socket_stream_connect(client, client_interface,
+                               0x0A000005u, 8092);
+    u32 now = 100;
+    for (u32 round = 0; round < 24; round++) {
+        u32 delivered = socket_file_pump(
+            client_interface, server_interface, &owner, now);
+        now += 10;
+        if (!delivered) break;
+    }
+    u32 state = 0;
+    u32 readiness = 0;
+    i32 error = 0;
+    u32 eof = 0;
+    u32 granted = 0;
+    valid = valid &&
+        !socket_stream_state(client, &state, &readiness, &error, &eof,
+                             &granted) &&
+        state == TCP_STATE_ESTABLISHED;
+    struct kernel_object *server = socket_stream_accept(listener);
+    valid = valid && server;
+    valid = valid &&
+        socket_stream_send_file(client, node, sizeof(payload), 16) < 0 &&
+        socket_stream_send_file(client, node, 0, 0) < 0 &&
+        !socket_stream_send_file(client, node, 0, sizeof(payload));
+    for (u32 round = 0; round < 64; round++) {
+        u32 delivered = socket_file_pump(
+            client_interface, server_interface, &owner, now);
+        now += 10;
+        if (!delivered) break;
+    }
+    static u8 received[16384];
+    u32 total = 0;
+    for (u32 round = 0; round < 64 && total < sizeof(payload); round++) {
+        u32 received_length = 0;
+        if (socket_stream_receive(server, received + total,
+                                  sizeof(received) - total,
+                                  &received_length))
+            break;
+        total += received_length;
+        u32 delivered = socket_file_pump(
+            client_interface, server_interface, &owner, now);
+        now += 10;
+        if (!delivered && !received_length) break;
+    }
+    valid = valid && total == sizeof(payload);
+    for (u32 index = 0; index < total; index++)
+        if (received[index] != payload[index]) valid = 0;
+
+    if (server) object_release(server);
+    if (listener) object_release(listener);
+    if (client) object_release(client);
+    if (client_interface)
+        valid = valid && !net_interface_remove(client_interface);
+    if (server_interface)
+        valid = valid && !net_interface_remove(server_interface);
+    if (client_interface) object_release(client_interface);
+    if (server_interface) object_release(server_interface);
+    if (client_vnic) object_release(client_vnic);
+    if (server_vnic) object_release(server_vnic);
+    if (file) object_release(file);
+    if (node) object_release(node);
+    if (disk) valid = valid && !vfs_unlink(disk, "payload.bin");
+    if (disk) object_release(disk);
+    if (mount_point) valid = valid && !vfs_unmount(mount_point);
+    if (root) valid = valid && !vfs_unlink(root, "sendfs");
+    if (mount_point) object_release(mount_point);
+    if (root) object_release(root);
+    if (dev) object_release(dev);
+    valid = valid && pmm_free_pages() == free_pages &&
+        object_active_count() == objects &&
+        socket_active_count() == sockets &&
+        net_interface_active_count() == interfaces &&
+        packet_pool_active_count() == pools &&
+        vnic_active_count() == vnics && ring_active_count() == rings &&
+        vfs_node_active_count() == nodes &&
+        vfs_file_active_count() == files &&
+        vfs_mount_active_count() == mounts &&
+        block_active_count() == devices;
     return valid ? 0 : -1;
 }

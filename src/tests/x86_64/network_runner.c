@@ -20,6 +20,8 @@ int tests64_run_network(const struct test64_env *env) {
     if (test_report_record(TEST_ID_NET_INTERFACE, test_net_interface(env))) return -1;
     if (test_report_record(TEST_ID_SOCKET_SEND_FILE, test_socket_send_file(env))) return -1;
     if (test_report_record(TEST_ID_SOCKET_RECEIVE_FILE, test_socket_receive_file(env))) return -1;
+    if (test_report_record(TEST_ID_SOCKET_SEND_DISK_FILE,
+                           test_socket_send_disk_file(env))) return -1;
     if (test_report_record(TEST_ID_NET_FUZZ, test_network_fuzz())) return -1;
     if (test_report_record(TEST_ID_NET_BENCH, test_net_bench())) return -1;
     serial64_write("Mich test64: packet page pools pass\n");
@@ -98,6 +100,7 @@ int tests64_run_network(const struct test64_env *env) {
     serial64_write("Mich test64: TCP page send pass\n");
     serial64_write("Mich test64: socket send file pass\n");
     serial64_write("Mich test64: socket receive file pass\n");
+    serial64_write("Mich test64: socket send blockfs file pass\n");
     serial64_write("Mich test64: ICMP checksum pass\n");
     serial64_write("Mich test64: ICMP echo request and reply pass\n");
     serial64_write("Mich test64: ICMP rate limit pass\n");
