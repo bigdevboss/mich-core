@@ -32,6 +32,7 @@
 #define KOBJECT_DIRECTORY 23
 #define KOBJECT_MOUNT 24
 #define KOBJECT_BLOCK 25
+#define KOBJECT_NVME_DEVICE 26
 
 #define KRIGHT_READ (1u << 0)
 #define KRIGHT_WRITE (1u << 1)

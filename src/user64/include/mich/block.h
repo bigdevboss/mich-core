@@ -18,5 +18,6 @@ int mich_block_collect(struct mich_block_io_request *request);
 int mich_block_revoke(int handle);
 int mich_block_service(int handle);
 int mich_virtio_blk_open(int pci_handle);
+int mich_nvme_open(int pci_handle);
 
 #endif

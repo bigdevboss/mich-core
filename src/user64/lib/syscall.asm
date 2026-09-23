@@ -325,6 +325,7 @@ global mich_pci_set_command
 %define SYS_SOCKET_STREAM_TAKE_ERROR 154
 %define SYS_SOCKET_STREAM_SEND_FILE 210
 %define SYS_SOCKET_STREAM_RECEIVE_FILE 211
+%define SYS_NVME_OPEN 212
 %define SYS_VFS_ROOT 155
 %define SYS_VFS_CREATE 156
 %define SYS_VFS_LOOKUP 157
@@ -1231,6 +1232,12 @@ mich_block_service:
 
 mich_virtio_blk_open:
     mov eax, SYS_VIRTIO_BLK_OPEN
+    syscall
+    ret
+
+global mich_nvme_open
+mich_nvme_open:
+    mov eax, SYS_NVME_OPEN
     syscall
     ret
 

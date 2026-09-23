@@ -1842,6 +1842,18 @@ void kernel64_main(u32 magic, struct bd_info *info) {
         KERNEL_PANIC("APIC platform init");
     if (msi64_init(apic64_id())) KERNEL_PANIC("MSI backend init");
     if (msix64_init(apic64_id())) KERNEL_PANIC("MSI-X backend init");
+    {
+        int nvme = test_nvme64(&test_env);
+        if (nvme < 0 ||
+            test_report_record(TEST_ID_NVME, nvme < 0 ? nvme : 0))
+            KERNEL_PANIC("independent kernel tests");
+        if (!nvme) {
+            serial64_write("Mich test64: nvme controller and prp io pass\n");
+            serial64_write("Mich test64: nvme scatter-gather io pass\n");
+            serial64_write("Mich test64: nvme msi-x completion wake pass\n");
+            serial64_write("Mich test64: nvme blockfs mount pass\n");
+        }
+    }
     if (smp64_init()) KERNEL_PANIC("SMP bring-up");
 #ifdef MICH_TEST_BUILD
     if (tests64_run_smp()) KERNEL_PANIC("independent SMP tests");

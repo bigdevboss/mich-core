@@ -33,6 +33,7 @@ int test_cache64(void);
 int test_entropy64(void);
 int test_blockfs64(void);
 int test_virtio_blk64(void);
+int test_nvme64(const struct test64_env *env);
 int test_object64(struct task *owner, struct task *target);
 int test_resource64(void);
 int test_page64(const struct test64_env *env);

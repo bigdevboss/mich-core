@@ -153,7 +153,8 @@ struct kernel_object *virtio_blk_open(struct kernel_object *pci) {
     if (info && (info->driver_features & (1ULL << VIRTIO_BLK_F_RO)))
         flags |= BLOCK_FLAG_READ_ONLY;
     struct kernel_object *block = block_bind_transport(
-        sectors, flags, device, queue, dma, virtio_blk_issue, virtio_blk_reap);
+        sectors, flags, device, queue, dma, virtio_blk_issue, virtio_blk_reap,
+        0);
     object_release(dma);
     object_release(queue);
     object_release(device);

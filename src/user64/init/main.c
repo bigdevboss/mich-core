@@ -1311,6 +1311,57 @@ int main(u64 role) {
             mich_write("Mich x86_64: userspace virtio-blk pass\n");
         }
     }
+    {
+        int pci_n = mich_pci_count();
+        int nvme_pci = -1;
+        int index;
+        for (index = 0; index < pci_n; index++) {
+            int candidate = mich_pci_open((unsigned int)index);
+            long subclass;
+            if (candidate < 0) continue;
+            subclass = mich_pci_config_read16((unsigned int)candidate, 0x0A);
+            if (subclass == 0x0108 &&
+                mich_pci_config_read8((unsigned int)candidate, 0x09) == 2) {
+                nvme_pci = candidate;
+                break;
+            }
+            mich_handle_close((unsigned int)candidate);
+        }
+        if (nvme_pci > 0) {
+            int nvme = mich_nvme_open(nvme_pci);
+            if (nvme <= 0) stop();
+            for (bi = 0; bi < sizeof(block_request); bi++)
+                ((unsigned char *)&block_request)[bi] = 0;
+            block_request.device_handle = (unsigned int)nvme;
+            block_request.op = MICH_BLOCK_OP_WRITE;
+            block_request.lba = 6;
+            block_request.sectors = 1;
+            for (bi = 0; bi < MICH_BLOCK_SECTOR_SIZE; bi++)
+                block_request.data[bi] = (unsigned char)(bi ^ 0x99);
+            if (mich_block_submit(&block_request) != 0) stop();
+            for (bi = 0; mich_block_collect(&block_request) != 0; bi++) {
+                mich_block_service(nvme);
+                if (bi > 1000000u) stop();
+            }
+            block_request.op = MICH_BLOCK_OP_READ;
+            for (bi = 0; bi < MICH_BLOCK_SECTOR_SIZE; bi++)
+                block_request.data[bi] = 0;
+            if (mich_block_submit(&block_request) != 0) stop();
+            for (bi = 0; mich_block_collect(&block_request) != 0; bi++) {
+                mich_block_service(nvme);
+                if (bi > 1000000u) stop();
+            }
+            if (block_request.status != 0) stop();
+            for (bi = 0; bi < MICH_BLOCK_SECTOR_SIZE; bi++)
+                if (block_request.data[bi] != (unsigned char)(bi ^ 0x99))
+                    stop();
+            if (mich_block_revoke(nvme) != 0 ||
+                mich_handle_close((unsigned int)nvme) != 0 ||
+                mich_handle_close((unsigned int)nvme_pci) != 0)
+                stop();
+            mich_write("Mich x86_64: userspace nvme device pass\n");
+        }
+    }
     mich_write("Mich x86_64: userspace PCI handles pass\n");
     mich_write("Mich x86_64: userspace BAR mapping pass\n");
     mich_write("Mich x86_64: userspace DMA mapping pass\n");
