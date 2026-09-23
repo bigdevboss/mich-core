@@ -168,11 +168,13 @@ fi
 blk_img="$(mktemp)"
 uefi_vars=""
 dd if=/dev/zero of="$blk_img" bs=512 count=256 2>/dev/null
+nvme_img="$(mktemp)"
+dd if=/dev/zero of="$nvme_img" bs=1M count=16 2>/dev/null
 if [ "$profile" = "uefi" ]; then
     uefi_vars="$(mktemp)"
     cp /usr/share/OVMF/OVMF_VARS_4M.fd "$uefi_vars"
 fi
-trap 'if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; rm -f "$log" "$expanded_image" "$passive_result" "$active_result" "$recovery_guestfwd" "$blk_img" "$uefi_vars"' EXIT
+trap 'if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; rm -f "$log" "$expanded_image" "$passive_result" "$active_result" "$recovery_guestfwd" "$blk_img" "$nvme_img" "$uefi_vars"' EXIT
 set +e
 if [ "$profile" = "uefi" ]; then
     timeout 90s qemu-system-x86_64 \
@@ -183,6 +185,8 @@ if [ "$profile" = "uefi" ]; then
         -device ide-hd,drive=esdisk,bootindex=1 \
         -drive file="$blk_img",format=raw,if=none,id=michblk \
         -device virtio-blk-pci,drive=michblk,disable-legacy=on \
+        -drive file="$nvme_img",format=raw,if=none,id=michnvme \
+        -device nvme,drive=michnvme,serial=michx0 \
         -m "$memory" \
         -serial stdio \
         -vga std \
@@ -196,6 +200,8 @@ else
         -drive file="$image",format=raw,if=ide,index=0,media=disk \
         -drive file="$blk_img",format=raw,if=none,id=michblk \
         -device virtio-blk-pci,drive=michblk,disable-legacy=on \
+        -drive file="$nvme_img",format=raw,if=none,id=michnvme \
+        -device nvme,drive=michnvme,serial=michx0 \
         -boot c \
         -m "$memory" \
         -serial stdio \
@@ -389,6 +395,11 @@ for marker in \
     "Mich test64: TCP page send pass" \
     "Mich test64: socket send file pass" \
     "Mich test64: socket receive file pass" \
+    "Mich test64: nvme controller and prp io pass" \
+    "Mich test64: nvme scatter-gather io pass" \
+    "Mich test64: nvme msi-x completion wake pass" \
+    "Mich test64: nvme blockfs mount pass" \
+    "Mich x86_64: userspace nvme device pass" \
     "Mich test64: ICMP checksum pass" \
     "Mich test64: ICMP echo request and reply pass" \
     "Mich test64: ICMP rate limit pass" \

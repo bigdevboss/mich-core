@@ -4,16 +4,16 @@ org 0x7E00
 %define BD_MAGIC   0x58424442
 %define BLOB_LBA   32
 %define BLOB_LOAD  0xA000
-; The 1096-sector blob ends below 0x94000; metadata and the stage-2
+; The 1120-sector blob ends below 0x98000; metadata and the stage-2
 ; stack stay above it until the kernel installs its own stack.
-%define BDINFO     0x94000
-%define BDSEG      0x9400
-%define BMODS      0x94400
-%define BSTRS      0x94480
+%define BDINFO     0x98000
+%define BDSEG      0x9800
+%define BMODS      0x98400
+%define BSTRS      0x98480
 %define VBEINFO    0x6000
 %define MODEINFO   0x6400
 %define MAX_MMAP   32
-%define BOOT_BLOCKS 1128
+%define BOOT_BLOCKS 1152
 %define BLOB_MAXSEC (BOOT_BLOCKS - BLOB_LBA)
 %define MAX_MODS   8
 

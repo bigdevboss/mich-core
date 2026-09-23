@@ -10,6 +10,7 @@
 #define BLOCK_PAGE_BYTES 4096
 
 struct block_request {
+    struct kernel_object *sg;
     u32 generation;
     u32 state;
     u32 op;
@@ -26,6 +27,7 @@ struct block_state {
     struct kernel_object *transport;
     struct kernel_object *queue;
     block_issue_fn issue;
+    block_issue_sg_fn issue_sg;
     block_reap_fn reap;
     u64 tokens[BLOCK_REQUEST_MAX];
     struct block_request requests[BLOCK_REQUEST_MAX];
@@ -86,6 +88,13 @@ static int complete_slot(struct block_state *dev, u32 slot) {
     return 0;
 }
 
+static void release_slot_sg(struct block_state *dev, u32 slot) {
+    struct block_request *req = &dev->requests[slot];
+    if (!req->sg) return;
+    object_release(req->sg);
+    req->sg = 0;
+}
+
 static int revoke_state(struct block_state *dev) {
     if (!dev || !dev->active || dev->revoked) return -1;
     dev->revoked = 1;
@@ -94,6 +103,7 @@ static int revoke_state(struct block_state *dev) {
         struct block_request *req = &dev->requests[slot];
         req->generation++;
         if (!req->generation) req->generation = 1;
+        release_slot_sg(dev, slot);
         req->state = BLOCK_REQ_FREE;
         req->op = 0;
         req->lba = 0;
@@ -120,6 +130,7 @@ static void block_destroy(struct kernel_object *object) {
     dev->transport = 0;
     dev->queue = 0;
     dev->issue = 0;
+    dev->issue_sg = 0;
     dev->reap = 0;
     dev->sector_count = 0;
     dev->flags = 0;
@@ -135,6 +146,7 @@ void block_init(void) {
         devices[i].transport = 0;
         devices[i].queue = 0;
         devices[i].issue = 0;
+        devices[i].issue_sg = 0;
         devices[i].reap = 0;
         devices[i].sector_count = 0;
         devices[i].flags = 0;
@@ -142,6 +154,7 @@ void block_init(void) {
         devices[i].revoked = 0;
         devices[i].active = 0;
         for (u32 slot = 0; slot < BLOCK_REQUEST_MAX; slot++) {
+            devices[i].requests[slot].sg = 0;
             devices[i].requests[slot].generation = 1;
             devices[i].requests[slot].state = BLOCK_REQ_FREE;
             devices[i].requests[slot].op = 0;
@@ -178,6 +191,7 @@ struct kernel_object *block_create(u32 sector_count, u32 flags) {
             for (u32 b = 0; b < BLOCK_PAGE_BYTES; b++) p[b] = 0;
         }
         for (u32 slot = 0; slot < BLOCK_REQUEST_MAX; slot++) {
+            dev->requests[slot].sg = 0;
             dev->requests[slot].generation = 1;
             dev->requests[slot].state = BLOCK_REQ_FREE;
             dev->requests[slot].op = 0;
@@ -215,7 +229,8 @@ struct kernel_object *block_create(u32 sector_count, u32 flags) {
 
 struct kernel_object *block_bind_transport(u32 sector_count, u32 flags,
     struct kernel_object *transport, struct kernel_object *queue,
-    struct kernel_object *dma, block_issue_fn issue, block_reap_fn reap) {
+    struct kernel_object *dma, block_issue_fn issue, block_reap_fn reap,
+    block_issue_sg_fn issue_sg) {
     if (!sector_count || !transport || !queue || !dma || !issue || !reap ||
         (flags & ~(BLOCK_FLAG_READ_ONLY | BLOCK_FLAG_DEFER)))
         return 0;
@@ -241,6 +256,7 @@ struct kernel_object *block_bind_transport(u32 sector_count, u32 flags,
             return 0;
         }
         for (u32 slot = 0; slot < BLOCK_REQUEST_MAX; slot++) {
+            dev->requests[slot].sg = 0;
             dev->requests[slot].generation = 1;
             dev->requests[slot].state = BLOCK_REQ_FREE;
             dev->requests[slot].op = 0;
@@ -256,6 +272,7 @@ struct kernel_object *block_bind_transport(u32 sector_count, u32 flags,
         dev->queue = queue;
         dev->issue = issue;
         dev->reap = reap;
+        dev->issue_sg = issue_sg;
         dev->sector_count = sector_count;
         dev->flags = flags;
         dev->generation++;
@@ -275,6 +292,7 @@ struct kernel_object *block_bind_transport(u32 sector_count, u32 flags,
             dev->queue = 0;
             dev->issue = 0;
             dev->reap = 0;
+            dev->issue_sg = 0;
             dev->active = 0;
         }
         return object;
@@ -341,6 +359,51 @@ int block_submit(struct kernel_object *object, u32 op, u32 lba, u32 sectors,
     return -1;
 }
 
+int block_submit_sg(struct kernel_object *object, u32 op, u32 lba,
+                     u32 sectors, struct kernel_object *sg, u64 *id) {
+    struct block_state *dev = state_for(object);
+    struct sg_resource *list = sg ? sg_resource_get(sg) : 0;
+    if (!dev || dev->revoked || !id || !list || !sg_resource_usable(sg) ||
+        !dev->issue_sg)
+        return -1;
+    u32 total = 0;
+    for (u32 index = 0; index < list->entry_count; index++)
+        total += list->entries[index].length;
+    if ((op != BLOCK_OP_READ && op != BLOCK_OP_WRITE) ||
+        !sectors || sectors > BLOCK_IO_SG_SECTORS_MAX ||
+        lba >= dev->sector_count ||
+        sectors > dev->sector_count - lba ||
+        total != sectors * BLOCK_SECTOR_SIZE)
+        return -1;
+    if (op == BLOCK_OP_WRITE && (dev->flags & BLOCK_FLAG_READ_ONLY))
+        return -1;
+    for (u32 slot = 0; slot < BLOCK_REQUEST_MAX; slot++) {
+        struct block_request *req = &dev->requests[slot];
+        if (req->state != BLOCK_REQ_FREE) continue;
+        if (object_retain(sg)) return -1;
+        req->sg = sg;
+        req->op = op;
+        req->lba = lba;
+        req->sectors = sectors;
+        req->status = 0;
+        req->transferred = 0;
+        req->state = BLOCK_REQ_PENDING;
+        *id = ((u64)req->generation << 32) | (slot + 1);
+        if (dev->issue_sg(dev->queue, dev->backing, slot, op, lba, sg,
+                          &dev->tokens[slot])) {
+            release_slot_sg(dev, slot);
+            req->state = BLOCK_REQ_FREE;
+            req->op = 0;
+            req->lba = 0;
+            req->sectors = 0;
+            *id = 0;
+            return -1;
+        }
+        return 0;
+    }
+    return -1;
+}
+
 int block_service(struct kernel_object *object) {
     struct block_state *dev = state_for(object);
     if (!dev || dev->revoked) return -1;
@@ -357,12 +420,13 @@ int block_service(struct kernel_object *object) {
             if (slot >= BLOCK_REQUEST_MAX) continue;
             struct block_request *req = &dev->requests[slot];
             if (req->state != BLOCK_REQ_PENDING) continue;
-            if (!status && req->op == BLOCK_OP_READ)
+            if (!status && req->op == BLOCK_OP_READ && !req->sg)
                 copy_bytes(req->data, data, BLOCK_SECTOR_SIZE);
             req->state = status ? BLOCK_REQ_ERROR : BLOCK_REQ_DONE;
             req->status = status;
             req->transferred = status ? 0 : req->sectors * BLOCK_SECTOR_SIZE;
             dev->tokens[slot] = 0;
+            release_slot_sg(dev, slot);
             event_signal(dev->event);
             n++;
         }
@@ -387,10 +451,12 @@ int block_collect(struct kernel_object *object, u64 id,
         return -1;
     *status = req->status;
     *transferred = req->transferred;
+    if (req->sg && buffer) return -1;
     if (buffer && req->op == BLOCK_OP_READ && req->state == BLOCK_REQ_DONE) {
         if (length < req->transferred) return -1;
         copy_bytes((u8 *)buffer, req->data, req->transferred);
     }
+    release_slot_sg(dev, low - 1);
     req->generation++;
     if (!req->generation) req->generation = 1;
     req->state = BLOCK_REQ_FREE;

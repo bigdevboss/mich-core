@@ -68,6 +68,7 @@
 #include "block.h"
 #include "block_abi.h"
 #include "virtio_blk.h"
+#include "nvme.h"
 #include "posix_abi.h"
 #include "posix_fd.h"
 #include "posix_profile.h"
@@ -2125,6 +2126,24 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         struct kernel_object *pci = handle_get(
             task, (u32)arg0, KRIGHT_CONTROL, KOBJECT_PCI);
         struct kernel_object *object = pci ? virtio_blk_open(pci) : 0;
+        if (!object) return (u64)-1;
+        u32 rights = KRIGHT_READ | KRIGHT_CONTROL | KRIGHT_TRANSFER |
+                     KRIGHT_WAIT;
+        struct block_info info;
+        if (!block_info(object, &info) &&
+            !(info.flags & BLOCK_FLAG_READ_ONLY))
+            rights |= KRIGHT_WRITE;
+        u32 handle = handle_open(task, object, rights);
+        object_release(object);
+        return handle ? handle : (u64)-1;
+    }
+    if (number == 212) {
+        struct task *task = &task_pool[current_task_slot];
+        if (!(task->capabilities & CAP_RESOURCE_ADMIN))
+            return (u64)(i64)EPERM;
+        struct kernel_object *pci = handle_get(
+            task, (u32)arg0, KRIGHT_CONTROL, KOBJECT_PCI);
+        struct kernel_object *object = pci ? nvme_open(pci) : 0;
         if (!object) return (u64)-1;
         u32 rights = KRIGHT_READ | KRIGHT_CONTROL | KRIGHT_TRANSFER |
                      KRIGHT_WAIT;
