@@ -55,6 +55,9 @@ int tests64_run(const struct test64_env *env) {
     serial64_write("Mich test64: blockfs file io pass\n");
     serial64_write("Mich test64: blockfs busy unmount lifetime pass\n");
     serial64_write("Mich test64: blockfs stale vnode generation pass\n");
+    if (test_report_record(TEST_ID_BLOCKFS_PAGES, test_blockfs_pages64()))
+        return -1;
+    serial64_write("Mich test64: blockfs page-backed write-back pass\n");
     if (test_report_record(TEST_ID_RESOURCE, test_resource64())) return -1;
     serial64_write("Mich test64: resource object layer pass\n");
     if (test_report_record(TEST_ID_PAGE, test_page64(env))) return -1;

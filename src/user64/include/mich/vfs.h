@@ -26,6 +26,8 @@ int mich_vfs_create(struct mich_vfs_name_request *request);
 int mich_vfs_lookup(struct mich_vfs_name_request *request);
 int mich_vfs_open(struct mich_vfs_open_request *request);
 int mich_vfs_read(struct mich_vfs_io_request *request);
+int mich_file_map(unsigned int file_handle,
+                  unsigned long long virtual_address);
 int mich_vfs_write(struct mich_vfs_io_request *request);
 int mich_vfs_truncate(struct mich_vfs_truncate_request *request);
 int mich_vfs_stat(struct mich_vfs_stat_request *request);

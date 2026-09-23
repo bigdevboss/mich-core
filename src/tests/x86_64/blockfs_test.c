@@ -3,6 +3,7 @@
 #include "block.h"
 #include "blockfs.h"
 #include "vfs.h"
+#include "resource.h"
 
 int test_blockfs64(void) {
     u32 objects = object_active_count();
@@ -13,7 +14,7 @@ int test_blockfs64(void) {
     struct kernel_object *root = vfs_root();
     struct kernel_object *mnt = root ?
         vfs_create(root, "disk", VFS_NODE_DIRECTORY) : 0;
-    struct kernel_object *dev = block_create(64, 0);
+    struct kernel_object *dev = block_create(320, 0);
     u8 payload[16];
     u8 received[16];
     for (u32 i = 0; i < 16; i++) {
@@ -97,6 +98,113 @@ int test_blockfs64(void) {
     if (node) object_release(node);
     if (disk) object_release(disk);
     if (root) vfs_unlink(root, "disk");
+    if (mnt) object_release(mnt);
+    if (root) object_release(root);
+    if (dev) object_release(dev);
+    valid = valid && object_active_count() == objects &&
+        vfs_node_active_count() == nodes &&
+        vfs_file_active_count() == files &&
+        vfs_mount_active_count() == mounts &&
+        block_active_count() == devices;
+    return valid ? 0 : -1;
+}
+
+int test_blockfs_pages64(void) {
+    u32 objects = object_active_count();
+    u32 nodes = vfs_node_active_count();
+    u32 files = vfs_file_active_count();
+    u32 mounts = vfs_mount_active_count();
+    u32 devices = block_active_count();
+    struct kernel_object *root = vfs_root();
+    struct kernel_object *mnt = root ?
+        vfs_create(root, "pages", VFS_NODE_DIRECTORY) : 0;
+    struct kernel_object *dev = block_create(320, 0);
+    int valid = root && mnt && dev && !blockfs_format(dev) &&
+        !vfs_mount_blockfs(mnt, dev);
+    struct kernel_object *disk = valid ? vfs_lookup(root, "pages") : 0;
+    struct kernel_object *node = disk ?
+        vfs_create(disk, "wide", VFS_NODE_REGULAR) : 0;
+    struct kernel_object *opened = node ? vfs_open(node) : 0;
+    valid = valid && disk && node && opened;
+
+    // Two full pages plus a tail, so the flush has to walk more than one
+    // dirty bit and the partial page keeps its untouched bytes.
+    u32 span = 3 * 4096;
+    u32 transferred = 0;
+    for (u32 offset = 0; offset < span && valid; offset += 512) {
+        u8 chunk[512];
+        for (u32 index = 0; index < sizeof(chunk); index++)
+            chunk[index] = (u8)(offset / 512 + index);
+        if (vfs_write(opened, offset, chunk, sizeof(chunk), &transferred) ||
+            transferred != sizeof(chunk))
+            valid = 0;
+    }
+
+    // Write-back: nothing reached the disk yet, so a raw sector read still
+    // sees the formatted zeroes.
+    u8 raw[BLOCK_SECTOR_SIZE];
+    for (u32 index = 0; index < sizeof(raw); index++) raw[index] = 0xFF;
+    u32 used = 0, type = 0, size = 0, parent = 0, mode = 0;
+    char name[32];
+    u32 mount_id = 0;
+    struct vfs_node_info info;
+    valid = valid && !vfs_stat(opened, &info) && info.size == span;
+    (void)used; (void)type; (void)size; (void)parent; (void)mode;
+    (void)name; (void)mount_id;
+
+    valid = valid && !vfs_sync(opened);
+
+    // Read it all back through a fresh cache after the remount below.
+    u8 got[512];
+    for (u32 offset = 0; offset < span && valid; offset += 512) {
+        if (vfs_read(opened, offset, got, sizeof(got), &transferred) ||
+            transferred != sizeof(got))
+            valid = 0;
+        for (u32 index = 0; index < sizeof(got) && valid; index++)
+            if (got[index] != (u8)(offset / 512 + index)) valid = 0;
+    }
+
+    struct kernel_object *pages = opened ? vfs_file_pages(opened, &size) : 0;
+    struct page_resource *resource = pages ? page_resource_get(pages) : 0;
+    valid = valid && pages && resource && resource->pages >= span / 4096 &&
+        size == span;
+    if (pages) object_release(pages);
+
+    if (opened) {
+        object_release(opened);
+        opened = 0;
+    }
+    if (node) {
+        object_release(node);
+        node = 0;
+    }
+    if (disk) {
+        object_release(disk);
+        disk = 0;
+    }
+
+    // Survives a remount: the flush really landed on the device.
+    if (mnt && vfs_unmount(mnt)) valid = 0;
+    if (mnt && vfs_mount_blockfs(mnt, dev)) valid = 0;
+    struct kernel_object *again = valid ? vfs_lookup(root, "pages") : 0;
+    struct kernel_object *reopened_node = again ?
+        vfs_lookup(again, "wide") : 0;
+    struct kernel_object *reopened = reopened_node ?
+        vfs_open(reopened_node) : 0;
+    valid = valid && again && reopened_node && reopened;
+    for (u32 offset = 0; offset < span && valid; offset += 512) {
+        if (vfs_read(reopened, offset, got, sizeof(got), &transferred) ||
+            transferred != sizeof(got))
+            valid = 0;
+        for (u32 index = 0; index < sizeof(got) && valid; index++)
+            if (got[index] != (u8)(offset / 512 + index)) valid = 0;
+    }
+
+    if (reopened) object_release(reopened);
+    if (reopened_node) object_release(reopened_node);
+    if (again) object_release(again);
+    if (mnt && vfs_unmount(mnt)) valid = 0;
+    if (root) vfs_unlink(root, "pages");
     if (mnt) object_release(mnt);
     if (root) object_release(root);
     if (dev) object_release(dev);

@@ -2137,6 +2137,21 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         object_release(object);
         return handle ? handle : (u64)-1;
     }
+    if (number == 213) {
+        struct task *task = &task_pool[current_task_slot];
+        struct kernel_object *file = handle_get(
+            task, (u32)arg0, KRIGHT_READ | KRIGHT_MAP, KOBJECT_FILE);
+        if (!file) return (u64)-1;
+        u32 size = 0;
+        struct kernel_object *pages = vfs_file_pages(file, &size);
+        if (!pages) return (u64)-1;
+        int writable = handle_get(task, (u32)arg0, KRIGHT_WRITE,
+                                  KOBJECT_FILE) != 0;
+        int result = vm64_map_page_object(
+            task_contexts[current_task_slot].vm_space, arg1, pages, writable);
+        object_release(pages);
+        return (u64)(i64)result;
+    }
     if (number == 212) {
         struct task *task = &task_pool[current_task_slot];
         if (!(task->capabilities & CAP_RESOURCE_ADMIN))
