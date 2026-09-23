@@ -11,6 +11,7 @@ int tests64_run_network(const struct test64_env *env) {
     if (test_report_record(TEST_ID_ICMPV6, test_icmpv6())) return -1;
     if (test_report_record(TEST_ID_UDPV6, test_udpv6())) return -1;
     if (test_report_record(TEST_ID_TCP, test_tcp())) return -1;
+    if (test_report_record(TEST_ID_TCP_PAGES, test_tcp_pages64())) return -1;
     if (test_report_record(TEST_ID_ICMP, test_icmp())) return -1;
     if (test_report_record(TEST_ID_LOOPBACK, test_loopback())) return -1;
     if (test_report_record(TEST_ID_UDP, test_udp())) return -1;
@@ -92,6 +93,7 @@ int tests64_run_network(const struct test64_env *env) {
     serial64_write("Mich test64: TCP mutation stress pass\n");
     serial64_write("Mich test64: TCP path MTU clamp pass\n");
     serial64_write("Mich test64: TCP PMTU blackhole pass\n");
+    serial64_write("Mich test64: TCP page send pass\n");
     serial64_write("Mich test64: ICMP checksum pass\n");
     serial64_write("Mich test64: ICMP echo request and reply pass\n");
     serial64_write("Mich test64: ICMP rate limit pass\n");

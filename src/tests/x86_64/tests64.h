@@ -49,6 +49,7 @@ int test_ipv6(void);
 int test_icmpv6(void);
 int test_udpv6(void);
 int test_tcp(void);
+int test_tcp_pages64(void);
 int test_icmp(void);
 int test_loopback(void);
 int test_udp(void);

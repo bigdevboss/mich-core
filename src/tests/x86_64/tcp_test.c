@@ -1207,3 +1207,189 @@ int test_tcp(void) {
     }
     return valid ? 0 : -1;
 }
+
+static int tcp_pages_pump(struct tcp_context *client, u64 id,
+                          struct tcp_context *server,
+                          u32 client_address, u32 server_address) {
+    u8 segment[TCP_HEADER_MIN + TCP_OPTION_MAX + TCP_RETRANSMIT_DATA_MAX];
+    struct tcp_response reply;
+    struct tcp_transmit transmit;
+    for (u32 guard = 0; guard < 128; guard++) {
+        struct tcp_connection *c = &client->connections[(u32)id - 1];
+        if (!(c->send_loan_count ||
+              c->send_buffer_offset < c->send_buffer_length))
+            return 1;
+        if (tcp_prepare_transmit(client, id, 100, &transmit) != 1 ||
+            !transmit.length ||
+            transmit.length > TCP_RETRANSMIT_DATA_MAX)
+            return 0;
+        int length = tcp_build_ipv4(
+            segment, sizeof(segment), client_address, server_address,
+            transmit.source_port, transmit.destination_port,
+            transmit.sequence, transmit.acknowledgement,
+            transmit.flags, transmit.window, transmit.data,
+            transmit.length);
+        if (length <= 0 ||
+            tcp_receive_ipv4(server, client_address, server_address,
+                             segment, (u32)length, &reply) ||
+            !reply.valid || reply.flags != TCP_FLAG_ACK)
+            return 0;
+        length = tcp_build_ipv4(
+            segment, sizeof(segment), server_address, client_address,
+            reply.source_port, reply.destination_port,
+            reply.sequence, reply.acknowledgement,
+            reply.flags, reply.window, 0, 0);
+        if (length <= 0 ||
+            tcp_receive_ipv4(client, server_address, client_address,
+                             segment, (u32)length, &reply))
+            return 0;
+    }
+    return 0;
+}
+
+int test_tcp_pages64(void) {
+    static struct tcp_context client;
+    static struct tcp_context server;
+    static u8 received[TCP_SEND_BUFFER_MAX];
+    const u32 client_address = 0x0A00000Au;
+    const u32 server_address = 0x0A00000Bu;
+    u32 objects = object_active_count();
+    u32 free_pages = pmm_free_pages();
+    tcp_init(&client, 2000);
+    tcp_init(&server, 2100);
+    struct kernel_object *pages = page_resource_create();
+    struct kernel_object *big = page_resource_create();
+    int valid = pages && big && !page_resource_grow(pages, 2) &&
+        !page_resource_grow(big, 64);
+    struct page_resource *resource = pages ? page_resource_get(pages) : 0;
+    if (valid && resource)
+        for (u32 page = 0; page < resource->pages; page++) {
+            u8 *bytes = (u8 *)(uptr_t)resource->physical[page];
+            for (u32 index = 0; index < 4096; index++)
+                bytes[index] = (u8)((page * 4096 + index) * 11 + 5);
+        }
+    valid = valid && resource && resource->pages == 2;
+    u64 listener = tcp_listen(&server, server_address, 8090);
+    u64 active = tcp_active_open(&client, client_address, 50010,
+                                 server_address, 8090);
+    valid = valid && listener && active;
+    u32 client_isn = active
+        ? client.connections[(u32)active - 1].send_unacknowledged : 0;
+    u8 segment[TCP_HEADER_MIN + TCP_OPTION_MAX + TCP_RETRANSMIT_DATA_MAX];
+    struct tcp_response reply;
+    int length = tcp_build_ipv4(
+        segment, sizeof(segment), client_address, server_address,
+        50010, 8090, client_isn, 0, TCP_FLAG_SYN, 65535, 0, 0);
+    valid = valid && length == TCP_HEADER_MIN &&
+        !tcp_receive_ipv4(&server, client_address, server_address,
+                          segment, (u32)length, &reply) &&
+        reply.valid && reply.flags == (TCP_FLAG_SYN | TCP_FLAG_ACK);
+    length = tcp_build_ipv4(
+        segment, sizeof(segment), server_address, client_address,
+        reply.source_port, reply.destination_port,
+        reply.sequence, reply.acknowledgement,
+        reply.flags, reply.window, 0, 0);
+    valid = valid &&
+        !tcp_receive_ipv4(&client, server_address, client_address,
+                          segment, (u32)length, &reply) &&
+        reply.valid && reply.flags == TCP_FLAG_ACK;
+    length = tcp_build_ipv4(
+        segment, sizeof(segment), client_address, server_address,
+        reply.source_port, reply.destination_port,
+        reply.sequence, reply.acknowledgement,
+        reply.flags, reply.window, 0, 0);
+    valid = valid && !tcp_receive_ipv4(
+        &server, client_address, server_address,
+        segment, (u32)length, &reply) && !reply.valid;
+    u64 accepted_id = 0;
+    for (u32 index = 0; index < TCP_CONNECTION_MAX; index++)
+        if (server.connections[index].active &&
+            server.connections[index].state == TCP_STATE_ESTABLISHED)
+            accepted_id = ((u64)server.connections[index].generation << 32) |
+                (index + 1);
+    valid = valid && accepted_id;
+    valid = valid &&
+        !tcp_queue_send_pages(&client, active, pages, 3000, 3000) &&
+        tcp_queue_send(&client, active, segment, 4) < 0 &&
+        !tcp_queue_send_pages(&client, active, pages, 100, 200) &&
+        tcp_pages_pump(&client, active, &server, client_address,
+                       server_address) &&
+        client.connections[(u32)active - 1].send_loan_count == 0;
+    u32 received_length = 0;
+    valid = valid && !tcp_receive_data(
+        &server, accepted_id, received, sizeof(received),
+        &received_length) && received_length == 3200;
+    for (u32 index = 0; index < received_length; index++) {
+        u32 source = index < 3000 ? 3000 + index : 100 + (index - 3000);
+        if (received[index] != (u8)(source * 11 + 5)) valid = 0;
+    }
+    static const u8 legacy[4] = {0xC0, 0xFF, 0xEE, 0x42};
+    valid = valid && !tcp_queue_send(&client, active, legacy, 4) &&
+        tcp_queue_send_pages(&client, active, pages, 0, 16) < 0 &&
+        tcp_pages_pump(&client, active, &server, client_address,
+                       server_address) &&
+        !tcp_receive_data(&server, accepted_id, received,
+                          sizeof(received), &received_length) &&
+        received_length == 4;
+    for (u32 index = 0; index < received_length; index++)
+        if (received[index] != legacy[index]) valid = 0;
+    for (u32 index = 0; index < TCP_SEND_LOAN_MAX; index++)
+        valid = valid && !tcp_queue_send_pages(
+            &client, active, pages, 4000 + index, 1);
+    valid = valid &&
+        tcp_queue_send_pages(&client, active, pages, 4100, 1) < 0 &&
+        tcp_pages_pump(&client, active, &server, client_address,
+                       server_address) &&
+        !tcp_receive_data(&server, accepted_id, received,
+                          sizeof(received), &received_length) &&
+        received_length == TCP_SEND_LOAN_MAX;
+    for (u32 index = 0; index < received_length; index++)
+        if (received[index] != (u8)((4000 + index) * 11 + 5)) valid = 0;
+    valid = valid &&
+        !tcp_queue_send_pages(&client, active, pages, 500, 100) &&
+        !tcp_abort(&client, active, -19) &&
+        client.connections[(u32)active - 1].send_loan_count == 0 &&
+        !tcp_close(&client, active);
+    u64 listener2 = tcp_listen(&server, server_address, 8091);
+    u64 active2 = tcp_active_open(&client, client_address, 50011,
+                                  server_address, 8091);
+    valid = valid && listener2 && active2;
+    u32 second_isn = active2
+        ? client.connections[(u32)active2 - 1].send_unacknowledged : 0;
+    length = tcp_build_ipv4(
+        segment, sizeof(segment), client_address, server_address,
+        50011, 8091, second_isn, 0, TCP_FLAG_SYN, 65535, 0, 0);
+    valid = valid && length == TCP_HEADER_MIN &&
+        !tcp_receive_ipv4(&server, client_address, server_address,
+                          segment, (u32)length, &reply) &&
+        reply.valid && reply.flags == (TCP_FLAG_SYN | TCP_FLAG_ACK);
+    length = tcp_build_ipv4(
+        segment, sizeof(segment), server_address, client_address,
+        reply.source_port, reply.destination_port,
+        reply.sequence, reply.acknowledgement,
+        reply.flags, reply.window, 0, 0);
+    valid = valid &&
+        !tcp_receive_ipv4(&client, server_address, client_address,
+                          segment, (u32)length, &reply) &&
+        reply.valid && reply.flags == TCP_FLAG_ACK;
+    length = tcp_build_ipv4(
+        segment, sizeof(segment), client_address, server_address,
+        reply.source_port, reply.destination_port,
+        reply.sequence, reply.acknowledgement,
+        reply.flags, reply.window, 0, 0);
+    valid = valid && !tcp_receive_ipv4(
+        &server, client_address, server_address,
+        segment, (u32)length, &reply) && !reply.valid;
+    for (u32 loan = 0; loan < 4; loan++)
+        valid = valid && !tcp_queue_send_pages(
+            &client, active2, big, 0, 64 * 4096);
+    valid = valid &&
+        tcp_queue_send_pages(&client, active2, big, 0, 4096) < 0 &&
+        !tcp_close(&client, active2) &&
+        client.connections[(u32)active2 - 1].send_loan_count == 0;
+    if (pages) object_release(pages);
+    if (big) object_release(big);
+    valid = valid && object_active_count() == objects &&
+        pmm_free_pages() == free_pages;
+    return valid ? 0 : -1;
+}

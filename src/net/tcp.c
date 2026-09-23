@@ -1,5 +1,6 @@
 #include "checksum.h"
 #include "tcp.h"
+#include "resource.h"
 
 void *memcpy(void *dst, const void *src, usize_t length);
 
@@ -261,11 +262,53 @@ static u32 next_initial_sequence(struct tcp_context *tcp,
     return (u32)(value ^ (value >> 32));
 }
 
+static u32 loan_spanned(const struct tcp_send_loan *loan) {
+    return (loan->offset + loan->length + 4095) / 4096 -
+        loan->offset / 4096;
+}
+
+static const u8 *loan_bytes(const struct tcp_send_loan *loan, u32 position) {
+    struct page_resource *resource = page_resource_get(loan->pages);
+    if (!resource) return 0;
+    u32 absolute = loan->offset + position;
+    if (absolute / 4096 >= resource->pages) return 0;
+    return (const u8 *)(uptr_t)resource->physical[absolute / 4096] +
+        absolute % 4096;
+}
+
+static void loan_release(struct tcp_connection *c,
+                         struct tcp_send_loan *loan) {
+    page_resource_unpin(loan->pages);
+    c->send_loan_pages -= loan_spanned(loan);
+    loan->pages = 0;
+    loan->offset = 0;
+    loan->length = 0;
+    loan->position = 0;
+    c->send_loan_head = (c->send_loan_head + 1) % TCP_SEND_LOAN_MAX;
+    c->send_loan_count--;
+}
+
+static void release_loans(struct tcp_connection *c) {
+    for (u32 index = 0; index < TCP_SEND_LOAN_MAX; index++) {
+        struct tcp_send_loan *loan = &c->send_loans[index];
+        if (!loan->pages) continue;
+        page_resource_unpin(loan->pages);
+        loan->pages = 0;
+        loan->offset = 0;
+        loan->length = 0;
+        loan->position = 0;
+    }
+    c->send_loan_head = 0;
+    c->send_loan_count = 0;
+    c->send_loan_pages = 0;
+}
+
 static struct tcp_connection *allocate(struct tcp_context *tcp, u32 *slot) {
     for (u32 i = 0; i < TCP_CONNECTION_MAX; i++) {
         struct tcp_connection *c = &tcp->connections[i];
         if (c->active) continue;
         *slot = i;
+        release_loans(c);
         c->active = 1;
         c->family = 0;
         c->local_address = 0;
@@ -1191,6 +1234,7 @@ int tcp_abort(struct tcp_context *tcp, u64 id, i32 error) {
     connection->eof = 1;
     for (u32 index = 0; index < TCP_RETRANSMISSION_MAX; index++)
         connection->retransmissions[index].active = 0;
+    release_loans(connection);
     connection->ack_pending = 0;
     return 0;
 }
@@ -1205,6 +1249,7 @@ void tcp_abort_all(struct tcp_context *tcp, i32 error) {
         connection->eof = 1;
         for (u32 entry = 0; entry < TCP_RETRANSMISSION_MAX; entry++)
             connection->retransmissions[entry].active = 0;
+        release_loans(connection);
         connection->ack_pending = 0;
     }
 }
@@ -1259,7 +1304,8 @@ static void fill_transmit(struct tcp_transmit *transmit, u64 id,
 int tcp_queue_send(struct tcp_context *tcp, u64 id,
                    const void *data, u32 length) {
     struct tcp_connection *c = by_id(tcp, id);
-    if (!c || c->send_fin ||
+    // Send buffer and page loans share one byte order: never mix them.
+    if (!c || c->send_fin || c->send_loan_count ||
         (c->state != TCP_STATE_ESTABLISHED &&
          c->state != TCP_STATE_CLOSE_WAIT) ||
         !data || !length ||
@@ -1267,6 +1313,35 @@ int tcp_queue_send(struct tcp_context *tcp, u64 id,
         return -1;
     memcpy(c->send_buffer + c->send_buffer_length, data, length);
     c->send_buffer_length += length;
+    return 0;
+}
+
+int tcp_queue_send_pages(struct tcp_context *tcp, u64 id,
+                         struct kernel_object *pages, u32 offset,
+                         u32 length) {
+    struct tcp_connection *c = by_id(tcp, id);
+    struct page_resource *resource = page_resource_get(pages);
+    if (!c || !resource || resource->revoked || c->send_fin ||
+        (c->state != TCP_STATE_ESTABLISHED &&
+         c->state != TCP_STATE_CLOSE_WAIT) ||
+        !length || offset >= resource->pages * 4096u ||
+        length > resource->pages * 4096u - offset ||
+        c->send_buffer_offset < c->send_buffer_length ||
+        c->send_loan_count >= TCP_SEND_LOAN_MAX)
+        return -1;
+    u32 spanned = (offset + length + 4095) / 4096 - offset / 4096;
+    if (spanned > TCP_SEND_LOAN_PAGES_MAX - c->send_loan_pages)
+        return -1;
+    if (page_resource_pin(pages)) return -1;
+    struct tcp_send_loan *loan =
+        &c->send_loans[(c->send_loan_head + c->send_loan_count) %
+                       TCP_SEND_LOAN_MAX];
+    loan->pages = pages;
+    loan->offset = offset;
+    loan->length = length;
+    loan->position = 0;
+    c->send_loan_count++;
+    c->send_loan_pages += spanned;
     return 0;
 }
 
@@ -1289,7 +1364,28 @@ int tcp_prepare_transmit(struct tcp_context *tcp, u64 id, u32 now,
     if (c->state != TCP_STATE_ESTABLISHED &&
         c->state != TCP_STATE_CLOSE_WAIT)
         return 0;
-    if (c->send_buffer_offset >= c->send_buffer_length) {
+    struct tcp_send_loan *loan = 0;
+    const u8 *data = 0;
+    u32 available = 0;
+    u32 source_position = 0;
+    u32 source_total = 0;
+    int more_after = 0;
+    if (c->send_buffer_offset < c->send_buffer_length) {
+        data = c->send_buffer + c->send_buffer_offset;
+        available = c->send_buffer_length - c->send_buffer_offset;
+        source_position = c->send_buffer_offset;
+        source_total = c->send_buffer_length;
+        more_after = c->send_loan_count != 0;
+    } else if (c->send_loan_count) {
+        loan = &c->send_loans[c->send_loan_head];
+        data = loan_bytes(loan, loan->position);
+        if (!data) return 0;
+        available = loan->length - loan->position;
+        source_position = loan->position;
+        source_total = loan->length;
+        more_after = c->send_loan_count > 1;
+    }
+    if (!data) {
         if (!c->send_fin) return 0;
         u8 flags = TCP_FLAG_FIN | TCP_FLAG_ACK;
         if (!track_retransmission(tcp, c, slot, c->send_next, flags, 0, 0, now))
@@ -1315,14 +1411,19 @@ int tcp_prepare_transmit(struct tcp_context *tcp, u64 id, u32 now,
     c->persist_deadline = 0;
     c->persist_interval = TCP_RTO_INITIAL;
     if (flight >= limit) return 0;
-    u32 length = c->send_buffer_length - c->send_buffer_offset;
+    u32 length = available;
     if (length > c->remote_mss) length = c->remote_mss;
     if (length > TCP_RETRANSMIT_DATA_MAX) length = TCP_RETRANSMIT_DATA_MAX;
     if (length > limit - flight) length = limit - flight;
-    const u8 *data = c->send_buffer + c->send_buffer_offset;
+    if (loan) {
+        // Segments never span two loan pages: the page frames stay
+        // single-owner for the future zero-copy transmit path.
+        u32 within = 4096 - (loan->offset + loan->position) % 4096;
+        if (length > within) length = within;
+    }
     u32 sequence = c->send_next;
-    int last = c->send_fin &&
-        c->send_buffer_offset + length == c->send_buffer_length;
+    int last = c->send_fin && !more_after &&
+        source_position + length == source_total;
     u8 flags = (u8)(TCP_FLAG_ACK | TCP_FLAG_PSH | (last ? TCP_FLAG_FIN : 0));
     if (!length || !track_retransmission(
             tcp, c, slot, sequence, flags, data, length, now))
@@ -1330,10 +1431,16 @@ int tcp_prepare_transmit(struct tcp_context *tcp, u64 id, u32 now,
     fill_transmit(transmit, id, tcp, c, sequence, flags, data, length, 0);
     c->send_next += length;
     if (last) c->send_next++;
-    c->send_buffer_offset += length;
-    if (c->send_buffer_offset == c->send_buffer_length) {
-        c->send_buffer_offset = 0;
-        c->send_buffer_length = 0;
+    if (!loan) {
+        c->send_buffer_offset += length;
+        if (c->send_buffer_offset == c->send_buffer_length) {
+            c->send_buffer_offset = 0;
+            c->send_buffer_length = 0;
+        }
+    } else {
+        loan->position += length;
+        if (loan->position == loan->length)
+            loan_release(c, loan);
     }
     if (last)
         c->state = c->state == TCP_STATE_ESTABLISHED ?
@@ -1370,7 +1477,8 @@ int tcp_shutdown(struct tcp_context *tcp, u64 id, u32 now,
          c->state != TCP_STATE_CLOSE_WAIT))
         return -1;
     c->send_fin = 1;
-    if (c->send_buffer_offset < c->send_buffer_length)
+    if (c->send_buffer_offset < c->send_buffer_length ||
+        c->send_loan_count)
         return 1;
     return tcp_prepare_transmit(tcp, id, now, transmit) == 1 ? 0 : -1;
 }
@@ -1384,7 +1492,8 @@ int tcp_detach(struct tcp_context *tcp, u64 id, u32 now,
     if (c->state == TCP_STATE_ESTABLISHED ||
         c->state == TCP_STATE_CLOSE_WAIT) {
         if (!c->send_window &&
-            c->send_buffer_offset < c->send_buffer_length) {
+            (c->send_buffer_offset < c->send_buffer_length ||
+             c->send_loan_count)) {
             fill_transmit(transmit, id, tcp, c, c->send_next,
                           TCP_FLAG_RST | TCP_FLAG_ACK, 0, 0, 0);
             tcp_close(tcp, id);
@@ -1426,6 +1535,9 @@ static u32 blackhole_next_mtu(const struct tcp_connection *c) {
 static int resegment_to_mss(struct tcp_connection *c,
                             struct tcp_retransmission *e) {
     if (!e->active || e->length <= c->remote_mss) return 0;
+    // Rewinding an oversized slot into the send buffer would reorder bytes
+    // ahead of unsegmented loan data; resend the slot whole instead.
+    if (c->send_loan_count) return 0;
     if (c->send_next != e->end_sequence) return -1;
     u32 keep = c->remote_mss;
     u32 leftover = (u32)e->length - keep;
@@ -1533,10 +1645,21 @@ int tcp_tick(struct tcp_context *tcp, u32 now,
         if (kind == TCP_TIMER_PERSIST) {
             if ((c->state != TCP_STATE_ESTABLISHED &&
                  c->state != TCP_STATE_CLOSE_WAIT) ||
-                c->send_window || !c->send_buffer_length ||
+                c->send_window ||
+                !(c->send_buffer_offset < c->send_buffer_length ||
+                  c->send_loan_count) ||
                 c->persist_deadline != deadline)
                 continue;
-            u8 byte = c->send_buffer[c->send_buffer_offset];
+            u8 byte;
+            if (c->send_buffer_offset < c->send_buffer_length) {
+                byte = c->send_buffer[c->send_buffer_offset];
+            } else {
+                struct tcp_send_loan *loan =
+                    &c->send_loans[c->send_loan_head];
+                const u8 *probe = loan_bytes(loan, loan->position);
+                if (!probe) continue;
+                byte = probe[0];
+            }
             fill_transmit(transmit, id, tcp, c, c->send_next,
                           TCP_FLAG_ACK, &byte, 1, 0);
             if (c->persist_interval < TCP_RTO_MAX / 2)
@@ -1592,6 +1715,7 @@ int tcp_close(struct tcp_context *tcp, u64 id) {
             struct tcp_connection *child = &tcp->connections[index];
             if (!child->active || child->parent_listener != id || child->accepted)
                 continue;
+            release_loans(child);
             child->active = 0;
             child->state = TCP_STATE_CLOSED;
             child->generation++;
@@ -1600,6 +1724,7 @@ int tcp_close(struct tcp_context *tcp, u64 id) {
             tcp->stats.connections_closed++;
         }
     }
+    release_loans(c);
     c->active = 0;
     c->state = TCP_STATE_CLOSED;
     c->generation++;
