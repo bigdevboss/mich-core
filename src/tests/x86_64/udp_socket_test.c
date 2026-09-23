@@ -588,8 +588,10 @@ int test_socket_send_file(const struct test64_env *env) {
     u32 readiness = 0;
     i32 error = 0;
     u32 eof = 0;
+    u32 granted = 0;
     valid = valid &&
-        !socket_stream_state(client, &state, &readiness, &error, &eof) &&
+        !socket_stream_state(client, &state, &readiness, &error, &eof,
+                             &granted) &&
         state == TCP_STATE_ESTABLISHED;
     struct kernel_object *server = socket_stream_accept(listener);
     valid = valid && server;
@@ -632,6 +634,203 @@ int test_socket_send_file(const struct test64_env *env) {
     if (server_vnic) object_release(server_vnic);
     if (file) object_release(file);
     if (root) valid = valid && !vfs_unlink(root, "payload.bin");
+    if (node) object_release(node);
+    if (root) object_release(root);
+    valid = valid && pmm_free_pages() == free_pages &&
+        object_active_count() == objects &&
+        socket_active_count() == sockets &&
+        net_interface_active_count() == interfaces &&
+        packet_pool_active_count() == pools &&
+        vnic_active_count() == vnics && ring_active_count() == rings &&
+        vfs_node_active_count() == nodes &&
+        vfs_file_active_count() == files;
+    return valid ? 0 : -1;
+}
+
+
+int test_socket_receive_file(const struct test64_env *env) {
+    u32 free_pages = pmm_free_pages();
+    u32 objects = object_active_count();
+    u32 sockets = socket_active_count();
+    u32 interfaces = net_interface_active_count();
+    u32 pools = packet_pool_active_count();
+    u32 vnics = vnic_active_count();
+    u32 rings = ring_active_count();
+    u32 nodes = vfs_node_active_count();
+    u32 files = vfs_file_active_count();
+    struct route_table routes;
+    route_init(&routes);
+    int valid = !net_interface_init(&routes);
+    struct driver_domain owner;
+    u8 *owner_bytes = (u8 *)&owner;
+    for (usize_t index = 0; index < sizeof(owner); index++) owner_bytes[index] = 0;
+    owner.id = 79;
+    owner.pid = env->owner->id;
+    owner.state = DRIVER_DOMAIN_RUNNING;
+    owner.active = 1;
+    struct kernel_object *client_vnic = vnic_create(32, 16);
+    struct kernel_object *server_vnic = vnic_create(32, 16);
+    const u8 client_mac[6] = {0x02, 0x4D, 0x49, 0x43, 0x48, 0x23};
+    const u8 server_mac[6] = {0x02, 0x4D, 0x49, 0x43, 0x48, 0x24};
+    struct kernel_object *client_interface = client_vnic ? net_interface_create(
+        &owner, vnic_pool(client_vnic), vnic_rx_ring(client_vnic),
+        vnic_tx_ring(client_vnic), client_mac, 1500, "file2") : 0;
+    struct kernel_object *server_interface = server_vnic ?
+        net_interface_create(
+            &owner, vnic_pool(server_vnic), vnic_rx_ring(server_vnic),
+            vnic_tx_ring(server_vnic), server_mac, 1500, "file3") : 0;
+    valid = valid && client_vnic && server_vnic && client_interface &&
+        server_interface && !net_interface_register(client_interface) &&
+        !net_interface_register(server_interface) &&
+        !net_interface_set_ipv4(client_interface, &owner,
+                                0x0A000002u, 0xFFFFFF00u) &&
+        !net_interface_set_ipv4(server_interface, &owner,
+                                0x0A000003u, 0xFFFFFF00u) &&
+        !net_interface_set_link(client_interface, &owner, 1) &&
+        !net_interface_set_link(server_interface, &owner, 1);
+    struct kernel_object *root = vfs_root();
+    struct kernel_object *node = root ? vfs_create(
+        root, "incoming.bin", VFS_NODE_REGULAR) : 0;
+    struct kernel_object *file = node ? vfs_open(node) : 0;
+    static u8 payload[5200];
+    for (u32 index = 0; index < sizeof(payload); index++)
+        payload[index] = 0xAA;
+    u32 transferred = 0;
+    valid = valid && file &&
+        !vfs_write(file, 0, payload, sizeof(payload), &transferred) &&
+        transferred == sizeof(payload);
+    struct kernel_object *listener = socket_create_stream();
+    struct kernel_object *client = socket_create_stream();
+    valid = valid && listener && client &&
+        !socket_stream_listen(listener, server_interface, 8091, 1) &&
+        !socket_stream_connect(client, client_interface,
+                               0x0A000003u, 8091);
+    u32 now = 200;
+    for (u32 round = 0; round < 24; round++) {
+        u32 delivered = socket_file_pump(
+            client_interface, server_interface, &owner, now);
+        now += 10;
+        if (!delivered) break;
+    }
+    u32 state = 0;
+    u32 readiness = 0;
+    i32 error = 0;
+    u32 eof = 0;
+    u32 granted = 0;
+    valid = valid &&
+        !socket_stream_state(client, &state, &readiness, &error, &eof,
+                             &granted) &&
+        state == TCP_STATE_ESTABLISHED;
+    struct kernel_object *server = socket_stream_accept(listener);
+    valid = valid && server;
+    valid = valid &&
+        socket_stream_receive_file(server, root, 0, 16) < 0 &&
+        socket_stream_receive_file(server, node, sizeof(payload), 16) < 0 &&
+        socket_stream_receive_file(server, node, 0, 0) < 0;
+    static const u8 probe[32] = {
+        0x70, 0x72, 0x6F, 0x62, 0x65, 0x2D, 0x70, 0x61,
+        0x79, 0x6C, 0x6F, 0x61, 0x64, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+    valid = valid && !socket_stream_send(client, probe, sizeof(probe));
+    for (u32 round = 0; round < 24; round++) {
+        u32 delivered = socket_file_pump(
+            client_interface, server_interface, &owner, now);
+        now += 10;
+        if (!delivered) break;
+    }
+    valid = valid &&
+        socket_stream_receive_file(server, node, 0, 100) < 0;
+    u32 probe_length = 0;
+    static u8 probe_back[64];
+    valid = valid && !socket_stream_receive(
+        server, probe_back, sizeof(probe_back), &probe_length) &&
+        probe_length == sizeof(probe);
+    for (u32 index = 0; index < probe_length; index++)
+        if (probe_back[index] != probe[index]) valid = 0;
+    u32 granted_before = 0;
+    valid = valid &&
+        !socket_stream_state(server, &state, &readiness, &error, &eof,
+                             &granted_before) &&
+        !socket_stream_receive_file(server, node, 0, 5000);
+    static u8 stream[5000];
+    for (u32 index = 0; index < sizeof(stream); index++)
+        stream[index] = (u8)(index * 13 + 7);
+    valid = valid && !socket_stream_send(client, stream, sizeof(stream));
+    for (u32 round = 0; round < 48; round++) {
+        u32 delivered = socket_file_pump(
+            client_interface, server_interface, &owner, now);
+        now += 10;
+        if (!delivered) break;
+    }
+    static u8 landed[5000];
+    valid = valid && !vfs_read(
+        file, 0, landed, sizeof(landed), &transferred) &&
+        transferred == sizeof(landed);
+    for (u32 index = 0; index < sizeof(landed); index++)
+        if (landed[index] != stream[index]) valid = 0;
+    valid = valid &&
+        !socket_stream_state(server, &state, &readiness, &error, &eof,
+                             &granted) &&
+        granted == granted_before + sizeof(stream);
+    struct net_interface *server_info = net_interface_get(server_interface);
+    struct tcp_context *server_tcp = server_info ? server_info->tcp : 0;
+    u32 grants_left = 1;
+    u32 grant_pages_left = 1;
+    for (u32 index = 0; server_tcp && index < TCP_CONNECTION_MAX; index++)
+        if (server_tcp->connections[index].active &&
+            server_tcp->connections[index].state == TCP_STATE_ESTABLISHED) {
+            grants_left = server_tcp->connections[index].receive_grant_count;
+            grant_pages_left =
+                server_tcp->connections[index].receive_grant_pages;
+        }
+    valid = valid && !grants_left && !grant_pages_left;
+    static const u8 spill[150] = {
+        0x53, 0x50, 0x49, 0x4C, 0x4C, 0x00,
+    };
+    valid = valid && !socket_stream_receive_file(server, node, 5000, 100) &&
+        !socket_stream_send(client, spill, sizeof(spill));
+    for (u32 round = 0; round < 24; round++) {
+        u32 delivered = socket_file_pump(
+            client_interface, server_interface, &owner, now);
+        now += 10;
+        if (!delivered) break;
+    }
+    static u8 spill_back[64];
+    u32 spill_received = 0;
+    valid = valid && !socket_stream_receive(
+        server, spill_back, sizeof(spill_back), &spill_received) &&
+        spill_received == sizeof(spill) - 100;
+    for (u32 index = 0; index < spill_received; index++)
+        if (spill_back[index] != spill[100 + index]) valid = 0;
+    valid = valid && !vfs_read(
+        file, 5000, landed, 100, &transferred) && transferred == 100;
+    for (u32 index = 0; index < 100; index++)
+        if (landed[index] != spill[index]) valid = 0;
+    valid = valid && !socket_stream_receive_file(server, node, 5100, 100) &&
+        !socket_stream_shutdown(client);
+    for (u32 round = 0; round < 24; round++) {
+        u32 delivered = socket_file_pump(
+            client_interface, server_interface, &owner, now);
+        now += 10;
+        if (!delivered) break;
+    }
+    valid = valid &&
+        !socket_stream_state(server, &state, &readiness, &error, &eof,
+                             &granted) && eof &&
+        socket_stream_receive_file(server, node, 4000, 16) < 0;
+    if (server) object_release(server);
+    if (listener) object_release(listener);
+    if (client) object_release(client);
+    if (client_interface) valid = valid && !net_interface_remove(client_interface);
+    if (server_interface) valid = valid && !net_interface_remove(server_interface);
+    if (client_interface) object_release(client_interface);
+    if (server_interface) object_release(server_interface);
+    if (client_vnic) object_release(client_vnic);
+    if (server_vnic) object_release(server_vnic);
+    if (file) object_release(file);
+    if (root) valid = valid && !vfs_unlink(root, "incoming.bin");
     if (node) object_release(node);
     if (root) object_release(root);
     valid = valid && pmm_free_pages() == free_pages &&

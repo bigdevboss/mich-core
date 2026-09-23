@@ -36,12 +36,15 @@ int socket_stream_send(struct kernel_object *socket,
 int socket_stream_send_file(struct kernel_object *socket,
                             struct kernel_object *node, u32 offset,
                             u32 length);
+int socket_stream_receive_file(struct kernel_object *socket,
+                               struct kernel_object *node, u32 offset,
+                               u32 length);
 int socket_stream_receive(struct kernel_object *socket,
                           void *data, u32 capacity, u32 *received);
 int socket_stream_shutdown(struct kernel_object *socket);
 int socket_stream_state(struct kernel_object *socket,
                         u32 *state, u32 *readiness,
-                        i32 *error, u32 *eof);
+                        i32 *error, u32 *eof, u32 *granted_bytes);
 int socket_stream_take_error(struct kernel_object *socket, i32 *error);
 void socket_tcp_notify(struct tcp_context *tcp, u64 connection_id);
 void socket_tcp_abort_context(struct tcp_context *tcp, i32 error);

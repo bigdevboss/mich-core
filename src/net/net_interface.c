@@ -1233,6 +1233,16 @@ int net_interface_tcp_receive(struct kernel_object *object, u64 connection,
                          data, capacity, received) : -1;
 }
 
+int net_interface_tcp_receive_pages(struct kernel_object *object,
+                                    u64 connection,
+                                    struct kernel_object *pages,
+                                    u32 offset, u32 length) {
+    struct net_interface *interface = net_interface_get(object);
+    return interface && interface->tcp ?
+        tcp_queue_receive_pages(interface->tcp, connection, pages, offset,
+                                length) : -1;
+}
+
 int net_interface_tcp_shutdown(struct kernel_object *object, u64 connection) {
     struct net_interface *interface = net_interface_get(object);
     if (!interface || !interface->tcp) return -1;

@@ -303,12 +303,81 @@ static void release_loans(struct tcp_connection *c) {
     c->send_loan_pages = 0;
 }
 
+static u32 grant_spanned(const struct tcp_receive_grant *grant) {
+    return (grant->offset + grant->length + 4095) / 4096 -
+        grant->offset / 4096;
+}
+
+static u8 *grant_bytes(struct tcp_receive_grant *grant, u32 position) {
+    struct page_resource *resource = page_resource_get(grant->pages);
+    if (!resource) return 0;
+    u32 absolute = grant->offset + position;
+    if (absolute / 4096 >= resource->pages) return 0;
+    return (u8 *)(uptr_t)resource->physical[absolute / 4096] +
+        absolute % 4096;
+}
+
+static void grant_release(struct tcp_connection *c,
+                          struct tcp_receive_grant *grant) {
+    page_resource_unpin(grant->pages);
+    c->receive_grant_pages -= grant_spanned(grant);
+    grant->pages = 0;
+    grant->offset = 0;
+    grant->length = 0;
+    grant->position = 0;
+    c->receive_grant_head =
+        (c->receive_grant_head + 1) % TCP_RECEIVE_GRANT_MAX;
+    c->receive_grant_count--;
+}
+
+static void release_grants(struct tcp_connection *c) {
+    for (u32 index = 0; index < TCP_RECEIVE_GRANT_MAX; index++) {
+        struct tcp_receive_grant *grant = &c->receive_grants[index];
+        if (!grant->pages) continue;
+        page_resource_unpin(grant->pages);
+        grant->pages = 0;
+        grant->offset = 0;
+        grant->length = 0;
+        grant->position = 0;
+    }
+    c->receive_grant_head = 0;
+    c->receive_grant_count = 0;
+    c->receive_grant_pages = 0;
+}
+
+static void refresh_receive_window(struct tcp_connection *c) {
+    u32 space = TCP_RECEIVE_BUFFER_MAX - c->receive_buffer_length;
+    for (u32 index = 0; index < TCP_RECEIVE_GRANT_MAX; index++) {
+        const struct tcp_receive_grant *grant = &c->receive_grants[index];
+        if (grant->pages) space += grant->length - grant->position;
+    }
+    c->receive_window = space > 0xFFFFu ? (u16)0xFFFF : (u16)space;
+}
+
+static u32 grant_write(struct tcp_receive_grant *grant,
+                       const u8 *data, u32 length) {
+    u32 done = 0;
+    while (done < length) {
+        u8 *target = grant_bytes(grant, grant->position + done);
+        if (!target) return done;
+        u32 within =
+            4096 - (grant->offset + grant->position + done) % 4096;
+        u32 chunk = length - done;
+        if (chunk > within) chunk = within;
+        for (u32 index = 0; index < chunk; index++)
+            target[index] = data[done + index];
+        done += chunk;
+    }
+    return done;
+}
+
 static struct tcp_connection *allocate(struct tcp_context *tcp, u32 *slot) {
     for (u32 i = 0; i < TCP_CONNECTION_MAX; i++) {
         struct tcp_connection *c = &tcp->connections[i];
         if (c->active) continue;
         *slot = i;
         release_loans(c);
+        release_grants(c);
         c->active = 1;
         c->family = 0;
         c->local_address = 0;
@@ -345,6 +414,7 @@ static struct tcp_connection *allocate(struct tcp_context *tcp, u32 *slot) {
         c->send_buffer_length = 0;
         c->send_buffer_offset = 0;
         c->receive_buffer_length = 0;
+        c->receive_grant_bytes = 0;
         c->timer_version = tcp->timer_epoch++;
         c->peer_sack = 0;
         c->ack_filter_until = 0;
@@ -769,12 +839,38 @@ static void acknowledge(struct tcp_context *tcp, struct tcp_connection *c,
 static int append_receive(struct tcp_context *tcp,
                           struct tcp_connection *c,
                           const u8 *data, u32 length) {
-    if (length > TCP_RECEIVE_BUFFER_MAX - c->receive_buffer_length)
+    // Grants take the head of the byte stream; only the spill beyond the
+    // grant queue reaches the receive buffer, so grant bytes are always
+    // older than buffer bytes and the read order stays well defined.
+    u32 grant_space = 0;
+    for (u32 index = 0; index < TCP_RECEIVE_GRANT_MAX; index++) {
+        const struct tcp_receive_grant *grant = &c->receive_grants[index];
+        if (grant->pages) grant_space += grant->length - grant->position;
+    }
+    if (length > grant_space +
+        TCP_RECEIVE_BUFFER_MAX - c->receive_buffer_length)
         return -1;
-    if (length)
-        memcpy(c->receive_buffer + c->receive_buffer_length, data, length);
-    c->receive_buffer_length += length;
-    c->receive_window = (u16)(TCP_RECEIVE_BUFFER_MAX - c->receive_buffer_length);
+    u32 granted = 0;
+    while (granted < length && c->receive_grant_count) {
+        struct tcp_receive_grant *grant =
+            &c->receive_grants[c->receive_grant_head];
+        u32 room = grant->length - grant->position;
+        u32 chunk = length - granted < room ? length - granted : room;
+        if (grant_write(grant, data + granted, chunk) != chunk)
+            return -1;
+        grant->position += chunk;
+        granted += chunk;
+        if (grant->position == grant->length)
+            grant_release(c, grant);
+    }
+    if (granted < length) {
+        u32 spill = length - granted;
+        memcpy(c->receive_buffer + c->receive_buffer_length,
+               data + granted, spill);
+        c->receive_buffer_length += spill;
+    }
+    c->receive_grant_bytes += granted;
+    refresh_receive_window(c);
     tcp->stats.bytes_received += length;
     return 0;
 }
@@ -1209,13 +1305,14 @@ int tcp_connection_state(struct tcp_context *tcp, u64 id, u32 *state) {
 
 int tcp_connection_status(struct tcp_context *tcp, u64 id,
                           u32 *state, u32 *readable, u32 *writable,
-                          i32 *error, u32 *eof) {
+                          i32 *error, u32 *eof, u32 *granted) {
     struct tcp_connection *connection = by_id(tcp, id);
     if (!connection || !state || !readable || !writable ||
-        !error || !eof)
+        !error || !eof || !granted)
         return -1;
     *state = connection->state;
     *readable = connection->receive_buffer_length;
+    *granted = connection->receive_grant_bytes;
     *writable = !connection->send_fin &&
         (connection->state == TCP_STATE_ESTABLISHED ||
          connection->state == TCP_STATE_CLOSE_WAIT) &&
@@ -1235,6 +1332,7 @@ int tcp_abort(struct tcp_context *tcp, u64 id, i32 error) {
     for (u32 index = 0; index < TCP_RETRANSMISSION_MAX; index++)
         connection->retransmissions[index].active = 0;
     release_loans(connection);
+    release_grants(connection);
     connection->ack_pending = 0;
     return 0;
 }
@@ -1250,6 +1348,7 @@ void tcp_abort_all(struct tcp_context *tcp, i32 error) {
         for (u32 entry = 0; entry < TCP_RETRANSMISSION_MAX; entry++)
             connection->retransmissions[entry].active = 0;
         release_loans(connection);
+        release_grants(connection);
         connection->ack_pending = 0;
     }
 }
@@ -1342,6 +1441,36 @@ int tcp_queue_send_pages(struct tcp_context *tcp, u64 id,
     loan->position = 0;
     c->send_loan_count++;
     c->send_loan_pages += spanned;
+    return 0;
+}
+
+int tcp_queue_receive_pages(struct tcp_context *tcp, u64 id,
+                            struct kernel_object *pages, u32 offset,
+                            u32 length) {
+    struct tcp_connection *c = by_id(tcp, id);
+    struct page_resource *resource = page_resource_get(pages);
+    if (!c || !resource || resource->revoked || c->eof ||
+        (c->state != TCP_STATE_ESTABLISHED &&
+         c->state != TCP_STATE_CLOSE_WAIT) ||
+        !length || offset >= resource->pages * 4096u ||
+        length > resource->pages * 4096u - offset ||
+        c->receive_buffer_length ||
+        c->receive_grant_count >= TCP_RECEIVE_GRANT_MAX)
+        return -1;
+    u32 spanned = (offset + length + 4095) / 4096 - offset / 4096;
+    if (spanned > TCP_RECEIVE_GRANT_PAGES_MAX - c->receive_grant_pages)
+        return -1;
+    if (page_resource_pin(pages)) return -1;
+    struct tcp_receive_grant *grant =
+        &c->receive_grants[(c->receive_grant_head + c->receive_grant_count) %
+                           TCP_RECEIVE_GRANT_MAX];
+    grant->pages = pages;
+    grant->offset = offset;
+    grant->length = length;
+    grant->position = 0;
+    c->receive_grant_count++;
+    c->receive_grant_pages += spanned;
+    refresh_receive_window(c);
     return 0;
 }
 
@@ -1464,7 +1593,7 @@ int tcp_receive_data(struct tcp_context *tcp, u64 id,
     for (u32 index = count; index < c->receive_buffer_length; index++)
         c->receive_buffer[index - count] = c->receive_buffer[index];
     c->receive_buffer_length -= count;
-    c->receive_window = (u16)(TCP_RECEIVE_BUFFER_MAX - c->receive_buffer_length);
+    refresh_receive_window(c);
     *received = count;
     return 0;
 }
@@ -1716,6 +1845,7 @@ int tcp_close(struct tcp_context *tcp, u64 id) {
             if (!child->active || child->parent_listener != id || child->accepted)
                 continue;
             release_loans(child);
+            release_grants(child);
             child->active = 0;
             child->state = TCP_STATE_CLOSED;
             child->generation++;
@@ -1725,6 +1855,7 @@ int tcp_close(struct tcp_context *tcp, u64 id) {
         }
     }
     release_loans(c);
+    release_grants(c);
     c->active = 0;
     c->state = TCP_STATE_CLOSED;
     c->generation++;

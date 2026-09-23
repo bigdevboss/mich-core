@@ -401,6 +401,23 @@ int socket_stream_send_file(struct kernel_object *object,
     return result;
 }
 
+int socket_stream_receive_file(struct kernel_object *object,
+                               struct kernel_object *node, u32 offset,
+                               u32 length) {
+    struct socket_state *state = state_for(object);
+    if (!state || state->family != 14 || !state->bound)
+        return -1;
+    u32 size = 0;
+    struct kernel_object *pages = vfs_node_pages(node, &size);
+    if (!pages) return -1;
+    int result = offset > size || length > size - offset ? -1 :
+        net_interface_tcp_receive_pages(state->interface,
+                                        state->tcp_connection, pages,
+                                        offset, length);
+    object_release(pages);
+    return result;
+}
+
 int socket_stream_receive(struct kernel_object *object,
                           void *data, u32 capacity, u32 *received) {
     struct socket_state *state = state_for(object);
@@ -418,10 +435,11 @@ int socket_stream_shutdown(struct kernel_object *object) {
 
 int socket_stream_state(struct kernel_object *object,
                         u32 *state_out, u32 *readiness,
-                        i32 *error_out, u32 *eof_out) {
+                        i32 *error_out, u32 *eof_out,
+                        u32 *granted_out) {
     struct socket_state *state = state_for(object);
     if (!state || state->family != 14 || !state->bound ||
-        !state_out || !readiness || !error_out || !eof_out)
+        !state_out || !readiness || !error_out || !eof_out || !granted_out)
         return -1;
     *readiness = 0;
     if (state->listening) {
@@ -437,7 +455,7 @@ int socket_stream_state(struct kernel_object *object,
     u32 writable;
     if (tcp_connection_status(state->tcp, state->tcp_connection,
                               state_out, &readable, &writable,
-                              error_out, eof_out))
+                              error_out, eof_out, granted_out))
         return -1;
     if (*state_out == TCP_STATE_ESTABLISHED)
         *readiness |= SOCKET_READY_CONNECTED;
