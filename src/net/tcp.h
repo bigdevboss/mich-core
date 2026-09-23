@@ -2,6 +2,7 @@
 #define TCP_H
 
 #include "types.h"
+#include "object.h"
 
 #define TCP_HEADER_MIN 20
 #define TCP_OPTION_MAX 40
@@ -10,6 +11,8 @@
 // test binary's many static tcp_context copies are included.
 #define TCP_CONNECTION_MAX 32
 #define TCP_SEND_BUFFER_MAX 16384
+#define TCP_SEND_LOAN_MAX 8
+#define TCP_SEND_LOAN_PAGES_MAX 256
 #define TCP_RECEIVE_BUFFER_MAX 16384
 #define TCP_RETRANSMISSION_MAX 8
 #define TCP_RETRANSMIT_DATA_MAX 1460
@@ -127,6 +130,15 @@ struct tcp_cc_ops {
     void (*on_rto)(struct tcp_connection *c, u32 now);
 };
 
+// Pinned until the loan is fully segmented; after that reliability rides
+// the retransmission slots like any buffered send.
+struct tcp_send_loan {
+    struct kernel_object *pages;
+    u32 offset;
+    u32 length;
+    u32 position;
+};
+
 struct tcp_connection {
     u32 generation;
     u32 family;
@@ -161,6 +173,10 @@ struct tcp_connection {
     u32 detached;
     u32 send_buffer_length;
     u32 send_buffer_offset;
+    struct tcp_send_loan send_loans[TCP_SEND_LOAN_MAX];
+    u32 send_loan_head;
+    u32 send_loan_count;
+    u32 send_loan_pages;
     u32 receive_buffer_length;
     u32 timer_version;
     u32 peer_sack;
@@ -347,6 +363,9 @@ int tcp_abort(struct tcp_context *tcp, u64 id, i32 error);
 void tcp_abort_all(struct tcp_context *tcp, i32 error);
 int tcp_queue_send(struct tcp_context *tcp, u64 id,
                    const void *data, u32 length);
+int tcp_queue_send_pages(struct tcp_context *tcp, u64 id,
+                         struct kernel_object *pages, u32 offset,
+                         u32 length);
 int tcp_prepare_transmit(struct tcp_context *tcp, u64 id, u32 now,
                          struct tcp_transmit *transmit);
 int tcp_receive_data(struct tcp_context *tcp, u64 id,
