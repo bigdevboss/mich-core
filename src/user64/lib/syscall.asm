@@ -143,6 +143,7 @@ global mich_net_interface_tcp_probe_poll
 global mich_socket_stream_create
 global mich_socket_stream_connect
 global mich_socket_stream_send
+global mich_socket_stream_send_file
 global mich_socket_stream_receive
 global mich_socket_stream_state
 global mich_socket_stream_shutdown
@@ -321,6 +322,7 @@ global mich_pci_set_command
 %define SYS_NET_INTERFACE_TCPV6_PROBE_START 152
 %define SYS_NET_INTERFACE_TCPV6_PROBE_POLL 153
 %define SYS_SOCKET_STREAM_TAKE_ERROR 154
+%define SYS_SOCKET_STREAM_SEND_FILE 210
 %define SYS_VFS_ROOT 155
 %define SYS_VFS_CREATE 156
 %define SYS_VFS_LOOKUP 157
@@ -1072,6 +1074,11 @@ mich_socket_stream_connect:
 
 mich_socket_stream_send:
     mov eax, SYS_SOCKET_STREAM_SEND
+    syscall
+    ret
+
+mich_socket_stream_send_file:
+    mov eax, SYS_SOCKET_STREAM_SEND_FILE
     syscall
     ret
 

@@ -1013,6 +1013,18 @@ int vfs_stat(struct kernel_object *object, struct vfs_node_info *info) {
     return 0;
 }
 
+struct kernel_object *vfs_node_pages(struct kernel_object *object,
+                                     u32 *size) {
+    struct vfs_node_state *node = node_for(object);
+    if (!node || !node->pages || !node_backing_live(node) || !size)
+        return 0;
+    // Senders get their own reference; the node keeps its backing until
+    // both the link and every loan die.
+    if (object_retain(node->pages)) return 0;
+    *size = node->size;
+    return node->pages;
+}
+
 u32 vfs_node_active_count(void) {
     u32 count = 0;
     for (u32 index = 0; index < VFS_NODE_MAX; index++)

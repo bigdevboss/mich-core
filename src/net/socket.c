@@ -1,5 +1,6 @@
 #include "socket.h"
 #include "net_interface.h"
+#include "vfs.h"
 #include "event.h"
 #include "socket_abi.h"
 
@@ -381,6 +382,23 @@ int socket_stream_send(struct kernel_object *object,
     return state && state->family == 14 && state->bound ?
         net_interface_tcp_send(state->interface, state->tcp_connection,
                                data, length) : -1;
+}
+
+int socket_stream_send_file(struct kernel_object *object,
+                            struct kernel_object *node, u32 offset,
+                            u32 length) {
+    struct socket_state *state = state_for(object);
+    if (!state || state->family != 14 || !state->bound)
+        return -1;
+    u32 size = 0;
+    struct kernel_object *pages = vfs_node_pages(node, &size);
+    if (!pages) return -1;
+    int result = offset > size || length > size - offset ? -1 :
+        net_interface_tcp_send_pages(state->interface,
+                                     state->tcp_connection, pages, offset,
+                                     length);
+    object_release(pages);
+    return result;
 }
 
 int socket_stream_receive(struct kernel_object *object,

@@ -33,6 +33,9 @@ int socket_stream_listen_ipv6(struct kernel_object *socket,
 struct kernel_object *socket_stream_accept(struct kernel_object *socket);
 int socket_stream_send(struct kernel_object *socket,
                        const void *data, u32 length);
+int socket_stream_send_file(struct kernel_object *socket,
+                            struct kernel_object *node, u32 offset,
+                            u32 length);
 int socket_stream_receive(struct kernel_object *socket,
                           void *data, u32 capacity, u32 *received);
 int socket_stream_shutdown(struct kernel_object *socket);

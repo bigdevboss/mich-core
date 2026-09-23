@@ -387,6 +387,7 @@ for marker in \
     "Mich test64: TCP path MTU clamp pass" \
     "Mich test64: TCP PMTU blackhole pass" \
     "Mich test64: TCP page send pass" \
+    "Mich test64: socket send file pass" \
     "Mich test64: ICMP checksum pass" \
     "Mich test64: ICMP echo request and reply pass" \
     "Mich test64: ICMP rate limit pass" \
