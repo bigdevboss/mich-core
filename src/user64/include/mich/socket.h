@@ -16,6 +16,7 @@
 #define mich_socket_stream_connect_request socket_stream_connect_request
 #define mich_socket_stream_listen_request socket_stream_listen_request
 #define mich_socket_stream_data socket_stream_data
+#define mich_socket_stream_file_request socket_stream_file_request
 #define mich_socket_stream_state_result socket_stream_state_result
 #define mich_socket_stream_error_result socket_stream_error_result
 
@@ -39,6 +40,8 @@ int mich_socket_stream_connect(
     unsigned int handle, struct mich_socket_stream_connect_request *request);
 int mich_socket_stream_send(unsigned int handle,
                             struct mich_socket_stream_data *data);
+int mich_socket_stream_send_file(
+    unsigned int handle, struct mich_socket_stream_file_request *request);
 int mich_socket_stream_receive(unsigned int handle,
                                struct mich_socket_stream_data *data);
 int mich_socket_stream_state(

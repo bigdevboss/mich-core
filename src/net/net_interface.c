@@ -1213,6 +1213,18 @@ int net_interface_tcp_send(struct kernel_object *object, u64 connection,
     return flush_tcp(interface, connection);
 }
 
+int net_interface_tcp_send_pages(struct kernel_object *object,
+                                 u64 connection,
+                                 struct kernel_object *pages, u32 offset,
+                                 u32 length) {
+    struct net_interface *interface = net_interface_get(object);
+    if (!interface || !interface->tcp ||
+        tcp_queue_send_pages(interface->tcp, connection, pages, offset,
+                             length))
+        return -1;
+    return flush_tcp(interface, connection);
+}
+
 int net_interface_tcp_receive(struct kernel_object *object, u64 connection,
                               void *data, u32 capacity, u32 *received) {
     struct net_interface *interface = net_interface_get(object);

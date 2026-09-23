@@ -69,6 +69,13 @@ struct socket_stream_data {
     u8 data[SOCKET_STREAM_PAYLOAD_MAX];
 };
 
+struct socket_stream_file_request {
+    u32 file_handle;
+    u32 offset;
+    u32 length;
+    u32 reserved;
+};
+
 struct socket_stream_state_result {
     u32 state;
     u32 readiness;
