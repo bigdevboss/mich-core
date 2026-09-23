@@ -82,8 +82,11 @@ int vfs_write(struct kernel_object *file, u32 offset,
 int vfs_append(struct kernel_object *file, const void *buffer, u32 length,
                u32 *transferred, u32 *position);
 int vfs_truncate(struct kernel_object *file, u32 size);
+int vfs_sync(struct kernel_object *file);
 int vfs_stat(struct kernel_object *object, struct vfs_node_info *info);
 struct kernel_object *vfs_node_pages(struct kernel_object *node,
+                                      u32 *size);
+struct kernel_object *vfs_file_pages(struct kernel_object *file,
                                       u32 *size);
 u32 vfs_node_active_count(void);
 u32 vfs_file_active_count(void);

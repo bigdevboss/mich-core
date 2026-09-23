@@ -13,7 +13,7 @@ org 0x7E00
 %define VBEINFO    0x6000
 %define MODEINFO   0x6400
 %define MAX_MMAP   32
-%define BOOT_BLOCKS 1152
+%define BOOT_BLOCKS 1216
 %define BLOB_MAXSEC (BOOT_BLOCKS - BLOB_LBA)
 %define MAX_MODS   8
 
