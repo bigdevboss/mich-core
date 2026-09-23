@@ -181,14 +181,6 @@ recompile driver code. See [Recovery Laboratory](docs/recovery-laboratory.md)
 for the selection contract, failure boundaries, audit record, and QEMU proof
 profiles.
 
-### POSIX process audit
-
-The static POSIX application profile ships with an adversarial audit record
-covering the process facade, the blocking-layer IF-protocol invariant, PMM
-and COW refcount probes, and the stress campaign evidence. See
-[POSIX Process Audit](docs/posix-process-audit.md) for findings, fixed
-defects, and the open question register.
-
 ### Network interface objects
 
 `KOBJECT_NET_INTERFACE` represents a registered network interface with:
