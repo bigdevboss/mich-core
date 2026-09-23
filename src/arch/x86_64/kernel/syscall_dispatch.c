@@ -1669,6 +1669,21 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         return (u64)(i64)socket_stream_send_file(
             socket, node, request.offset, request.length);
     }
+    if (number == 211) {
+        struct task *task = &task_pool[current_task_slot];
+        struct kernel_object *socket = handle_get(
+            task, (u32)arg0, KRIGHT_WRITE, KOBJECT_SOCKET);
+        struct socket_stream_receive_file_request request;
+        if (!socket || vm64_copy_from(
+                task->page_dir, &request, arg1, sizeof(request)) ||
+            request.reserved)
+            return (u64)-1;
+        struct kernel_object *node = handle_get(
+            task, request.file_handle, KRIGHT_WRITE, KOBJECT_VNODE);
+        if (!node) return (u64)-1;
+        return (u64)(i64)socket_stream_receive_file(
+            socket, node, request.offset, request.length);
+    }
     if (number == 148) {
         struct task *task = &task_pool[current_task_slot];
         struct kernel_object *socket = handle_get(
@@ -1678,7 +1693,8 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                                         sizeof(result), 1) ||
             socket_stream_state(socket, &result.state,
                                 &result.readiness,
-                                &result.error, &result.eof))
+                                &result.error, &result.eof,
+                                &result.receive_grant_bytes))
             return (u64)-1;
         return (u64)(i64)vm64_copy_to(
             task->page_dir, arg1, &result, sizeof(result));

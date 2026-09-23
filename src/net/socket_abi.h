@@ -76,11 +76,19 @@ struct socket_stream_file_request {
     u32 reserved;
 };
 
+struct socket_stream_receive_file_request {
+    u32 file_handle;
+    u32 offset;
+    u32 length;
+    u32 reserved;
+};
+
 struct socket_stream_state_result {
     u32 state;
     u32 readiness;
     i32 error;
     u32 eof;
+    u32 receive_grant_bytes;
 };
 
 struct socket_stream_error_result {

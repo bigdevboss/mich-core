@@ -178,6 +178,10 @@ int net_interface_tcp_send_pages(struct kernel_object *object,
                                   u32 length);
 int net_interface_tcp_receive(struct kernel_object *object, u64 connection,
                               void *data, u32 capacity, u32 *received);
+int net_interface_tcp_receive_pages(struct kernel_object *object,
+                                    u64 connection,
+                                    struct kernel_object *pages,
+                                    u32 offset, u32 length);
 int net_interface_tcp_shutdown(struct kernel_object *object, u64 connection);
 int net_interface_tcp_state(struct kernel_object *object, u64 connection,
                             u32 *state);

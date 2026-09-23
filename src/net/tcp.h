@@ -14,6 +14,8 @@
 #define TCP_SEND_LOAN_MAX 8
 #define TCP_SEND_LOAN_PAGES_MAX 256
 #define TCP_RECEIVE_BUFFER_MAX 16384
+#define TCP_RECEIVE_GRANT_MAX 8
+#define TCP_RECEIVE_GRANT_PAGES_MAX 256
 #define TCP_RETRANSMISSION_MAX 8
 #define TCP_RETRANSMIT_DATA_MAX 1460
 #define TCP_OUT_OF_ORDER_MAX 8
@@ -139,6 +141,15 @@ struct tcp_send_loan {
     u32 position;
 };
 
+// Pinned until fully filled or torn down; the grant owner reads the
+// pages directly, so granted bytes bypass the receive buffer.
+struct tcp_receive_grant {
+    struct kernel_object *pages;
+    u32 offset;
+    u32 length;
+    u32 position;
+};
+
 struct tcp_connection {
     u32 generation;
     u32 family;
@@ -178,6 +189,13 @@ struct tcp_connection {
     u32 send_loan_count;
     u32 send_loan_pages;
     u32 receive_buffer_length;
+    struct tcp_receive_grant receive_grants[TCP_RECEIVE_GRANT_MAX];
+    u32 receive_grant_head;
+    u32 receive_grant_count;
+    u32 receive_grant_pages;
+    // Cumulative bytes landed in grants; callers snapshot it when
+    // queueing and poll for their slice.
+    u32 receive_grant_bytes;
     u32 timer_version;
     u32 peer_sack;
     u32 bbr_phase;
@@ -357,7 +375,7 @@ int tcp_connection_state(struct tcp_context *tcp, u64 id, u32 *state);
 int tcp_parent_listener(struct tcp_context *tcp, u64 id, u64 *listener_id);
 int tcp_connection_status(struct tcp_context *tcp, u64 id,
                           u32 *state, u32 *readable, u32 *writable,
-                          i32 *error, u32 *eof);
+                          i32 *error, u32 *eof, u32 *granted);
 int tcp_take_error(struct tcp_context *tcp, u64 id, i32 *error);
 int tcp_abort(struct tcp_context *tcp, u64 id, i32 error);
 void tcp_abort_all(struct tcp_context *tcp, i32 error);
@@ -366,6 +384,9 @@ int tcp_queue_send(struct tcp_context *tcp, u64 id,
 int tcp_queue_send_pages(struct tcp_context *tcp, u64 id,
                          struct kernel_object *pages, u32 offset,
                          u32 length);
+int tcp_queue_receive_pages(struct tcp_context *tcp, u64 id,
+                            struct kernel_object *pages, u32 offset,
+                            u32 length);
 int tcp_prepare_transmit(struct tcp_context *tcp, u64 id, u32 now,
                          struct tcp_transmit *transmit);
 int tcp_receive_data(struct tcp_context *tcp, u64 id,
