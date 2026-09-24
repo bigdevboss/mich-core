@@ -6,6 +6,7 @@ profile="${3:-default}"
 qemu_timeout=45
 if [ "$profile" = "smp" ] || [ "$profile" = "iommu" ]; then qemu_timeout=90; fi
 if [ "$profile" = "msi" ]; then qemu_timeout=300; fi
+if [ "$profile" = "dns" ]; then qemu_timeout=150; fi
 if [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ] ||
    [ "$profile" = "msi-recovery" ]; then
     qemu_timeout=360
@@ -18,6 +19,7 @@ passive_pid=""
 passive_expected=0
 active_result=""
 recovery_guestfwd=""
+dns_guestfwd=""
 # The firmware needs a machine with a working pflash pair, so every profile
 # runs on q35 now. Profiles that used to ask for it no longer add their own
 # -machine.
@@ -26,6 +28,11 @@ case "$profile" in
     msi|msi-restart|msi-circuit)
         want_nic_none=0
         set -- -netdev user,id=michnet,guestfwd=tcp:10.0.2.4:8080-cmd:/bin/cat,hostfwd=tcp:127.0.0.1:10080-10.0.2.15:8082 -device virtio-net-pci,netdev=michnet
+        ;;
+    dns)
+        want_nic_none=0
+        dns_guestfwd="$(mktemp)"
+        set -- -netdev user,id=michnet,guestfwd=tcp:10.0.2.4:53-cmd:$dns_guestfwd -device virtio-net-pci,netdev=michnet
         ;;
     msi-recovery)
         want_nic_none=0
@@ -158,6 +165,82 @@ PYHELPER
     export MICH_RECOVERY_ACTIVE_RESULT="$active_result"
     export MICH_RECOVERY_LOG="$log"
 fi
+if [ "$profile" = "dns" ]; then
+    cat >"$dns_guestfwd" <<'PYHELPER'
+#!/usr/bin/env python3
+# One DNS exchange over the QEMU guest forward. QEMU runs this per accepted
+# connection with the socket on stdin/stdout, so it answers once and exits.
+# Only TCP reaches here: guestfwd has no UDP form, which is exactly what makes
+# the guest burn its UDP retries before falling back.
+import os
+import sys
+
+ANSWERS = {b"probe.mich": bytes((192, 0, 2, 77))}
+
+
+def read_exactly(count):
+    data = b""
+    while len(data) < count:
+        chunk = os.read(0, count - len(data))
+        if not chunk:
+            return None
+        data += chunk
+    return data
+
+
+def parse_question(message):
+    if len(message) < 12:
+        return None, None
+    offset = 12
+    labels = []
+    while offset < len(message):
+        length = message[offset]
+        offset += 1
+        if not length:
+            break
+        if length > 63 or offset + length > len(message):
+            return None, None
+        labels.append(message[offset:offset + length])
+        offset += length
+    if offset + 4 > len(message):
+        return None, None
+    return b".".join(labels), offset + 4
+
+
+prefix = read_exactly(2)
+if not prefix:
+    sys.exit(0)
+query = read_exactly((prefix[0] << 8) | prefix[1])
+if not query:
+    sys.exit(0)
+name, question_end = parse_question(query)
+if name is None:
+    sys.exit(0)
+
+header = query[:2]
+address = ANSWERS.get(name.lower())
+if address is None:
+    # NXDOMAIN: the guest has to treat this as a failure, not as an answer.
+    reply = header + b"\x81\x83" + b"\x00\x01\x00\x00\x00\x00\x00\x00"
+    reply += query[12:question_end]
+else:
+    reply = header + b"\x81\x80" + b"\x00\x01\x00\x01\x00\x00\x00\x00"
+    reply += query[12:question_end]
+    # Name compression pointer back to the question, then A/IN, TTL 60.
+    reply += b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04" + address
+
+framed = bytes(((len(reply) >> 8) & 0xFF, len(reply) & 0xFF)) + reply
+view = memoryview(framed)
+while view:
+    written = os.write(1, view)
+    view = view[written:]
+# Exiting here would tear the forward down before the guest has drained the
+# reply, so hold the connection until the guest closes its side.
+while os.read(0, 4096):
+    pass
+PYHELPER
+    chmod 700 "$dns_guestfwd"
+fi
 blk_img="$(mktemp)"
 dd if=/dev/zero of="$blk_img" bs=512 count=256 2>/dev/null
 nvme_img="$(mktemp)"
@@ -167,7 +250,7 @@ mich_uefi_firmware
 if [ "$want_nic_none" -eq 1 ]; then
     set -- "$@" -nic none
 fi
-trap 'if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; rm -f "$log" "$passive_result" "$active_result" "$recovery_guestfwd" "$blk_img" "$nvme_img" "$uefi_vars"' EXIT
+trap 'if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; rm -f "$log" "$passive_result" "$active_result" "$recovery_guestfwd" "$dns_guestfwd" "$blk_img" "$nvme_img" "$uefi_vars"' EXIT
 set +e
 timeout "${qemu_timeout}s" qemu-system-x86_64 \
     -machine q35 \
@@ -508,7 +591,7 @@ done
 # markers can never appear there. Asking for them made those profiles fail on
 # something the image was never built to do.
 case "$profile" in
-    hardware|msi|msi-restart|msi-circuit|msi-recovery)
+    hardware|msi|msi-restart|msi-circuit|msi-recovery|dns)
         ;;
     *)
         for marker in \
@@ -579,6 +662,17 @@ if [ "$profile" = "smp" ]; then
         "Mich x86_64: SMP AP live syscall pass" \
         "Mich x86_64: SMP AP scheduler pass" \
         "Mich x86_64: SMP dual-core userspace pass"
+    do
+        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+    done
+fi
+if [ "$profile" = "dns" ]; then
+    for marker in \
+        "Mich dnsprobe: resolver ready" \
+        "Mich dnsprobe: TCP fallback and framing pass" \
+        "Mich dnsprobe: cached answer pass" \
+        "Mich dnsprobe: refused name rejected pass" \
+        "Mich dnsprobe: transport pass"
     do
         grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
     done

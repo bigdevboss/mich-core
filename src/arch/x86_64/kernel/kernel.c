@@ -1605,6 +1605,17 @@ static int devfs64_init(void) {
     return 0;
 }
 
+#ifdef MICH_TEST_BUILD
+static int module_name_is(const struct bd_module *module, const char *name) {
+    if (module->cmdline < 0x1000 || module->cmdline >= 0x100000) return 0;
+    const char *text = (const char *)(uptr_t)module->cmdline;
+    u32 index = 0;
+    for (; index < 32 && name[index]; index++)
+        if (text[index] != name[index]) return 0;
+    return !text[index];
+}
+#endif
+
 static int bootfs64_init(const struct bd_module *modules, u32 count) {
     if (!modules || !count || count > VFS_BOOTFS_ENTRY_MAX) return -1;
     struct kernel_object *root = vfs_root();
@@ -1899,6 +1910,18 @@ void kernel64_main(u32 magic, struct bd_info *info) {
 #endif
     if (manager64_set_pci_inventory())
         KERNEL_PANIC("driver PCI inventory");
+#ifdef MICH_TEST_BUILD
+    // The dns profile carries a probe that drives the resolver against a
+    // host-side responder. It is an ordinary process, not a driver capsule: it
+    // owns no interface and reaches the network purely through routed sockets.
+    for (u32 index = 0; index < info->mods_count; index++) {
+        if (!module_name_is(&modules[index], "dnsprobe")) continue;
+        if (spawn64_image(index, 0, spawn_image_capabilities[index],
+                          "dnsprobe", 0) < 0)
+            KERNEL_PANIC("dnsprobe spawn");
+        break;
+    }
+#endif
 #ifdef MICH_TEST_BUILD
     if (!(init_module->flags & BOOT_MODULE_UNIT_TEST) &&
         driver_live_recovery_arm())
