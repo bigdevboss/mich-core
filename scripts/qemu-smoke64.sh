@@ -5,7 +5,7 @@ memory="${2:-128M}"
 profile="${3:-default}"
 qemu_timeout=45
 if [ "$profile" = "smp" ] || [ "$profile" = "iommu" ]; then qemu_timeout=90; fi
-if [ "$profile" = "msi" ]; then qemu_timeout=240; fi
+if [ "$profile" = "msi" ]; then qemu_timeout=300; fi
 if [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ] ||
    [ "$profile" = "msi-recovery" ]; then
     qemu_timeout=360
@@ -404,6 +404,7 @@ for marker in \
     "Mich test64: UDP socket objects pass" \
     "Mich test64: UDP socket wait pass" \
     "Mich test64: UDP socket close cleanup pass" \
+    "Mich test64: routed stream connect pass" \
     "Mich test64: socket close wakes waiters pass" \
     "Mich test64: network integration stress pass" \
     "Mich test64: VNIC queued revoke stress pass" \

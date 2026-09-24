@@ -16,6 +16,8 @@ int tests64_run_network(const struct test64_env *env) {
     if (test_report_record(TEST_ID_LOOPBACK, test_loopback())) return -1;
     if (test_report_record(TEST_ID_UDP, test_udp())) return -1;
     if (test_report_record(TEST_ID_SOCKET, test_route_socket(env))) return -1;
+    if (test_report_record(TEST_ID_STREAM_ROUTE,
+                           test_stream_route(env))) return -1;
     if (test_report_record(TEST_ID_NET_REVOKE, test_network_revoke(env))) return -1;
     if (test_report_record(TEST_ID_NET_INTERFACE, test_net_interface(env))) return -1;
     if (test_report_record(TEST_ID_SOCKET_SEND_FILE, test_socket_send_file(env))) return -1;
@@ -138,6 +140,7 @@ int tests64_run_network(const struct test64_env *env) {
     serial64_write("Mich test64: UDP socket objects pass\n");
     serial64_write("Mich test64: UDP socket wait pass\n");
     serial64_write("Mich test64: UDP socket close cleanup pass\n");
+    serial64_write("Mich test64: routed stream connect pass\n");
     serial64_write("Mich test64: socket close wakes waiters pass\n");
     serial64_write("Mich test64: network integration stress pass\n");
     serial64_write("Mich test64: VNIC queued revoke stress pass\n");

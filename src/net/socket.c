@@ -287,9 +287,20 @@ int socket_stream_connect(struct kernel_object *object,
                           struct kernel_object *interface,
                           u32 destination, u16 port) {
     struct socket_state *state = state_for(object);
-    if (!state || state->family != 14 || state->bound || !interface ||
-        !destination || !port || object_retain(interface))
+    if (!state || state->family != 14 || state->bound || !destination || !port)
         return -1;
+    if (!interface) {
+        const struct route_entry *route = route_lookup(socket_routes,
+                                                       destination);
+        if (!route) return -1;
+        // net_interface_lookup rejects a revoked or removed interface and
+        // checks the generation, so a route left over from an interface that
+        // has already been torn down cannot resurrect it.
+        interface = net_interface_lookup(route->interface_id,
+                                         route->interface_generation);
+        if (!interface) return -1;
+    }
+    if (object_retain(interface)) return -1;
     struct tcp_context *tcp = 0;
     u64 connection = 0;
     if (net_interface_tcp_connect(interface, destination, port,

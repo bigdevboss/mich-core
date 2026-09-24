@@ -1616,19 +1616,27 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
     }
     if (number == 145) {
         struct task *task = &task_pool[current_task_slot];
-        struct driver_domain *domain = driver_domain_for_pid(task->id);
         struct kernel_object *socket = handle_get(
             task, (u32)arg0, KRIGHT_CONTROL, KOBJECT_SOCKET);
         struct socket_stream_connect_request request;
-        if (!socket || !domain || vm64_copy_from(
+        if (!socket || vm64_copy_from(
                 task->page_dir, &request, arg1, sizeof(request)) ||
             request.reserved)
             return (u64)-1;
-        struct kernel_object *interface = handle_get(
-            task, request.interface_handle, KRIGHT_CONTROL,
-            KOBJECT_NET_INTERFACE);
-        if (!interface || !net_interface_pool(interface, domain))
-            return (u64)-1;
+        // A driver capsule names the interface it owns and has to prove the
+        // packet pool belongs to its domain. An ordinary process passes zero
+        // and the route table picks the interface, the same way datagram
+        // sockets have always worked.
+        struct kernel_object *interface = 0;
+        if (request.interface_handle) {
+            struct driver_domain *domain = driver_domain_for_pid(task->id);
+            interface = handle_get(
+                task, request.interface_handle, KRIGHT_CONTROL,
+                KOBJECT_NET_INTERFACE);
+            if (!domain || !interface ||
+                !net_interface_pool(interface, domain))
+                return (u64)-1;
+        }
         return (u64)(i64)socket_stream_connect(
             socket, interface, request.destination_address,
             request.destination_port);
