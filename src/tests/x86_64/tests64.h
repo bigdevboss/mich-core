@@ -55,6 +55,7 @@ int test_tcp_pages64(void);
 int test_icmp(void);
 int test_loopback(void);
 int test_udp(void);
+int test_dns_message(void);
 int test_route_socket(const struct test64_env *env);
 int test_network_revoke(const struct test64_env *env);
 int test_net_interface(const struct test64_env *env);

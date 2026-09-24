@@ -22,8 +22,18 @@ int tests64_run_network(const struct test64_env *env) {
     if (test_report_record(TEST_ID_SOCKET_RECEIVE_FILE, test_socket_receive_file(env))) return -1;
     if (test_report_record(TEST_ID_SOCKET_SEND_DISK_FILE,
                            test_socket_send_disk_file(env))) return -1;
+    if (test_report_record(TEST_ID_DNS_MESSAGE, test_dns_message())) return -1;
     if (test_report_record(TEST_ID_NET_FUZZ, test_network_fuzz())) return -1;
     if (test_report_record(TEST_ID_NET_BENCH, test_net_bench())) return -1;
+    serial64_write("Mich test64: DNS query encoding pass\n");
+    serial64_write("Mich test64: DNS label and name bounds pass\n");
+    serial64_write("Mich test64: DNS A and AAAA records pass\n");
+    serial64_write("Mich test64: DNS CNAME chain pass\n");
+    serial64_write("Mich test64: DNS compression loop rejected\n");
+    serial64_write("Mich test64: DNS forward pointer rejected\n");
+    serial64_write("Mich test64: DNS transaction id mismatch rejected\n");
+    serial64_write("Mich test64: DNS off-question records ignored\n");
+    serial64_write("Mich test64: DNS truncation triggers TCP retry\n");
     serial64_write("Mich test64: packet page pools pass\n");
     serial64_write("Mich test64: virtual benchmark NIC pass\n");
     serial64_write("Mich test64: malformed packet descriptor rejected\n");
