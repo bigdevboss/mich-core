@@ -66,6 +66,7 @@
 #define TEST_ID_ENTROPY 80
 #define TEST_ID_STREAM_ROUTE 81
 #define TEST_ID_RTC 82
+#define TEST_ID_SHA256 83
 
 struct test_result64 {
     u32 id;
