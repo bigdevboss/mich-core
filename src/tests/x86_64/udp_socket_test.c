@@ -488,6 +488,84 @@ int test_route_socket(const struct test64_env *env) {
 }
 
 
+int test_stream_route(const struct test64_env *env) {
+    u32 free_pages = pmm_free_pages();
+    u32 objects = object_active_count();
+    u32 sockets = socket_active_count();
+    u32 interfaces = net_interface_active_count();
+    u32 pools = packet_pool_active_count();
+    u32 vnics = vnic_active_count();
+    u32 rings = ring_active_count();
+    // socket_stream_connect reads the route table when no interface is named,
+    // so it has to outlive this frame. The other fixtures here leave
+    // socket_routes aimed at a stack table that is already gone.
+    static struct route_table routes;
+    route_init(&routes);
+    static struct ethernet_port port;
+    static struct ipv4_context ipv4;
+    static struct udp_context udp;
+    const u8 host_mac[6] = {0x02, 0x4D, 0x49, 0x43, 0x48, 0x70};
+    int valid = !net_interface_init(&routes) &&
+        !ethernet_port_init(&port, host_mac) &&
+        !ipv4_init(&ipv4, &port, 0x7F000001u, 0xFF000000u, 0) &&
+        !udp_init(&udp, &ipv4) && !socket_init(&udp, &routes);
+    struct driver_domain owner;
+    u8 *owner_bytes = (u8 *)&owner;
+    for (usize_t index = 0; index < sizeof(owner); index++)
+        owner_bytes[index] = 0;
+    owner.id = 79;
+    owner.pid = env->owner->id;
+    owner.state = DRIVER_DOMAIN_RUNNING;
+    owner.active = 1;
+    struct kernel_object *vnic = vnic_create(32, 16);
+    const u8 mac[6] = {0x02, 0x4D, 0x49, 0x43, 0x48, 0x71};
+    struct kernel_object *interface = vnic ? net_interface_create(
+        &owner, vnic_pool(vnic), vnic_rx_ring(vnic), vnic_tx_ring(vnic),
+        mac, 1500, "route0") : 0;
+    valid = valid && vnic && interface &&
+        !net_interface_register(interface) &&
+        !net_interface_set_ipv4(interface, &owner, 0x0A000002u, 0xFFFFFF00u) &&
+        !net_interface_set_link(interface, &owner, 1);
+    // Only a connected route, no default: an address outside 10.0.0.0/24 then
+    // has nothing to match, which is what the rejection case below needs.
+    struct net_interface *info = interface ? net_interface_get(interface) : 0;
+    valid = valid && info &&
+        !route_add_generation(&routes, 0x0A000000u, 0xFFFFFF00u, 0,
+                              info->interface_id, info->generation, 10);
+    struct kernel_object *routed = socket_create_stream();
+    valid = valid && routed &&
+        !socket_stream_connect(routed, 0, 0x0A000003u, 8100);
+    struct kernel_object *unreachable_socket = socket_create_stream();
+    valid = valid && unreachable_socket &&
+        socket_stream_connect(unreachable_socket, 0, 0xC0A80505u, 8100);
+    struct kernel_object *rebind = socket_create_stream();
+    valid = valid && rebind &&
+        socket_stream_connect(rebind, 0, 0x0A000003u, 0) &&
+        !socket_stream_connect(rebind, 0, 0x0A000003u, 8101) &&
+        socket_stream_connect(rebind, 0, 0x0A000004u, 8102);
+    if (routed) object_release(routed);
+    if (unreachable_socket) object_release(unreachable_socket);
+    if (rebind) object_release(rebind);
+    // The route survives revoke, so this proves the generation carried in the
+    // route entry is what stops a torn-down interface from being selected.
+    if (interface) valid = valid && !net_interface_revoke(interface);
+    struct kernel_object *stale = socket_create_stream();
+    valid = valid && stale &&
+        socket_stream_connect(stale, 0, 0x0A000003u, 8103);
+    if (stale) object_release(stale);
+    if (interface) valid = valid && !net_interface_remove(interface);
+    if (interface) object_release(interface);
+    if (vnic) object_release(vnic);
+    valid = valid && pmm_free_pages() == free_pages &&
+        object_active_count() == objects &&
+        socket_active_count() == sockets &&
+        net_interface_active_count() == interfaces &&
+        packet_pool_active_count() == pools &&
+        vnic_active_count() == vnics && ring_active_count() == rings;
+    return valid ? 0 : -1;
+}
+
+
 // Driver stand-in: the two test interfaces are cross-wired, frames
 // transmitted by one are received by the other, which is how the real
 // driver capsule links a VNIC pair.
