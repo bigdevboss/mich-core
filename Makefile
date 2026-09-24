@@ -45,6 +45,7 @@ DISK64 = $(BIN64)/disk.img
 DISK64_TEST = $(BIN64)/disk-test.img
 DISK64_UNIT = $(BIN64)/disk-unit.img
 DISK64_HARDWARE = $(BIN64)/disk-hardware.img
+DISK64_DNS = $(BIN64)/disk-dns.img
 DISK64_HARDWARE_RESTART = $(BIN64)/disk-hardware-restart.img
 DISK64_HARDWARE_CIRCUIT = $(BIN64)/disk-hardware-circuit.img
 DISK64_HARDWARE_RECOVERY = $(BIN64)/disk-hardware-recovery.img
@@ -63,9 +64,11 @@ POSIXDEMO64_OBJS = $(USER64_OBJ_DIR)/crt0_posix.o $(USER64_OBJ_DIR)/syscall.o $(
 VIRTIO_NET64_OBJ = $(USER64_OBJ_DIR)/virtio_net.o
 VIRTIO_NET_SAFE64_OBJ = $(USER64_OBJ_DIR)/virtio_net_safe.o
 VIRTIO_NET64_PROBES_OBJ = $(USER64_OBJ_DIR)/virtio_net_probes.o
+DNSPROBE64_OBJ = $(USER64_OBJ_DIR)/dnsprobe.o
 DNS64_OBJ = $(USER64_OBJ_DIR)/dns.o
 DNS_MESSAGE64_OBJ = $(USER64_OBJ_DIR)/dns_message.o
 VIRTIO_NET64_ELF = $(USER64_DIR)/virtio-net.elf
+DNSPROBE64_ELF = $(USER64_DIR)/dnsprobe.elf
 VIRTIO_NET64_SELECTOR_CHECK = $(USER64_DIR)/virtio-net-recovery-rip.ok
 VIRTIO_NET_SAFE64_ELF = $(USER64_DIR)/virtio-net-safe.elf
 OBJS64 = $(OBJ64)/boot.o $(OBJ64)/kernel.o $(OBJ64)/task_core.o $(OBJ64)/posix_fd_core.o $(OBJ64)/posix_profile_core.o $(OBJ64)/posix_vfs_core.o $(OBJ64)/posix_process_core.o $(OBJ64)/scheduler_core.o $(OBJ64)/service_core.o $(OBJ64)/object_core.o $(OBJ64)/resource_core.o $(OBJ64)/iommu_core.o $(OBJ64)/driver_core.o $(OBJ64)/driver_supervisor_core.o $(OBJ64)/driver_manager_core.o $(OBJ64)/ring_core.o $(OBJ64)/completion_core.o $(OBJ64)/timer_object_core.o $(OBJ64)/net_buffer_core.o $(OBJ64)/vnic_core.o $(OBJ64)/vnic_benchmark.o $(OBJ64)/net_interface_core.o $(OBJ64)/ethernet_core.o $(OBJ64)/arp_core.o $(OBJ64)/ipv4_core.o $(OBJ64)/ipv6_core.o $(OBJ64)/icmp_core.o $(OBJ64)/icmpv6_core.o $(OBJ64)/loopback_core.o $(OBJ64)/udp_core.o $(OBJ64)/udpv6_core.o $(OBJ64)/tcp_core.o $(OBJ64)/tcp_cc_core.o $(OBJ64)/pmtu_core.o $(OBJ64)/route_core.o $(OBJ64)/socket_core.o $(OBJ64)/dns_message_core.o $(OBJ64)/vfs_core.o $(OBJ64)/blockfs_core.o $(OBJ64)/block_core.o $(OBJ64)/cache_core.o $(OBJ64)/firmware_core.o $(OBJ64)/event_core.o $(OBJ64)/endpoint_core.o $(OBJ64)/bridge_core.o $(OBJ64)/pmm_core.o $(OBJ64)/mem_core.o $(OBJ64)/entropy_core.o $(OBJ64)/ipc64.o $(OBJ64)/acpi64.o $(OBJ64)/vtd64.o $(OBJ64)/amd_iommu64.o $(OBJ64)/pci64.o $(OBJ64)/virtio_pci.o $(OBJ64)/virtio_blk.o $(OBJ64)/nvme.o $(OBJ64)/apic64.o $(OBJ64)/ioapic64.o $(OBJ64)/smp64.o $(OBJ64)/smp_tramp.o $(OBJ64)/vector64.o $(OBJ64)/msi64.o $(OBJ64)/msix64.o $(OBJ64)/panic64.o $(OBJ64)/gdt_asm.o $(OBJ64)/gdt.o $(OBJ64)/exceptions.o $(OBJ64)/interrupt.o $(OBJ64)/idt.o $(OBJ64)/vm.o $(OBJ64)/elf64.o $(OBJ64)/platform.o $(OBJ64)/serial.o $(OBJ64)/syscall_dispatch.o $(OBJ64)/syscall.o
@@ -421,6 +424,12 @@ $(DNS_MESSAGE64_OBJ): src/net/dns_message.c src/net/dns_message.h | $(USER64_OBJ
 $(DNS64_OBJ): src/user64/lib/dns.c src/user64/include/mich/dns.h src/net/dns_message.h src/user64/include/mich/socket.h src/user64/include/mich/syscall.h src/user64/include/mich/timer.h src/user64/include/mich/event.h | $(USER64_OBJ_DIR)
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
+$(DNSPROBE64_OBJ): src/user64/dnsprobe/main.c src/user64/include/mich/dns.h src/user64/include/mich/syscall.h src/user64/include/mich/timer.h src/net/dns_message.h | $(USER64_OBJ_DIR)
+	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
+
+$(DNSPROBE64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(DNSPROBE64_OBJ) $(DNS64_OBJ) $(DNS_MESSAGE64_OBJ) src/user64/linker.ld | $(USER64_DIR)
+	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(DNSPROBE64_OBJ) $(DNS64_OBJ) $(DNS_MESSAGE64_OBJ)
+
 $(VIRTIO_NET64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_NET64_OBJ) $(VIRTIO_NET64_PROBES_OBJ) $(DNS64_OBJ) $(DNS_MESSAGE64_OBJ) src/user64/linker.ld | $(USER64_DIR)
 	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_NET64_OBJ) $(VIRTIO_NET64_PROBES_OBJ) $(DNS64_OBJ) $(DNS_MESSAGE64_OBJ)
 
@@ -467,6 +476,10 @@ $(DISK64_HARDWARE): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEF
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
 		--efi $(UEFI64_EFI) $@ init64:0x400000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF)
 
+$(DISK64_DNS): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF) $(DNSPROBE64_ELF)
+	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
+		--efi $(UEFI64_EFI) $@ init64:0x400000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) dnsprobe:0=$(DNSPROBE64_ELF)
+
 $(DISK64_HARDWARE_RESTART): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
 		--efi $(UEFI64_EFI) $@ init64:0x600000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF)
@@ -503,6 +516,9 @@ test64-smp: $(DISK64_TEST)
 
 test64-hardware: $(DISK64_HARDWARE)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_HARDWARE) 128M hardware
+test64-dns: $(DISK64_DNS)
+	sh ./scripts/qemu-smoke64.sh $(DISK64_DNS) 256M dns
+
 
 test64-msi: $(DISK64_HARDWARE)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_HARDWARE) 256M msi
@@ -564,4 +580,4 @@ DEPFILES = $(OBJS64:.o=.d) $(OBJS64_TEST:.o=.d) $(PORTABLE64_OBJS:.o=.d) \
 clean:
 	rm -rf $(BIN_DIR)
 
-.PHONY: all run64 test64 test64-prod test64-unit test64-highmem test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-msi-restart-stability test64-msi-circuit-stability test64-msi-recovery-stability test64-pcie test64-panic release-check clean
+.PHONY: all run64 test64 test64-prod test64-unit test64-highmem test64-dns test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-msi-restart-stability test64-msi-circuit-stability test64-msi-recovery-stability test64-pcie test64-panic release-check clean
