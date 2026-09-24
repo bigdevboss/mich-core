@@ -271,7 +271,6 @@ for marker in \
     "Mich test64: VFS page-backed files pass" \
     "Mich test64: POSIX FD/OFD substrate pass" \
     "Mich test64: POSIX FD lifecycle cleanup pass" \
-    "Mich test64: POSIX profile cwd and authority pass" \
     "Mich test64: POSIX VFS authority and mode pass" \
     "Mich test64: POSIX process stack layout pass" \
     "Mich test64: block device objects pass" \
@@ -431,19 +430,6 @@ for marker in \
     "Mich x86_64: address spaces pass" \
     "Mich x86_64: FPU context pass" \
     "Mich x86_64: context switch pass" \
-    "Mich x86_64: POSIX userspace facade pass" \
-    "Mich x86_64: POSIX userspace process pass" \
-    "Mich x86_64: POSIX application alive" \
-    "Mich x86_64: POSIX application IO pass" \
-    "Mich x86_64: POSIX application cwd pass" \
-    "Mich x86_64: POSIX application errno pass" \
-    "Mich x86_64: POSIX application process pass" \
-    "Mich x86_64: POSIX libc string pass" \
-    "Mich x86_64: POSIX libc stdio pass" \
-    "Mich x86_64: POSIX libc heap pass" \
-    "Mich x86_64: POSIX libc file pass" \
-    "Mich x86_64: POSIX entropy pass" \
-    "Mich x86_64: POSIX static application pass" \
     "Mich x86_64: syscall/sysret pass" \
     "Mich x86_64: user exception contained" \
     "Mich x86_64: process lifecycle pass" \
@@ -517,6 +503,33 @@ for marker in \
 do
     grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
 done
+# The hardware and msi profiles spawn init without the POSIX modules, so these
+# markers can never appear there. Asking for them made those profiles fail on
+# something the image was never built to do.
+case "$profile" in
+    hardware|msi|msi-restart|msi-circuit|msi-recovery)
+        ;;
+    *)
+        for marker in \
+            "Mich test64: POSIX profile cwd and authority pass" \
+            "Mich x86_64: POSIX userspace facade pass" \
+            "Mich x86_64: POSIX userspace process pass" \
+            "Mich x86_64: POSIX application alive" \
+            "Mich x86_64: POSIX application IO pass" \
+            "Mich x86_64: POSIX application cwd pass" \
+            "Mich x86_64: POSIX application errno pass" \
+            "Mich x86_64: POSIX application process pass" \
+            "Mich x86_64: POSIX libc string pass" \
+            "Mich x86_64: POSIX libc stdio pass" \
+            "Mich x86_64: POSIX libc heap pass" \
+            "Mich x86_64: POSIX libc file pass" \
+            "Mich x86_64: POSIX entropy pass" \
+            "Mich x86_64: POSIX static application pass"
+        do
+            grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+        done
+        ;;
+esac
 live_primary="Mich test64: driver live primary bootstrap pass"
     live_fallback="Mich test64: driver live fallback bootstrap pass"
     live_isolation="Mich test64: driver live recovery isolation pass"

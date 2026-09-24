@@ -1,6 +1,7 @@
 #include <mich/syscall.h>
 #include <mich/service.h>
 #include <mich/capability.h>
+#include "bootinfo.h"
 #include <mich/ipc.h>
 #include <mich/event.h>
 #include <mich/bridge.h>
@@ -231,7 +232,7 @@ static int posix_application_test(void) {
     return 0;
 }
 
-int main(u64 role) {
+int main(u64 role, u64 module_flags) {
     int pid = mich_getpid();
     if (role == 0) {
         mich_write("Mich x86_64: idle task alive\n");
@@ -1393,13 +1394,18 @@ int main(u64 role) {
     mich_write("Mich x86_64: address spaces pass\n");
     mich_write("Mich x86_64: FPU context pass\n");
     mich_write("Mich x86_64: context switch pass\n");
-    if (posix_user_test()) stop();
-    mich_write("Mich x86_64: POSIX userspace facade pass\n");
-    if (posix_user_process_test()) stop();
-    mich_write("Mich x86_64: POSIX userspace process pass\n");
-    if (posix_application_test()) stop();
-    mich_write("Mich x86_64: POSIX static application pass\n");
-    if (posix_stress_test()) stop();
+    // The hardware, panic and msi profiles spawn init without the POSIX
+    // modules, so every call below would be denied and stop() would hang the
+    // guest until the runner times out with no diagnostic.
+    if (module_flags & BD_MODULE_POSIX_PROFILE) {
+        if (posix_user_test()) stop();
+        mich_write("Mich x86_64: POSIX userspace facade pass\n");
+        if (posix_user_process_test()) stop();
+        mich_write("Mich x86_64: POSIX userspace process pass\n");
+        if (posix_application_test()) stop();
+        mich_write("Mich x86_64: POSIX static application pass\n");
+        if (posix_stress_test()) stop();
+    }
     mich_syscall0(4);
     stop();
     return 0;

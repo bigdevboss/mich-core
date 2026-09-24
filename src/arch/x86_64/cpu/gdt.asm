@@ -22,15 +22,20 @@ gdt64_ltr:
     ltr ax
     ret
 
+; user64_enter(rip, rsp, argument, module_flags)
+; The entry stack pointer arrives in rsi but rsi also has to carry the second
+; argument into user mode, so it is parked in r13 before being reloaded.
 user64_enter:
     mov rax, rdi
     mov r12, rdx
+    mov r13, rsi
     mov rdi, rdx
+    mov rsi, rcx
     mov dx, 0x1B
     mov ds, dx
     mov es, dx
     push qword 0x1B
-    push rsi
+    push r13
     push qword 0x202
     push qword 0x23
     push rax

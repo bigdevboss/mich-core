@@ -117,7 +117,8 @@ static const struct driver_manager_recovery_config
 };
 
 extern void syscall64_entry(void);
-extern void user64_enter(u64 rip, u64 rsp, u64 argument);
+extern void user64_enter(u64 rip, u64 rsp, u64 argument,
+                         u64 module_flags);
 extern u8 _bss_end;
 
 struct interrupt_frame64 {
@@ -899,6 +900,10 @@ static int spawn64_image(u32 image_id, int parent_id, u32 capabilities,
         return -1;
     }
     context->rdi = argument;
+    // The init image runs the same test sequence in every profile, but only
+    // some profiles spawn it with the POSIX modules. Hand it the module flags
+    // so it can skip what this profile never started.
+    context->rsi = spawn_image_flags[image_id];
     context->rsp = stack_top;
     context->rip = entry;
     context->rflags = 0x202;
@@ -1763,6 +1768,7 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     test_env.reset = supervisor64_reset;
     test_env.revoke = supervisor64_revoke;
     test_env.terminate = supervisor64_terminate;
+    test_env.module_flags = spawn_image_flags[0];
     if (tests64_run(&test_env)) KERNEL_PANIC("independent kernel tests");
     if (tests64_run_network(&test_env)) KERNEL_PANIC("independent network tests");
     if ((spawn_image_flags[0] & BD_MODULE_POSIX_PROFILE) &&
@@ -1926,11 +1932,11 @@ void kernel64_main(u32 magic, struct bd_info *info) {
         vm64_activate(task_pool[live_slot].page_dir);
         smp64_gs_user();
         user64_enter(task_contexts[live_slot].rip, task_contexts[live_slot].rsp,
-                     task_contexts[live_slot].rdi);
+                     task_contexts[live_slot].rdi, task_contexts[live_slot].rsi);
     }
 #endif
     smp64_gs_user();
     user64_enter(task_contexts[1].rip, task_contexts[1].rsp,
-                 task_contexts[1].rdi);
+                 task_contexts[1].rdi, task_contexts[1].rsi);
     for (;;) __asm__ volatile("cli; hlt");
 }

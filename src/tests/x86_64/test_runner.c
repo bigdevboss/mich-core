@@ -1,4 +1,5 @@
 #include "tests64.h"
+#include "bootinfo.h"
 #include "test_report.h"
 #include "serial64.h"
 
@@ -29,10 +30,17 @@ int tests64_run(const struct test64_env *env) {
         return -1;
     serial64_write("Mich test64: POSIX FD/OFD substrate pass\n");
     serial64_write("Mich test64: POSIX FD lifecycle cleanup pass\n");
-    if (test_report_record(TEST_ID_POSIX_PROFILE,
-                           test_posix_profile64(env->owner, env->target)))
-        return -1;
-    serial64_write("Mich test64: POSIX profile cwd and authority pass\n");
+    // test_posix_profile64 asserts that the init module was already admitted
+    // to the POSIX profile at boot, which only holds when it was spawned with
+    // BD_MODULE_POSIX_PROFILE. The hardware and panic profiles start init
+    // without it, so running the test there fails on a condition that is not
+    // a defect.
+    if (env->module_flags & BD_MODULE_POSIX_PROFILE) {
+        if (test_report_record(TEST_ID_POSIX_PROFILE,
+                               test_posix_profile64(env->owner, env->target)))
+            return -1;
+        serial64_write("Mich test64: POSIX profile cwd and authority pass\n");
+    }
     if (test_report_record(TEST_ID_POSIX_VFS,
                            test_posix_vfs64(env->owner, env->target)))
         return -1;
