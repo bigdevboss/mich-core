@@ -158,8 +158,10 @@ static int exchange_udp(const unsigned char *query, unsigned int query_length,
             if (mich_socket_send_to((unsigned int)handle, &request)) break;
             unsigned int deadline = mich_ticks() + MICH_DNS_TIMEOUT_TICKS;
             while (mich_ticks() < deadline) {
-                if (mich_socket_receive_from((unsigned int)handle, &reply))
+                if (mich_socket_receive_from((unsigned int)handle, &reply)) {
+                    mich_yield();
                     continue;
+                }
                 if (reply.source_address != dns_server ||
                     reply.source_port != 53)
                     continue;
@@ -176,21 +178,41 @@ static int exchange_udp(const unsigned char *query, unsigned int query_length,
     return outcome;
 }
 
+// connect only queues the SYN. Sending before the handshake completes drops the
+// query into a socket that is still SYN_SENT, so the reply never comes and the
+// exchange dies on the receive timeout instead of reporting the real reason.
+static int wait_connected(unsigned int handle) {
+    unsigned int deadline = mich_ticks() + MICH_DNS_TCP_TIMEOUT_TICKS;
+    while (mich_ticks() < deadline) {
+        struct mich_socket_stream_state_result state;
+        state.readiness = 0;
+        if (mich_socket_stream_state(handle, &state)) return -1;
+        if (state.readiness & SOCKET_READY_ERROR) return -1;
+        if (state.readiness & SOCKET_READY_HANGUP) return -1;
+        if (state.readiness & SOCKET_READY_CONNECTED) return 0;
+        mich_yield();
+    }
+    return -1;
+}
+
 static int exchange_tcp(const unsigned char *query, unsigned int query_length,
                         const char *name, unsigned int type,
                         unsigned int transaction,
                         struct dns_result *result) {
-    if (!dns_interface) return -1;
     int handle = mich_socket_stream_create();
     if (handle <= 0) return -1;
     struct mich_socket_stream_connect_request connect;
+    // Zero means the kernel picks the interface from the route table, which is
+    // the only option for a process that does not own one. A driver capsule
+    // passes the handle it owns.
     connect.interface_handle = dns_interface;
     connect.destination_address = dns_server;
     connect.destination_port = 53;
     connect.reserved = 0;
     int outcome = -1;
     static unsigned char framed[DNS_TCP_MESSAGE_MAX];
-    if (!mich_socket_stream_connect((unsigned int)handle, &connect)) {
+    if (!mich_socket_stream_connect((unsigned int)handle, &connect) &&
+        !wait_connected((unsigned int)handle)) {
         struct mich_socket_stream_data data;
         // A DNS message over TCP carries a two-byte length prefix, so the
         // prefix has to be validated before any body byte is trusted.
@@ -202,12 +224,31 @@ static int exchange_tcp(const unsigned char *query, unsigned int query_length,
         if (!mich_socket_stream_send((unsigned int)handle, &data)) {
             unsigned int total = 0;
             unsigned int expected = 0;
-            unsigned int deadline = mich_ticks() + MICH_DNS_TIMEOUT_TICKS;
+            unsigned int deadline =
+                mich_ticks() + MICH_DNS_TCP_TIMEOUT_TICKS;
             while (mich_ticks() < deadline) {
+                struct mich_socket_stream_state_result state;
+                state.readiness = 0;
+                state.eof = 0;
+                if (mich_socket_stream_state((unsigned int)handle, &state))
+                    break;
+                if (state.readiness & SOCKET_READY_ERROR) break;
+                // Frames arrive through a separate driver process, so every
+                // turn has to yield. Reading before the socket reports data
+                // just spins and starves the task that would deliver it.
+                if (!(state.readiness & SOCKET_READY_READABLE)) {
+                    if (state.eof) break;
+                    mich_yield();
+                    continue;
+                }
                 struct mich_socket_stream_data chunk;
                 chunk.length = 0;
-                if (mich_socket_stream_receive((unsigned int)handle, &chunk))
+                chunk.reserved = 0;
+                if (mich_socket_stream_receive((unsigned int)handle, &chunk) ||
+                    !chunk.length) {
+                    mich_yield();
                     continue;
+                }
                 for (unsigned int index = 0;
                      index < chunk.length && total < sizeof(framed); index++)
                     framed[total++] = chunk.data[index];
@@ -244,7 +285,11 @@ int mich_dns_resolve(const char *name, unsigned int type,
     unsigned int truncated = 0;
     int outcome = exchange_udp(query, query_length, name, type, transaction,
                                &truncated, result);
-    if (truncated)
+    // Truncation is not the only reason to retry over TCP. A UDP exchange that
+    // never got an answer, because the datagram was lost or the path blocks
+    // port 53 over UDP, has to fall back too, otherwise the resolver gives up
+    // while a working transport is still available.
+    if (outcome || truncated)
         outcome = exchange_tcp(query, query_length, name, type, transaction,
                                result);
     if (outcome) return -1;
