@@ -361,6 +361,8 @@ for marker in \
     "Mich test64: block request generation pass" \
     "Mich test64: block bounds and revoke pass" \
     "Mich test64: ChaCha20 DRBG pass" \
+    "Mich test64: RTC civil date conversion pass" \
+    "Mich x86_64: wall clock anchored" \
     "Mich test64: blockfs format and mount pass" \
     "Mich test64: blockfs file io pass" \
     "Mich test64: blockfs busy unmount lifetime pass" \

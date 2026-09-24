@@ -18,6 +18,7 @@
 #include "object.h"
 #include "resource.h"
 #include "acpi64.h"
+#include "rtc64.h"
 #include "pci64.h"
 #include "virtio_pci.h"
 #include "virtio_abi.h"
@@ -2144,6 +2145,11 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         u32 handle = handle_open(task, object, rights);
         object_release(object);
         return handle ? handle : (u64)-1;
+    }
+    if (number == 214) {
+        // UTC only. The CMOS clock carries no zone and the callers that need
+        // this, certificate date checks first of all, work in UTC anyway.
+        return rtc64_wall_clock();
     }
     if (number == 213) {
         struct task *task = &task_pool[current_task_slot];

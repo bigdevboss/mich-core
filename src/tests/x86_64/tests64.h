@@ -35,6 +35,7 @@ int test_posix_process64(void);
 int test_block64(void);
 int test_cache64(void);
 int test_entropy64(void);
+int test_rtc64(void);
 int test_blockfs64(void);
 int test_blockfs_pages64(void);
 int test_virtio_blk64(void);

@@ -24,6 +24,7 @@
 #include "resource.h"
 #include "iommu.h"
 #include "acpi64.h"
+#include "rtc64.h"
 #include "vtd64.h"
 #include "amd_iommu64.h"
 #include "pci64.h"
@@ -1748,8 +1749,12 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     virtio_pci_init();
     ipc64_init();
     if (acpi64_init()) KERNEL_PANIC("ACPI discovery");
+    // After ACPI because the century register index lives in the FADT, and
+    // before anything that may want a wall clock.
+    if (rtc64_init()) KERNEL_PANIC("CMOS clock");
     if (platform_resource_init()) KERNEL_PANIC("platform resources");
     serial64_write("Mich x86_64: ACPI tables pass\n");
+    serial64_write("Mich x86_64: wall clock anchored\n");
     serial64_write("Mich x86_64: platform MMIO objects pass\n");
     serial64_write("Mich x86_64: PML4 address space alive\n");
     task_pool_count = 0;

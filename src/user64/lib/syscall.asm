@@ -174,6 +174,7 @@ global mich_block_collect
 global mich_block_revoke
 global mich_block_service
 global mich_virtio_blk_open
+global mich_wall_clock
 global mich_ticks
 global mich_pci_config_read8
 global mich_pci_config_read16
@@ -352,6 +353,7 @@ global mich_pci_set_command
 %define SYS_NET_INTERFACE_DRIVER_RECEIVE_BATCH 171
 %define SYS_NET_INTERFACE_DRIVER_DEQUEUE_TX_BATCH 172
 %define SYS_NET_INTERFACE_DRIVER_COMPLETE_TX_BATCH 173
+%define SYS_WALL_CLOCK 214
 %define SYS_TICKS 174
 %define SYS_PCI_CONFIG_READ8 175
 %define SYS_PCI_CONFIG_READ16 176
@@ -1250,6 +1252,11 @@ mich_file_map:
 
 mich_ticks:
     mov eax, SYS_TICKS
+    syscall
+    ret
+
+mich_wall_clock:
+    mov eax, SYS_WALL_CLOCK
     syscall
     ret
 

@@ -65,6 +65,7 @@
 #define TEST_ID_SMP_SCHED 79
 #define TEST_ID_ENTROPY 80
 #define TEST_ID_STREAM_ROUTE 81
+#define TEST_ID_RTC 82
 
 struct test_result64 {
     u32 id;
