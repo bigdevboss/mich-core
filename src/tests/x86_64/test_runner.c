@@ -60,6 +60,8 @@ int tests64_run(const struct test64_env *env) {
     serial64_write("Mich test64: ChaCha20 DRBG pass\n");
     if (test_report_record(TEST_ID_RTC, test_rtc64())) return -1;
     serial64_write("Mich test64: RTC civil date conversion pass\n");
+    if (test_report_record(TEST_ID_SHA256, test_sha256_64())) return -1;
+    serial64_write("Mich test64: SHA-256, HMAC and HKDF pass\n");
     if (test_report_record(TEST_ID_BLOCKFS, test_blockfs64())) return -1;
     serial64_write("Mich test64: blockfs format and mount pass\n");
     serial64_write("Mich test64: blockfs file io pass\n");
