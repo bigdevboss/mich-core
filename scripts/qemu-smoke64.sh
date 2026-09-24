@@ -10,47 +10,40 @@ if [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ] ||
    [ "$profile" = "msi-recovery" ]; then
     qemu_timeout=360
 fi
-expanded_image=""
+# OVMF spends a few seconds enumerating devices and probing the boot order
+# before it hands over, which the old BIOS path did not.
+qemu_timeout=$((qemu_timeout + 25))
 passive_result=""
 passive_pid=""
 passive_expected=0
 active_result=""
 recovery_guestfwd=""
+# The firmware needs a machine with a working pflash pair, so every profile
+# runs on q35 now. Profiles that used to ask for it no longer add their own
+# -machine.
+want_nic_none=1
 case "$profile" in
     msi|msi-restart|msi-circuit)
+        want_nic_none=0
         set -- -netdev user,id=michnet,guestfwd=tcp:10.0.2.4:8080-cmd:/bin/cat,hostfwd=tcp:127.0.0.1:10080-10.0.2.15:8082 -device virtio-net-pci,netdev=michnet
         ;;
     msi-recovery)
+        want_nic_none=0
         active_result="$(mktemp)"
         recovery_guestfwd="$(mktemp)"
         set -- -netdev user,id=michnet,guestfwd=tcp:10.0.2.4:8080-cmd:$recovery_guestfwd,hostfwd=tcp:127.0.0.1:10080-10.0.2.15:8082 -device virtio-net-pci,netdev=michnet
         ;;
     pcie)
-        set -- -machine q35
-        expanded_image="$(mktemp)"
-        cp "$image" "$expanded_image"
-        truncate -s 16M "$expanded_image"
-        image="$expanded_image"
+        set --
         ;;
     iommu)
-        set -- -machine q35 -device intel-iommu,intremap=off -device edu
-        expanded_image="$(mktemp)"
-        cp "$image" "$expanded_image"
-        truncate -s 16M "$expanded_image"
-        image="$expanded_image"
+        set -- -device intel-iommu,intremap=off -device edu
         ;;
     amd-iommu)
-        set -- -machine q35 -device amd-iommu,intremap=off
-        expanded_image="$(mktemp)"
-        cp "$image" "$expanded_image"
-        truncate -s 16M "$expanded_image"
-        image="$expanded_image"
+        set -- -device amd-iommu,intremap=off
         ;;
     smp)
         set -- -smp 2
-        ;;
-    uefi)
-        set --
         ;;
     *)
         set --
@@ -166,50 +159,33 @@ PYHELPER
     export MICH_RECOVERY_LOG="$log"
 fi
 blk_img="$(mktemp)"
-uefi_vars=""
 dd if=/dev/zero of="$blk_img" bs=512 count=256 2>/dev/null
 nvme_img="$(mktemp)"
 dd if=/dev/zero of="$nvme_img" bs=1M count=16 2>/dev/null
-if [ "$profile" = "uefi" ]; then
-    uefi_vars="$(mktemp)"
-    cp /usr/share/OVMF/OVMF_VARS_4M.fd "$uefi_vars"
+. "$(dirname "$0")/uefi-firmware.sh"
+mich_uefi_firmware
+if [ "$want_nic_none" -eq 1 ]; then
+    set -- "$@" -nic none
 fi
-trap 'if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; rm -f "$log" "$expanded_image" "$passive_result" "$active_result" "$recovery_guestfwd" "$blk_img" "$nvme_img" "$uefi_vars"' EXIT
+trap 'if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; rm -f "$log" "$passive_result" "$active_result" "$recovery_guestfwd" "$blk_img" "$nvme_img" "$uefi_vars"' EXIT
 set +e
-if [ "$profile" = "uefi" ]; then
-    timeout 90s qemu-system-x86_64 \
-        -machine q35 \
-        -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-        -drive if=pflash,format=raw,file="$uefi_vars" \
-        -drive file="$image",format=raw,if=none,id=esdisk \
-        -device ide-hd,drive=esdisk,bootindex=1 \
-        -drive file="$blk_img",format=raw,if=none,id=michblk \
-        -device virtio-blk-pci,drive=michblk,disable-legacy=on \
-        -drive file="$nvme_img",format=raw,if=none,id=michnvme \
-        -device nvme,drive=michnvme,serial=michx0 \
-        -m "$memory" \
-        -serial stdio \
-        -vga std \
-        -display none \
-        -no-reboot \
-        -no-shutdown \
-        -nic none \
-        "$@" >"$log" 2>&1
-else
-    timeout "${qemu_timeout}s" qemu-system-x86_64 \
-        -drive file="$image",format=raw,if=ide,index=0,media=disk \
-        -drive file="$blk_img",format=raw,if=none,id=michblk \
-        -device virtio-blk-pci,drive=michblk,disable-legacy=on \
-        -drive file="$nvme_img",format=raw,if=none,id=michnvme \
-        -device nvme,drive=michnvme,serial=michx0 \
-        -boot c \
-        -m "$memory" \
-        -serial stdio \
-        -display none \
-        -no-reboot \
-        -no-shutdown \
-        "$@" >"$log" 2>&1
-fi
+timeout "${qemu_timeout}s" qemu-system-x86_64 \
+    -machine q35 \
+    -drive if=pflash,format=raw,readonly=on,file="$uefi_code" \
+    -drive if=pflash,format=raw,file="$uefi_vars" \
+    -drive file="$image",format=raw,if=none,id=esdisk \
+    -device ide-hd,drive=esdisk,bootindex=1 \
+    -drive file="$blk_img",format=raw,if=none,id=michblk \
+    -device virtio-blk-pci,drive=michblk,disable-legacy=on \
+    -drive file="$nvme_img",format=raw,if=none,id=michnvme \
+    -device nvme,drive=michnvme,serial=michx0 \
+    -m "$memory" \
+    -serial stdio \
+    -vga std \
+    -display none \
+    -no-reboot \
+    -no-shutdown \
+    "$@" >"$log" 2>&1
 status=$?
 set -e
 if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then

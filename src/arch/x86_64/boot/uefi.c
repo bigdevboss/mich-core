@@ -15,7 +15,20 @@
 #define E820_NVS 4
 #define INFO_BASE 0x78000ULL
 #define PAGE_BASE 0x70000ULL
-#define BLOB_BASE 0x2800000ULL
+// Must match --image-base in the Makefile rule for BOOTX64.EFI. The firmware
+// refused bases above the 64MB line, so the loader sits inside the kernel bss
+// and the clear has to work around it.
+#define LOADER_BASE 0x3000000ULL
+#define LOADER_SPAN 0x40000ULL
+// Scratch page for the handover stub: below the kernel load address, clear of
+// the bss, the loader image and the blob.
+#define STUB_BASE 0x90000ULL
+// The kernel bss spans tens of megabytes from 0x100000 and the modules are
+// laid out directly above it, up to the 0x4000000 limit enforced below. The
+// staging blob must therefore sit above that whole region: at 0x2800000 it
+// was inside the bss and was erased before the kernel and modules had been
+// copied out of it.
+#define BLOB_BASE 0x6000000ULL
 
 typedef u64 efi_status;
 typedef void *efi_handle;
@@ -267,10 +280,24 @@ static int guid_equal(const struct efi_guid *a, const struct efi_guid *b) {
     return 1;
 }
 
+// Overlap-safe: allocate_pool can hand back a buffer that sits only a little
+// below a fixed destination such as BLOB_BASE, in which case a forward copy
+// starts re-reading bytes it has already written and smears the source over
+// itself. Copy backwards whenever the destination overlaps ahead of the source.
 static void copy_bytes(void *dst, const void *src, u64 n) {
     u64 d = (u64)dst;
     u64 s = (u64)src;
     u64 c = n;
+    if (!c || d == s) return;
+    if (d > s && d - s < c) {
+        d += c - 1;
+        s += c - 1;
+        __asm__ volatile("std; rep movsb; cld"
+                         : "+D"(d), "+S"(s), "+c"(c)
+                         :
+                         : "memory");
+        return;
+    }
     __asm__ volatile("cld; rep movsb" : "+D"(d), "+S"(s), "+c"(c) : : "memory");
 }
 
@@ -535,8 +562,6 @@ efi_status __attribute__((ms_abi)) efi_main(efi_handle image,
     copy_bytes((void *)BLOB_BASE, blob, blob_bytes);
     blob = (void *)BLOB_BASE;
     serial_puts("uefi: blob relocated\r\n");
-    if (bss_len)
-        zero_bytes((u8 *)0x100000 + bss_off, bss_len);
     load_pages(PAGE_BASE);
     __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
     cr4 &= ~(1ULL << 17);
@@ -557,6 +582,25 @@ efi_status __attribute__((ms_abi)) efi_main(efi_handle image,
             copy_bytes((void *)(uptr_t)cursor, (u8 *)blob + off, size);
             cursor += aligned;
             if (cursor > 0x4000000) fail("uefi: mod overflow FAIL\r\n");
+        }
+    }
+    // The kernel bss spans tens of megabytes and this loader is linked at
+    // LOADER_BASE, inside that span: zeroing it in one pass erases the code
+    // currently executing. Clear everything except the window the loader
+    // occupies; the jump stub below clears that window as its last act, once
+    // no further C code will run. The bss must also be cleared only after the
+    // kernel and modules have been copied out of the blob.
+    if (bss_len) {
+        u64 lo = 0x100000 + bss_off;
+        u64 hi = lo + bss_len;
+        u64 keep_lo = LOADER_BASE;
+        u64 keep_hi = LOADER_BASE + LOADER_SPAN;
+        if (hi <= keep_lo || lo >= keep_hi) {
+            zero_bytes((void *)(uptr_t)lo, bss_len);
+        } else {
+            if (lo < keep_lo) zero_bytes((void *)(uptr_t)lo, keep_lo - lo);
+            if (hi > keep_hi)
+                zero_bytes((void *)(uptr_t)keep_hi, hi - keep_hi);
         }
     }
 
@@ -596,15 +640,55 @@ efi_status __attribute__((ms_abi)) efi_main(efi_handle image,
         info->rsdp_ptr = (u32)(uptr_t)rsdp_copy;
     }
 
+    // The kernel writes to the UART without polling the line status register,
+    // so anything still in flight here is lost and its first markers come out
+    // corrupted. Drain the transmitter before handing over.
+    {
+        u32 spin = 0;
+        while (spin++ < 100000 && (inb(0x3FD) & 0x60) != 0x60) {}
+    }
     serial_puts("uefi: jumping to kernel\r\n");
-    __asm__ volatile(
-        "cli\n\t"
-        "mov %0, %%rdi\n\t"
-        "mov %1, %%rsi\n\t"
-        "jmp *%2\n\t"
-        :
-        : "r"((u64)BD_MAGIC), "r"(INFO_BASE), "r"((u64)(0x100000 + entry_off))
-        : "rdi", "rsi", "memory");
+    {
+        u32 spin = 0;
+        while (spin++ < 100000 && (inb(0x3FD) & 0x60) != 0x60) {}
+    }
+    {
+        // The bss window this image occupies cannot be cleared by code living
+        // inside it: rep stosb would erase the instructions queued behind it.
+        // Copy a tiny stub to a scratch page outside both the bss and the
+        // loader, jump to it, and let it do the clear and the handover from
+        // there. The stub takes rdi/rcx/rax for the clear and r8/r9/r10 for
+        // the kernel arguments and target.
+        static const u8 stub[] = {
+            0xFC,                          // cld
+            0xF3, 0xAA,                    // rep stosb
+            0x4C, 0x89, 0xC7,              // mov rdi, r8
+            0x4C, 0x89, 0xCE,              // mov rsi, r9
+            0x41, 0xFF, 0xE2               // jmp r10
+        };
+        u64 lo = 0x100000 + bss_off;
+        u64 hi = bss_len ? lo + bss_len : 0;
+        u64 clear_from = LOADER_BASE;
+        u64 clear_count = 0;
+        if (bss_len && hi > LOADER_BASE && lo < LOADER_BASE + LOADER_SPAN) {
+            clear_from = lo > LOADER_BASE ? lo : LOADER_BASE;
+            u64 end = hi < LOADER_BASE + LOADER_SPAN
+                          ? hi : LOADER_BASE + LOADER_SPAN;
+            clear_count = end - clear_from;
+        }
+        copy_bytes((void *)STUB_BASE, stub, sizeof(stub));
+        register u64 arg_magic __asm__("r8") = BD_MAGIC;
+        register u64 arg_info __asm__("r9") = INFO_BASE;
+        register u64 arg_entry __asm__("r10") = 0x100000 + entry_off;
+        register u64 arg_stub __asm__("r11") = STUB_BASE;
+        __asm__ volatile(
+            "cli\n\t"
+            "jmp *%%r11\n\t"
+            :
+            : "D"(clear_from), "c"(clear_count), "a"(0ULL),
+              "r"(arg_magic), "r"(arg_info), "r"(arg_entry), "r"(arg_stub)
+            : "memory");
+    }
     fail("uefi: kernel return FAIL\r\n");
     return 1;
 }
