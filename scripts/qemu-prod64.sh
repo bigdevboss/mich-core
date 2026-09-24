@@ -1,12 +1,17 @@
 #!/bin/sh
 set -eu
 image="${1:-bin/x86_64/disk.img}"
+. "$(dirname "$0")/uefi-firmware.sh"
+mich_uefi_firmware
 log="$(mktemp)"
-trap 'rm -f "$log"' EXIT
+trap 'rm -f "$log" "$uefi_vars"' EXIT
 set +e
-timeout 12s qemu-system-x86_64 \
-    -drive file="$image",format=raw,if=ide,index=0,media=disk \
-    -boot c \
+timeout 40s qemu-system-x86_64 \
+    -machine q35 \
+    -drive if=pflash,format=raw,readonly=on,file="$uefi_code" \
+    -drive if=pflash,format=raw,file="$uefi_vars" \
+    -drive file="$image",format=raw,if=none,id=esdisk \
+    -device ide-hd,drive=esdisk,bootindex=1 \
     -m 128M \
     -serial stdio \
     -display none \

@@ -9,15 +9,16 @@
 ; from TR_SEG before touching any memory.
 ;
 ; The BSP copies the chunks below into one 4 KiB page at SMP_TRAMP_BASE
-; (0x8000, free: between the boot block and the 1 MiB kernel link base)
+; (0x8000, free: below the page tables at 0x70000 and the 1 MiB kernel
+; link base)
 ; and fills the overlay, so every runtime address derives from that
 ; base. The kernel PML4 (0x70000) identity maps the low 2 GiB, so the
 ; page stays reachable once paging is on.
 ;
-; The real -> 32-bit -> 64-bit sequence mirrors the proven boot path in
-; bdb2.asm (lgdt, PE, far jump to 32-bit code; PAE/PML4/LME/PG, far jump
-; to 64-bit code), and the flat 32-bit code/data descriptors are the
-; exact values the boot GDT uses.
+; The real -> 32-bit -> 64-bit sequence is the standard one: lgdt, set PE,
+; far jump to 32-bit code; then PAE, PML4, LME and PG, far jump to 64-bit
+; code. The flat 32-bit code/data descriptors in the table below are what
+; that sequence needs and are not shared with any other GDT.
 ;
 ; The SIPI stub (real mode) is placed separately at 0x580 (SMP64_SIPI_STUB),
 ; because the 8-bit APIC vector cannot address the 0x8000 page directly.

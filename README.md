@@ -634,7 +634,7 @@ This prevents an MSI-X interrupt from corrupting a queue or causing a lost wakeu
 | Feature | x86-64 |
 | --- | --- |
 | --- | --- |
-| BIOS boot through BigDevBoot | Yes |
+| UEFI boot through BigDevBoot | Yes |
 | Ring 3 processes | Yes |
 | Timer preemption | Yes |
 | ELF userspace | ELF64 |
@@ -667,7 +667,6 @@ This prevents an MSI-X interrupt from corrupting a queue or causing a lost wakeu
 | TCP and stream sockets | Yes |
 | Panic register dump | Yes |
 | FPU context switching | FXSAVE and FXRSTOR |
-| UEFI | No |
 | SMP | No |
 | IOMMU | Intel VT-d and AMD-Vi coherent DMA |
 | AArch64 | Planned |
@@ -736,7 +735,6 @@ Mich Core 0.1.0 does not include:
 - POSIX certification, complete POSIX conformance, or Linux binary/syscall ABI
   compatibility
 - Independently written Linux Kernel API compatibility headers
-- UEFI
 - SMP
 - IOMMU-backed DMA isolation
 - Power management
@@ -757,16 +755,21 @@ Use a Linux host with:
 - NASM
 - Python 3
 - QEMU for x86
+- OVMF, the UEFI firmware QEMU boots from
 - GNU coreutils
 
 On Debian or Ubuntu:
 
 ```bash
 sudo apt update
-sudo apt install build-essential gcc-multilib binutils nasm python3 qemu-system-x86 coreutils
+sudo apt install build-essential gcc-multilib binutils nasm python3 qemu-system-x86 ovmf coreutils
 ```
 
 The build does not download dependencies.
+
+Mich boots through UEFI only. The runners look for OVMF in the usual
+Debian and Fedora locations; set `MICH_OVMF_CODE` and `MICH_OVMF_VARS` if
+yours lives somewhere else.
 
 ## Build
 
@@ -891,8 +894,7 @@ The suites cover:
 LICENSE
 Makefile
 README.md
-mkboot.py
-mkboot64.py
+mkuefi64.py
 scripts/
 src/
 ```

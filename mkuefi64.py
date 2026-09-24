@@ -3,7 +3,10 @@ import struct
 import sys
 import zlib
 
-from mkboot64 import kernel_info, read_modules, BLOB_MAGIC, BLOCK, MAX_MODULES, BASE
+BLOCK = 512
+BLOB_MAGIC = 0x424F4C42
+BASE = 0x100000
+MAX_MODULES = 8
 
 ESP_TYPE = bytes.fromhex("28732ac11ff8d211ba4b00a0c93ec93b")
 DISK_GUID = bytes.fromhex("a1b2c3d4e5f60718293a4b5c6d7e8f90")
@@ -13,6 +16,64 @@ GPT_ENTRIES = 128
 ENTRY_SIZE = 128
 FIRST_USABLE = 34
 
+
+
+def kernel_info(path):
+    with open(path, "rb") as file:
+        image = file.read()
+    if len(image) < 64 or image[:4] != b"\x7fELF" or image[4] != 2 or image[5] != 1:
+        raise SystemExit("kernel is not ELF64 little-endian")
+    entry = struct.unpack_from("<Q", image, 24)[0]
+    phoff = struct.unpack_from("<Q", image, 32)[0]
+    phentsize = struct.unpack_from("<H", image, 54)[0]
+    phnum = struct.unpack_from("<H", image, 56)[0]
+    if phentsize < 56 or phoff + phentsize * phnum > len(image):
+        raise SystemExit("invalid ELF64 program headers")
+    end = BASE
+    bss_off = 0
+    bss_len = 0
+    for index in range(phnum):
+        position = phoff + index * phentsize
+        p_type = struct.unpack_from("<I", image, position)[0]
+        if p_type != 1:
+            continue
+        vaddr = struct.unpack_from("<Q", image, position + 16)[0]
+        filesz = struct.unpack_from("<Q", image, position + 32)[0]
+        memsz = struct.unpack_from("<Q", image, position + 40)[0]
+        if memsz < filesz or vaddr + memsz < vaddr:
+            raise SystemExit("invalid ELF64 load segment")
+        end = max(end, vaddr + memsz)
+        if memsz > filesz:
+            bss_off = vaddr + filesz - BASE
+            bss_len = memsz - filesz
+    if entry < BASE or entry >= end:
+        raise SystemExit("invalid ELF64 entry")
+    return entry - BASE, bss_off, bss_len, (end + 0xFFF) & ~0xFFF
+
+
+def read_modules(arguments):
+    modules = []
+    for specification in arguments:
+        if "=" not in specification:
+            raise SystemExit("bad module specification: " + specification)
+        identity, path = specification.split("=", 1)
+        if ":" in identity:
+            name, capability_text = identity.rsplit(":", 1)
+            capabilities = int(capability_text, 0)
+        else:
+            name = identity
+            capabilities = 0
+        encoded = name.encode("ascii")
+        if not encoded or len(encoded) > 15 or capabilities < 0 or capabilities > 0xFFFFFFFF:
+            raise SystemExit("invalid module identity: " + identity)
+        with open(path, "rb") as file:
+            data = file.read()
+        if not data:
+            raise SystemExit("empty module: " + path)
+        modules.append((encoded, data, capabilities))
+    if len(modules) > MAX_MODULES:
+        raise SystemExit("too many modules")
+    return modules
 
 def crc32(data):
     return zlib.crc32(data) & 0xFFFFFFFF
