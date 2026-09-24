@@ -79,8 +79,12 @@
 #include "test_report.h"
 #endif
 #ifdef MICH_TEST_BUILD
-/* Keep the fixed test boot blob available for the live fault path. */
-#define KERNEL_PANIC(reason) panic_str("kernel test failure")
+/* Keep the fixed test boot blob available for the live fault path. The
+   marker text stays byte-for-byte what the harness expects, but the reason
+   follows it: a panic that will not say what failed costs far more time to
+   chase than the marker is worth. */
+#define KERNEL_PANIC(reason) \
+    panic_str("kernel test failure: " reason)
 #else
 #define KERNEL_PANIC(reason) panic_str(reason)
 #endif
@@ -1842,6 +1846,9 @@ void kernel64_main(u32 magic, struct bd_info *info) {
         KERNEL_PANIC("APIC platform init");
     if (msi64_init(apic64_id())) KERNEL_PANIC("MSI backend init");
     if (msix64_init(apic64_id())) KERNEL_PANIC("MSI-X backend init");
+#ifdef MICH_TEST_BUILD
+    /* NVMe has to be probed here: after the MSI-X backend exists, before
+       smp64_init() parks the APs. Only the test kernel runs it. */
     {
         int nvme = test_nvme64(&test_env);
         if (nvme < 0 ||
@@ -1854,6 +1861,7 @@ void kernel64_main(u32 magic, struct bd_info *info) {
             serial64_write("Mich test64: nvme blockfs mount pass\n");
         }
     }
+#endif
     if (smp64_init()) KERNEL_PANIC("SMP bring-up");
 #ifdef MICH_TEST_BUILD
     if (tests64_run_smp()) KERNEL_PANIC("independent SMP tests");
