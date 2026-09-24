@@ -8,6 +8,10 @@
 struct test64_env {
     struct task *owner;
     struct task *target;
+    // Capability flags the init module was spawned with. Tests that assert on
+    // boot-time state have to know which subsystems the profile actually
+    // started; see BD_MODULE_* in bootinfo.h.
+    u32 module_flags;
     u32 owner_space;
     u32 target_space;
     u32 owner_slot;
