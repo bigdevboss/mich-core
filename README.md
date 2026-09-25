@@ -95,9 +95,27 @@ Together these reduce the VNIC's RX cost from 1780 to 328 cycles/packet at
 
 The numbers below are the kernel-side cycles per packet (ring submission and
 consumption, pool state transitions, descriptor handling, and the frame copy),
-measured on KVM with a single CPU (native CPU, real TSC). Because the netbench
-hot path is in memory (no MMIO), KVM single-CPU is a close proxy for bare
-metal. The TCG (emulated CPU) numbers are 10–50× higher and are not shown.
+measured on an Intel Core i3-7100U at 2.40GHz under QEMU 11.1.1 with KVM and a
+single CPU (native CPU, real TSC). Because the netbench hot path is in memory
+(no MMIO), KVM single-CPU is a close proxy for bare metal. The TCG (emulated
+CPU) numbers run 5-9x higher on the same machine and are not shown.
+
+Cycle counts belong to the processor they were taken on, so reproduce them
+before comparing. Build the test image, then boot it under KVM with one CPU:
+
+```bash
+make bin/x86_64/disk-test.img
+( . scripts/uefi-firmware.sh
+  mich_uefi_firmware
+  trap 'rm -f "$uefi_vars"' EXIT
+  qemu-system-x86_64 -enable-kvm -cpu host -smp 1 -machine q35 \
+    -drive if=pflash,format=raw,readonly=on,file="$uefi_code" \
+    -drive if=pflash,format=raw,file="$uefi_vars" \
+    -drive file=bin/x86_64/disk-test.img,format=raw,if=none,id=esdisk \
+    -device ide-hd,drive=esdisk,bootindex=1 \
+    -m 128M -serial stdio -display none -no-reboot -nic none
+) | grep netbench
+```
 
 | Direction | 64 B (min) | 512 B (min) | 1500 B (min) |
 |-----------|-----------:|------------:|-------------:|
@@ -667,7 +685,10 @@ This prevents an MSI-X interrupt from corrupting a queue or causing a lost wakeu
 | TCP and stream sockets | Yes |
 | Panic register dump | Yes |
 | FPU context switching | FXSAVE and FXRSTOR |
-| SMP | No |
+| SMP | Yes, AP bring-up, per-CPU state, IPI and spinlocks |
+| TLS 1.3 client | Yes, x25519 with AES-128-GCM |
+| X.509 validation | Yes, chain, validity and host name |
+| HTTPS request | Yes, verified against a real server |
 | IOMMU | Intel VT-d and AMD-Vi coherent DMA |
 | AArch64 | Planned |
 | RISC-V 64 | Planned |
@@ -784,18 +805,16 @@ Generated files are written under `bin/`.
 ## Run
 
 ```bash
-make run
 make run64
 ```
 
-Both targets use the serial console for kernel logs.
+Kernel logs go to the serial console.
 
 ## Test
 
-Run normal architecture tests:
+Run the normal test profile:
 
 ```bash
-make test
 make test64
 ```
 
@@ -981,8 +1000,9 @@ The vnic harness measures the kernel-side path: ring submission and consumption,
 
 After the 0.1.0 packet-path optimization (SIMD frame copy, cached ring resource
 pointer, cached pool state), the netbench reports the following min cycles per
-packet on KVM with a single CPU (native CPU, real TSC — a close proxy for bare
-metal because the hot path is in memory, no MMIO):
+packet on the i3-7100U reference machine described above (KVM, single CPU,
+real TSC, a close proxy for bare metal because the hot path is in memory with
+no MMIO):
 
 | Direction | 64 B | 512 B | 1500 B |
 |-----------|-----:|------:|-------:|
@@ -991,8 +1011,43 @@ metal because the hot path is in memory, no MMIO):
 | Echo      | 460  | 958   | 2024   |
 
 The unoptimized RX baseline was 326 / 790 / 1780 cycles per packet at 64 / 512
-/ 1500 bytes — a 31% / 68% / 82% reduction. TCG (emulated CPU) numbers are
-10–50× higher and are reported only for relative regressions.
+/ 1500 bytes - a 31% / 68% / 82% reduction. TCG (emulated CPU) numbers run
+5-9x higher on the same machine and are useful only for spotting relative
+regressions, never as a figure to quote.
+
+## TLS 1.3
+
+The kernel ships a TLS 1.3 client and can complete a handshake with an
+ordinary server, validate its certificate chain and send an HTTPS request.
+`make test64-tls` runs exactly that against a local `openssl s_server`.
+
+The primitives live in `src/crypto/` and are checked against published test
+vectors rather than against themselves: FIPS 180-4 and RFC 4231 for SHA-256
+and HMAC, RFC 5869 for HKDF, the GCM specification test cases, RFC 7748 for
+x25519, FIPS 186-4 for ECDSA P-256, and the self-signatures of ISRG Root X1
+and DigiCert Global Root G2 for RSA. The key schedule and the record layer are
+checked against the byte-for-byte handshake published in RFC 8448, and the
+certificate parser against the 150 certificates in a system trust store plus
+the live chain served by google.com.
+
+### What it does not do
+
+This is a working client, not a replacement for a TLS library. Missing on
+purpose, and worth knowing before trusting it with anything:
+
+- **No revocation checking.** Neither OCSP nor CRL. A certificate that has
+  been revoked still validates.
+- **No session resumption and no 0-RTT.** Every connection pays for a full
+  handshake.
+- **No KeyUpdate**, so a connection cannot rekey and is bounded by the record
+  sequence number.
+- **One group and one cipher suite**: x25519 and `TLS_AES_128_GCM_SHA256`. A
+  server that insists on anything else is refused rather than negotiated with.
+- **No P-384**, so an ECDSA chain on that curve cannot be verified. RSA and
+  ECDSA P-256 chains work.
+- **No client certificates.**
+- Three roots are compiled in: ISRG Root X1, DigiCert Global Root G2 and
+  GTS Root R1.
 
 ## Versioning
 
