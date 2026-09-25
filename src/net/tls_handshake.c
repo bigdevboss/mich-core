@@ -358,22 +358,17 @@ static int read_certificate(struct tls_client *client, const u8 *body,
         fail(client, TLS_ALERT_DECODE_ERROR);
         return -1;
     }
-    u32 list_length;
+    // certificate_list is a 24 bit length: one high byte and then two more.
+    // Reading it as two 16 bit halves consumes an extra byte and shifts every
+    // field after it.
+    u32 list_high;
+    u32 list_low;
     const u8 *list;
-    if (take16(&in, &list_length) == 0) {
-        // The 24 bit length is read as an 8 bit high byte plus the 16 already
-        // taken, which keeps the reader simple.
-        list_length = ((list_length & 0xFFu) << 16);
-    } else {
+    if (take8(&in, &list_high) || take16(&in, &list_low)) {
         fail(client, TLS_ALERT_DECODE_ERROR);
         return -1;
     }
-    u32 low;
-    if (take16(&in, &low)) {
-        fail(client, TLS_ALERT_DECODE_ERROR);
-        return -1;
-    }
-    list_length |= low;
+    u32 list_length = (list_high << 16) | list_low;
     if (take(&in, list_length, &list)) {
         fail(client, TLS_ALERT_DECODE_ERROR);
         return -1;
@@ -424,7 +419,7 @@ static int read_certificate(struct tls_client *client, const u8 *body,
     }
 
     // The leaf key is needed after this buffer is gone, so it is copied out.
-    struct x509_certificate leaf;
+    static struct x509_certificate leaf;
     if (x509_parse(&leaf, chain[0], lengths[0])) {
         fail(client, TLS_ALERT_BAD_CERTIFICATE);
         return -1;
@@ -441,7 +436,7 @@ static int read_certificate(struct tls_client *client, const u8 *body,
         for (u32 index = 0; index < lengths[0]; index++)
             client->chain[index] = chain[0][index];
         client->chain_length = lengths[0];
-        struct x509_certificate copied;
+        static struct x509_certificate copied;
         if (x509_parse(&copied, client->chain, client->chain_length)) {
             fail(client, TLS_ALERT_BAD_CERTIFICATE);
             return -1;
@@ -516,7 +511,7 @@ static int read_certificate_verify(struct tls_client *client, const u8 *body,
             fail(client, TLS_ALERT_ILLEGAL_PARAMETER);
             return -1;
         }
-        struct rsa_public_key key;
+        static struct rsa_public_key key;
         if (rsa_public_key_init(&key, client->certificate_modulus,
                                 client->certificate_modulus_length,
                                 client->certificate_exponent)) {
@@ -691,4 +686,130 @@ int tls_client_activate_application_keys(struct tls_client *client) {
 void tls_client_clear(struct tls_client *client) {
     if (!client) return;
     crypto_zero(client, sizeof(*client));
+}
+
+// Pulls whole handshake messages out of the reassembled plaintext. A record
+// may carry several messages, or a fraction of one.
+static int drain_messages(struct tls_client *client) {
+    u32 offset = 0;
+    while (client->plain_length - offset >= 4u) {
+        const u8 *header = client->plain + offset;
+        u32 body = ((u32)header[1] << 16) | ((u32)header[2] << 8) | header[3];
+        u32 total = body + 4u;
+        if (total > TLS_MAX_HANDSHAKE_MESSAGE) {
+            fail(client, TLS_ALERT_DECODE_ERROR);
+            return -1;
+        }
+        if (client->plain_length - offset < total) break;
+        if (tls_client_read_message(client, header, total)) return -1;
+        offset += total;
+    }
+    // Keep the tail that belongs to a message still in flight.
+    u32 remaining = client->plain_length - offset;
+    for (u32 index = 0; index < remaining; index++)
+        client->plain[index] = client->plain[offset + index];
+    client->plain_length = remaining;
+    return 0;
+}
+
+static int accept_record(struct tls_client *client, const u8 *record,
+                         u32 length) {
+    u8 type = record[0];
+    const u8 *body = record + TLS_RECORD_HEADER_SIZE;
+    u32 body_length = length - TLS_RECORD_HEADER_SIZE;
+
+    // A middlebox-compatibility ChangeCipherSpec carries no meaning here and
+    // must not disturb the transcript.
+    if (type == TLS_CONTENT_CHANGE_CIPHER_SPEC) return 0;
+
+    if (client->state == TLS_STATE_WAIT_SERVER_HELLO) {
+        if (type != TLS_CONTENT_HANDSHAKE) {
+            fail(client, TLS_ALERT_HANDSHAKE_FAILURE);
+            return -1;
+        }
+        if (body_length > sizeof(client->plain) - client->plain_length) {
+            fail(client, TLS_ALERT_DECODE_ERROR);
+            return -1;
+        }
+        for (u32 index = 0; index < body_length; index++)
+            client->plain[client->plain_length + index] = body[index];
+        client->plain_length += body_length;
+        return drain_messages(client);
+    }
+
+    if (type != TLS_CONTENT_APPLICATION_DATA) {
+        fail(client, TLS_ALERT_HANDSHAKE_FAILURE);
+        return -1;
+    }
+    static u8 opened[TLS_RECORD_MAX_CIPHERTEXT];
+    u32 opened_length = 0;
+    u8 inner_type = 0;
+    if (tls_record_open(&client->reader, record, length, opened,
+                        &opened_length, &inner_type)) {
+        fail(client, TLS_ALERT_DECRYPT_ERROR);
+        return -1;
+    }
+    if (inner_type == TLS_CONTENT_ALERT) {
+        fail(client, TLS_ALERT_HANDSHAKE_FAILURE);
+        return -1;
+    }
+    if (inner_type != TLS_CONTENT_HANDSHAKE) return 0;
+    if (opened_length > sizeof(client->plain) - client->plain_length) {
+        fail(client, TLS_ALERT_DECODE_ERROR);
+        return -1;
+    }
+    for (u32 index = 0; index < opened_length; index++)
+        client->plain[client->plain_length + index] = opened[index];
+    client->plain_length += opened_length;
+    return drain_messages(client);
+}
+
+int tls_client_feed(struct tls_client *client, const u8 *data, u32 length) {
+    if (!client || (!data && length)) return -1;
+    if (client->state == TLS_STATE_FAILED) return -1;
+    u32 offset = 0;
+    while (offset < length) {
+        u32 space = sizeof(client->record) - client->record_buffered;
+        if (!space) {
+            fail(client, TLS_ALERT_DECODE_ERROR);
+            return -1;
+        }
+        u32 take = length - offset;
+        if (take > space) take = space;
+        for (u32 index = 0; index < take; index++)
+            client->record[client->record_buffered + index] = data[offset + index];
+        client->record_buffered += take;
+        offset += take;
+
+        while (client->record_buffered >= TLS_RECORD_HEADER_SIZE) {
+            u32 body = ((u32)client->record[3] << 8) | client->record[4];
+            if (body > TLS_RECORD_MAX_CIPHERTEXT) {
+                fail(client, TLS_ALERT_DECODE_ERROR);
+                return -1;
+            }
+            u32 total = TLS_RECORD_HEADER_SIZE + body;
+            if (client->record_buffered < total) break;
+            if (accept_record(client, client->record, total)) return -1;
+            u32 rest = client->record_buffered - total;
+            for (u32 index = 0; index < rest; index++)
+                client->record[index] = client->record[total + index];
+            client->record_buffered = rest;
+        }
+    }
+    return 0;
+}
+
+int tls_client_seal(struct tls_client *client, u8 content_type,
+                    const u8 *payload, u32 length, u8 *out, u32 *out_length) {
+    if (!client || client->state == TLS_STATE_FAILED) return -1;
+    return tls_record_seal(&client->writer, content_type, payload, length, out,
+                           out_length);
+}
+
+int tls_client_open(struct tls_client *client, const u8 *record,
+                    u32 record_length, u8 *out, u32 *out_length,
+                    u8 *content_type) {
+    if (!client || client->state != TLS_STATE_CONNECTED) return -1;
+    return tls_record_open(&client->reader, record, record_length, out,
+                           out_length, content_type);
 }

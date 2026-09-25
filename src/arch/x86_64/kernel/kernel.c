@@ -1920,10 +1920,11 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     // host-side responder. It is an ordinary process, not a driver capsule: it
     // owns no interface and reaches the network purely through routed sockets.
     for (u32 index = 0; index < info->mods_count; index++) {
-        if (!module_name_is(&modules[index], "dnsprobe")) continue;
+        if (!module_name_is(&modules[index], "dnsprobe") &&
+            !module_name_is(&modules[index], "tlsprobe")) continue;
         if (spawn64_image(index, 0, spawn_image_capabilities[index],
-                          "dnsprobe", 0) < 0)
-            KERNEL_PANIC("dnsprobe spawn");
+                          "probe", 0) < 0)
+            KERNEL_PANIC("probe spawn");
         break;
     }
 #endif
