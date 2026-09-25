@@ -366,6 +366,7 @@ for marker in \
     "Mich test64: SHA-256, HMAC and HKDF pass" \
     "Mich test64: AES-128-GCM pass" \
     "Mich test64: X25519 pass" \
+    "Mich test64: ECDSA P-256 verify pass" \
     "Mich x86_64: wall clock anchored" \
     "Mich test64: blockfs format and mount pass" \
     "Mich test64: blockfs file io pass" \
