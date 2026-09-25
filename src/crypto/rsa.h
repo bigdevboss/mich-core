@@ -30,6 +30,10 @@ int rsa_pkcs1_verify_sha256(const struct rsa_public_key *key,
                             const u8 digest[32], const u8 *signature,
                             u32 signature_bytes);
 
+int rsa_pkcs1_verify_sha384(const struct rsa_public_key *key,
+                            const u8 digest[48], const u8 *signature,
+                            u32 signature_bytes);
+
 // RSASSA-PSS with SHA-256, MGF1-SHA256 and a 32 byte salt: the form TLS 1.3
 // requires for CertificateVerify.
 int rsa_pss_verify_sha256(const struct rsa_public_key *key,

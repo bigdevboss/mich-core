@@ -3,7 +3,11 @@
 
 #include "types.h"
 
-#define TEST_REPORT_MAX 64
+// Every recorded result takes a slot, and a full report makes
+// test_report_record fail, which the callers read as a failed test. The crypto
+// slices added eight ids, and the smp profile runs the most of them: at 64 the
+// overflow showed up as an unrelated IRQ test failing.
+#define TEST_REPORT_MAX 128
 
 #define TEST_ID_OBJECT 1
 #define TEST_ID_VFS 2
@@ -72,6 +76,7 @@
 #define TEST_ID_P256 86
 #define TEST_ID_RSA 87
 #define TEST_ID_X509 88
+#define TEST_ID_X509_CHAIN 89
 
 struct test_result64 {
     u32 id;

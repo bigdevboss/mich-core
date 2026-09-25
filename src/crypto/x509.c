@@ -15,6 +15,14 @@ static const u8 oid_ecdsa_sha256[8] = {
     0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x02,
 };
 
+static const u8 oid_rsa_sha384[9] = {
+    0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0C,
+};
+
+static const u8 oid_ecdsa_sha384[8] = {
+    0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x03,
+};
+
 static const u8 oid_rsa_encryption[9] = {
     0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01,
 };
@@ -111,6 +119,11 @@ static int parse_algorithm(struct der_reader *reader, u32 *algorithm) {
     else if (oid_is(oid, oid_length, oid_ecdsa_sha256,
                     sizeof(oid_ecdsa_sha256)))
         *algorithm = X509_SIGNATURE_ECDSA_SHA256;
+    else if (oid_is(oid, oid_length, oid_rsa_sha384, sizeof(oid_rsa_sha384)))
+        *algorithm = X509_SIGNATURE_RSA_SHA384;
+    else if (oid_is(oid, oid_length, oid_ecdsa_sha384,
+                    sizeof(oid_ecdsa_sha384)))
+        *algorithm = X509_SIGNATURE_ECDSA_SHA384;
     else
         *algorithm = X509_SIGNATURE_UNKNOWN;
     return 0;
