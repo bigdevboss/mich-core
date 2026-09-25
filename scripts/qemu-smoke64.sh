@@ -39,8 +39,8 @@ case "$profile" in
         tls_server_log="$(mktemp)"
         # A real TLS server, not a stand-in: the certificate branch and the
         # record reassembly have never met a peer this code did not write.
-        openssl s_server -accept 127.0.0.1:4433 -cert scripts/tls-test/server.pem \
-            -key scripts/tls-test/server.key -tls1_3 \
+        openssl s_server -accept 127.0.0.1:4433 -cert scripts/tls-test/server-test-only.pem \
+            -key scripts/tls-test/server-test-only.key -tls1_3 \
             -ciphersuites TLS_AES_128_GCM_SHA256 -www -quiet \
             >"$tls_server_log" 2>&1 &
         tls_server_pid=$!
