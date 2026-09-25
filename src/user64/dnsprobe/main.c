@@ -1,6 +1,7 @@
 #include <mich/syscall.h>
 #include <mich/dns.h>
 #include <mich/timer.h>
+#include <mich/event.h>
 
 // Exercises the resolver transport against a host-side responder reached
 // through the QEMU guest forward. The parser is covered by dns_test.c in the
@@ -20,9 +21,19 @@
 #define DNSPROBE_READY_ATTEMPTS 4u
 #define DNSPROBE_READY_DELAY_TICKS 25u
 
+// A yield loop keeps this task runnable and takes scheduler turns away from
+// the driver capsule, whose live recovery probe gives each of its phases a
+// fixed tick budget. Blocking on a timer instead leaves those ticks alone.
 static void wait_ticks(unsigned int ticks) {
-    unsigned int deadline = mich_ticks() + ticks;
-    while (mich_ticks() < deadline) mich_yield();
+    int timer = mich_timer_create();
+    if (timer <= 0) {
+        unsigned int deadline = mich_ticks() + ticks;
+        while (mich_ticks() < deadline) mich_yield();
+        return;
+    }
+    if (!mich_timer_arm((unsigned int)timer, ticks, 0))
+        mich_timer_wait((unsigned int)timer);
+    mich_handle_close((unsigned int)timer);
 }
 
 int main(void) {
