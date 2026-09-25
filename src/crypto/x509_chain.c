@@ -108,7 +108,7 @@ static int signature_is_valid(const struct x509_certificate *subject,
     if (subject->signature_algorithm == X509_SIGNATURE_RSA_SHA256 ||
         subject->signature_algorithm == X509_SIGNATURE_RSA_SHA384) {
         if (issuer->key_algorithm != X509_KEY_RSA) return -1;
-        struct rsa_public_key key;
+        static struct rsa_public_key key;
         if (rsa_public_key_init(&key, issuer->modulus, issuer->modulus_length,
                                 issuer->exponent))
             return -1;
@@ -171,7 +171,10 @@ int x509_verify_chain(const u8 *const *chain, const u32 *lengths, u32 count,
     if (!chain || !lengths || !count || count > X509_MAX_CHAIN) return -1;
     if (!store || !store->anchors || !store->count) return -1;
 
-    struct x509_certificate parsed[X509_MAX_CHAIN];
+    // Each parsed certificate is a few hundred bytes and the verifier also
+    // needs an anchor plus the RSA scratch below it. That does not fit the
+    // modest stack a userspace module gets.
+    static struct x509_certificate parsed[X509_MAX_CHAIN];
     for (u32 index = 0; index < count; index++) {
         if (x509_parse(&parsed[index], chain[index], lengths[index]))
             return -1;
@@ -190,7 +193,7 @@ int x509_verify_chain(const u8 *const *chain, const u32 *lengths, u32 count,
         const struct x509_certificate *current = &parsed[index];
         for (u32 anchor_index = 0; anchor_index < store->count;
              anchor_index++) {
-            struct x509_certificate anchor;
+            static struct x509_certificate anchor;
             if (x509_parse(&anchor, store->anchors[anchor_index].der,
                            store->anchors[anchor_index].length))
                 continue;
