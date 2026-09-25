@@ -68,6 +68,7 @@
 #define TEST_ID_RTC 82
 #define TEST_ID_SHA256 83
 #define TEST_ID_AES_GCM 84
+#define TEST_ID_X25519 85
 
 struct test_result64 {
     u32 id;
