@@ -373,6 +373,7 @@ for marker in \
     "Mich test64: DER and X.509 parsing pass" \
     "Mich test64: X.509 chain to a real anchor pass" \
     "Mich test64: TLS 1.3 key schedule and records pass" \
+    "Mich test64: TLS 1.3 client handshake pass" \
     "Mich x86_64: wall clock anchored" \
     "Mich test64: blockfs format and mount pass" \
     "Mich test64: blockfs file io pass" \

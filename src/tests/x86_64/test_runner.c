@@ -76,6 +76,8 @@ int tests64_run(const struct test64_env *env) {
     serial64_write("Mich test64: X.509 chain to a real anchor pass\n");
     if (test_report_record(TEST_ID_TLS_RECORDS, test_tls_records64())) return -1;
     serial64_write("Mich test64: TLS 1.3 key schedule and records pass\n");
+    if (test_report_record(TEST_ID_TLS_HANDSHAKE, test_tls_handshake64())) return -1;
+    serial64_write("Mich test64: TLS 1.3 client handshake pass\n");
     if (test_report_record(TEST_ID_BLOCKFS, test_blockfs64())) return -1;
     serial64_write("Mich test64: blockfs format and mount pass\n");
     serial64_write("Mich test64: blockfs file io pass\n");

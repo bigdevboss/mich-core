@@ -44,6 +44,7 @@ int test_rsa64(void);
 int test_x509_64(void);
 int test_x509_chain64(void);
 int test_tls_records64(void);
+int test_tls_handshake64(void);
 int test_blockfs64(void);
 int test_blockfs_pages64(void);
 int test_virtio_blk64(void);
