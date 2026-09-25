@@ -4,7 +4,9 @@ image="${1:-bin/x86_64/disk.img}"
 memory="${2:-128M}"
 profile="${3:-default}"
 qemu_timeout=45
-if [ "$profile" = "smp" ] || [ "$profile" = "iommu" ]; then qemu_timeout=90; fi
+# The crypto known-answer tests run before the profile-specific ones, and the
+# RSA modular exponentiations are the slowest thing in the boot under TCG.
+if [ "$profile" = "smp" ] || [ "$profile" = "iommu" ]; then qemu_timeout=130; fi
 if [ "$profile" = "msi" ]; then qemu_timeout=300; fi
 if [ "$profile" = "dns" ]; then qemu_timeout=150; fi
 if [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ] ||
@@ -367,6 +369,7 @@ for marker in \
     "Mich test64: AES-128-GCM pass" \
     "Mich test64: X25519 pass" \
     "Mich test64: ECDSA P-256 verify pass" \
+    "Mich test64: RSA PKCS1 and PSS verify pass" \
     "Mich x86_64: wall clock anchored" \
     "Mich test64: blockfs format and mount pass" \
     "Mich test64: blockfs file io pass" \

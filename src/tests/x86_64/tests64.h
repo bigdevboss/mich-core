@@ -40,6 +40,7 @@ int test_sha256_64(void);
 int test_aes_gcm64(void);
 int test_x25519_64(void);
 int test_p256_64(void);
+int test_rsa64(void);
 int test_blockfs64(void);
 int test_blockfs_pages64(void);
 int test_virtio_blk64(void);

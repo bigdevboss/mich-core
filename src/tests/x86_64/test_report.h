@@ -70,6 +70,7 @@
 #define TEST_ID_AES_GCM 84
 #define TEST_ID_X25519 85
 #define TEST_ID_P256 86
+#define TEST_ID_RSA 87
 
 struct test_result64 {
     u32 id;
