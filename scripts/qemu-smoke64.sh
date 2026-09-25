@@ -371,6 +371,7 @@ for marker in \
     "Mich test64: ECDSA P-256 verify pass" \
     "Mich test64: RSA PKCS1 and PSS verify pass" \
     "Mich test64: DER and X.509 parsing pass" \
+    "Mich test64: X.509 chain to a real anchor pass" \
     "Mich x86_64: wall clock anchored" \
     "Mich test64: blockfs format and mount pass" \
     "Mich test64: blockfs file io pass" \

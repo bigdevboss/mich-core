@@ -15,6 +15,11 @@ static const u8 sha256_digest_info[19] = {
     0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20,
 };
 
+static const u8 sha384_digest_info[19] = {
+    0x30, 0x41, 0x30, 0x0D, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01,
+    0x65, 0x03, 0x04, 0x02, 0x02, 0x05, 0x00, 0x04, 0x30,
+};
+
 static u64 montgomery_n0(u64 low_limb) {
     // Newton iteration doubles the correct bits each round, so six rounds
     // cover all 64 starting from a one bit seed.
@@ -180,9 +185,9 @@ static int rsa_public_operation(const struct rsa_public_key *key,
     return 0;
 }
 
-int rsa_pkcs1_verify_sha256(const struct rsa_public_key *key,
-                            const u8 digest[32], const u8 *signature,
-                            u32 signature_bytes) {
+static int pkcs1_verify(const struct rsa_public_key *key, const u8 *digest,
+                        u32 digest_size, const u8 *info, u32 info_size,
+                        const u8 *signature, u32 signature_bytes) {
     if (!key || !digest || !signature) return -1;
     u8 encoded[RSA_MAX_MODULUS_BYTES];
     if (rsa_public_operation(key, signature, signature_bytes, encoded))
@@ -193,22 +198,38 @@ int rsa_pkcs1_verify_sha256(const struct rsa_public_key *key,
     // how Bleichenbacher signature forgery gets in.
     u8 expected[RSA_MAX_MODULUS_BYTES];
     u32 length = key->modulus_bytes;
-    u32 suffix = sizeof(sha256_digest_info) + SHA256_DIGEST_SIZE;
+    u32 suffix = info_size + digest_size;
     if (length < suffix + 11u) return -1;
     expected[0] = 0x00u;
     expected[1] = 0x01u;
     for (u32 index = 2; index < length - suffix - 1u; index++)
         expected[index] = 0xFFu;
     expected[length - suffix - 1u] = 0x00u;
-    for (u32 index = 0; index < sizeof(sha256_digest_info); index++)
-        expected[length - suffix + index] = sha256_digest_info[index];
-    for (u32 index = 0; index < SHA256_DIGEST_SIZE; index++)
-        expected[length - SHA256_DIGEST_SIZE + index] = digest[index];
+    for (u32 index = 0; index < info_size; index++)
+        expected[length - suffix + index] = info[index];
+    for (u32 index = 0; index < digest_size; index++)
+        expected[length - digest_size + index] = digest[index];
 
     int matched = crypto_equal(encoded, expected, length);
     crypto_zero(encoded, sizeof(encoded));
     crypto_zero(expected, sizeof(expected));
     return matched ? 0 : -1;
+}
+
+int rsa_pkcs1_verify_sha256(const struct rsa_public_key *key,
+                            const u8 digest[32], const u8 *signature,
+                            u32 signature_bytes) {
+    return pkcs1_verify(key, digest, SHA256_DIGEST_SIZE, sha256_digest_info,
+                        sizeof(sha256_digest_info), signature,
+                        signature_bytes);
+}
+
+int rsa_pkcs1_verify_sha384(const struct rsa_public_key *key,
+                            const u8 digest[48], const u8 *signature,
+                            u32 signature_bytes) {
+    return pkcs1_verify(key, digest, SHA384_DIGEST_SIZE, sha384_digest_info,
+                        sizeof(sha384_digest_info), signature,
+                        signature_bytes);
 }
 
 static void mgf1_sha256(u8 *out, u32 out_length, const u8 *seed,
