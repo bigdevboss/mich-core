@@ -66,6 +66,8 @@ int tests64_run(const struct test64_env *env) {
     serial64_write("Mich test64: AES-128-GCM pass\n");
     if (test_report_record(TEST_ID_X25519, test_x25519_64())) return -1;
     serial64_write("Mich test64: X25519 pass\n");
+    if (test_report_record(TEST_ID_P256, test_p256_64())) return -1;
+    serial64_write("Mich test64: ECDSA P-256 verify pass\n");
     if (test_report_record(TEST_ID_BLOCKFS, test_blockfs64())) return -1;
     serial64_write("Mich test64: blockfs format and mount pass\n");
     serial64_write("Mich test64: blockfs file io pass\n");
