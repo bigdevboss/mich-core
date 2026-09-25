@@ -6,6 +6,7 @@ mich_uefi_firmware
 trap 'rm -f "$uefi_vars"' EXIT
 exec qemu-system-x86_64 \
     -machine q35 \
+    -cpu qemu64,+aes,+pclmulqdq,+ssse3 \
     -drive if=pflash,format=raw,readonly=on,file="$uefi_code" \
     -drive if=pflash,format=raw,file="$uefi_vars" \
     -drive file="$image",format=raw,if=none,id=esdisk \

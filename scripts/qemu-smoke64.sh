@@ -254,6 +254,7 @@ trap 'if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi
 set +e
 timeout "${qemu_timeout}s" qemu-system-x86_64 \
     -machine q35 \
+    -cpu qemu64,+aes,+pclmulqdq,+ssse3 \
     -drive if=pflash,format=raw,readonly=on,file="$uefi_code" \
     -drive if=pflash,format=raw,file="$uefi_vars" \
     -drive file="$image",format=raw,if=none,id=esdisk \
@@ -363,6 +364,7 @@ for marker in \
     "Mich test64: ChaCha20 DRBG pass" \
     "Mich test64: RTC civil date conversion pass" \
     "Mich test64: SHA-256, HMAC and HKDF pass" \
+    "Mich test64: AES-128-GCM pass" \
     "Mich x86_64: wall clock anchored" \
     "Mich test64: blockfs format and mount pass" \
     "Mich test64: blockfs file io pass" \
