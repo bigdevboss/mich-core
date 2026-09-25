@@ -77,6 +77,7 @@
 #define TEST_ID_RSA 87
 #define TEST_ID_X509 88
 #define TEST_ID_X509_CHAIN 89
+#define TEST_ID_TLS_RECORDS 90
 
 struct test_result64 {
     u32 id;
