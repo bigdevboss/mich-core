@@ -37,6 +37,7 @@ int test_cache64(void);
 int test_entropy64(void);
 int test_rtc64(void);
 int test_sha256_64(void);
+int test_aes_gcm64(void);
 int test_blockfs64(void);
 int test_blockfs_pages64(void);
 int test_virtio_blk64(void);
