@@ -49,6 +49,7 @@ DISK64_UNIT = $(BIN64)/disk-unit.img
 DISK64_HARDWARE = $(BIN64)/disk-hardware.img
 DISK64_DNS = $(BIN64)/disk-dns.img
 DISK64_TLS = $(BIN64)/disk-tls.img
+DISK64_TLS_REAL = $(BIN64)/disk-tls-real.img
 DISK64_HARDWARE_RESTART = $(BIN64)/disk-hardware-restart.img
 DISK64_HARDWARE_CIRCUIT = $(BIN64)/disk-hardware-circuit.img
 DISK64_HARDWARE_RECOVERY = $(BIN64)/disk-hardware-recovery.img
@@ -69,6 +70,7 @@ VIRTIO_NET_SAFE64_OBJ = $(USER64_OBJ_DIR)/virtio_net_safe.o
 VIRTIO_NET64_PROBES_OBJ = $(USER64_OBJ_DIR)/virtio_net_probes.o
 DNSPROBE64_OBJ = $(USER64_OBJ_DIR)/dnsprobe.o
 TLSPROBE64_OBJ = $(USER64_OBJ_DIR)/tlsprobe.o
+TLSPROBE_REAL64_OBJ = $(USER64_OBJ_DIR)/tlsprobe_real.o
 DNS64_OBJ = $(USER64_OBJ_DIR)/dns.o
 DNS_MESSAGE64_OBJ = $(USER64_OBJ_DIR)/dns_message.o
 TLS_KEYS64_OBJ = $(USER64_OBJ_DIR)/tls_keys.o
@@ -87,6 +89,7 @@ CRYPTO64_OBJ = $(USER64_OBJ_DIR)/crypto.o
 VIRTIO_NET64_ELF = $(USER64_DIR)/virtio-net.elf
 DNSPROBE64_ELF = $(USER64_DIR)/dnsprobe.elf
 TLSPROBE64_ELF = $(USER64_DIR)/tlsprobe.elf
+TLSPROBE_REAL64_ELF = $(USER64_DIR)/tlsprobe-real.elf
 VIRTIO_NET64_SELECTOR_CHECK = $(USER64_DIR)/virtio-net-recovery-rip.ok
 VIRTIO_NET_SAFE64_ELF = $(USER64_DIR)/virtio-net-safe.elf
 OBJS64 = $(OBJ64)/boot.o $(OBJ64)/kernel.o $(OBJ64)/task_core.o $(OBJ64)/posix_fd_core.o $(OBJ64)/posix_profile_core.o $(OBJ64)/posix_vfs_core.o $(OBJ64)/posix_process_core.o $(OBJ64)/scheduler_core.o $(OBJ64)/service_core.o $(OBJ64)/object_core.o $(OBJ64)/resource_core.o $(OBJ64)/iommu_core.o $(OBJ64)/driver_core.o $(OBJ64)/driver_supervisor_core.o $(OBJ64)/driver_manager_core.o $(OBJ64)/ring_core.o $(OBJ64)/completion_core.o $(OBJ64)/timer_object_core.o $(OBJ64)/net_buffer_core.o $(OBJ64)/vnic_core.o $(OBJ64)/vnic_benchmark.o $(OBJ64)/net_interface_core.o $(OBJ64)/ethernet_core.o $(OBJ64)/arp_core.o $(OBJ64)/ipv4_core.o $(OBJ64)/ipv6_core.o $(OBJ64)/icmp_core.o $(OBJ64)/icmpv6_core.o $(OBJ64)/loopback_core.o $(OBJ64)/udp_core.o $(OBJ64)/udpv6_core.o $(OBJ64)/tcp_core.o $(OBJ64)/tcp_cc_core.o $(OBJ64)/pmtu_core.o $(OBJ64)/route_core.o $(OBJ64)/socket_core.o $(OBJ64)/dns_message_core.o $(OBJ64)/tls_keys_core.o $(OBJ64)/tls_record_core.o $(OBJ64)/tls_handshake_core.o $(OBJ64)/vfs_core.o $(OBJ64)/blockfs_core.o $(OBJ64)/block_core.o $(OBJ64)/cache_core.o $(OBJ64)/firmware_core.o $(OBJ64)/event_core.o $(OBJ64)/endpoint_core.o $(OBJ64)/bridge_core.o $(OBJ64)/pmm_core.o $(OBJ64)/mem_core.o $(OBJ64)/sha256_core.o $(OBJ64)/crypto_core.o $(OBJ64)/aes_core.o $(OBJ64)/gcm_core.o $(OBJ64)/x25519_core.o $(OBJ64)/p256_core.o $(OBJ64)/rsa_core.o $(OBJ64)/der_core.o $(OBJ64)/x509_core.o $(OBJ64)/x509_chain_core.o $(OBJ64)/entropy_core.o $(OBJ64)/ipc64.o $(OBJ64)/acpi64.o $(OBJ64)/rtc64.o $(OBJ64)/vtd64.o $(OBJ64)/amd_iommu64.o $(OBJ64)/pci64.o $(OBJ64)/virtio_pci.o $(OBJ64)/virtio_blk.o $(OBJ64)/nvme.o $(OBJ64)/apic64.o $(OBJ64)/ioapic64.o $(OBJ64)/smp64.o $(OBJ64)/smp_tramp.o $(OBJ64)/vector64.o $(OBJ64)/msi64.o $(OBJ64)/msix64.o $(OBJ64)/panic64.o $(OBJ64)/gdt_asm.o $(OBJ64)/gdt.o $(OBJ64)/exceptions.o $(OBJ64)/interrupt.o $(OBJ64)/idt.o $(OBJ64)/vm.o $(OBJ64)/elf64.o $(OBJ64)/platform.o $(OBJ64)/serial.o $(OBJ64)/syscall_dispatch.o $(OBJ64)/syscall.o
@@ -590,6 +593,14 @@ $(TLSPROBE64_OBJ): src/user64/tlsprobe/main.c src/user64/tlsprobe/test_anchor.h 
 $(TLSPROBE64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(TLSPROBE64_OBJ) $(TLS_HANDSHAKE64_OBJ) $(TLS_RECORD64_OBJ) $(TLS_KEYS64_OBJ) $(X509_CHAIN64_OBJ) $(X509_64_OBJ) $(DER64_OBJ) $(X25519_64_OBJ) $(P256_64_OBJ) $(RSA64_OBJ) $(GCM64_OBJ) $(AES64_OBJ) $(SHA256_64_OBJ) $(CRYPTO64_OBJ) $(USER64_OBJ_DIR)/posix.o src/user64/linker.ld | $(USER64_DIR)
 	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(TLSPROBE64_OBJ) $(TLS_HANDSHAKE64_OBJ) $(TLS_RECORD64_OBJ) $(TLS_KEYS64_OBJ) $(X509_CHAIN64_OBJ) $(X509_64_OBJ) $(DER64_OBJ) $(X25519_64_OBJ) $(P256_64_OBJ) $(RSA64_OBJ) $(GCM64_OBJ) $(AES64_OBJ) $(SHA256_64_OBJ) $(CRYPTO64_OBJ) $(USER64_OBJ_DIR)/posix.o
 
+# Same probe, built for the public internet: MICH_TLS_REAL swaps the SNI name
+# and the trust store over to the built-in production CAs.
+$(TLSPROBE_REAL64_OBJ): src/user64/tlsprobe/main.c $(NET)/tls_handshake.h $(CRYPTO)/crypto.h $(CRYPTO)/x509_chain.h | $(USER64_OBJ_DIR)
+	$(CC) $(USER64_CFLAGS) $(AESFLAGS) -DMICH_TLS_REAL -I$(NET) -Werror -c $< -o $@
+
+$(TLSPROBE_REAL64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(TLSPROBE_REAL64_OBJ) $(TLS_HANDSHAKE64_OBJ) $(TLS_RECORD64_OBJ) $(TLS_KEYS64_OBJ) $(X509_CHAIN64_OBJ) $(X509_64_OBJ) $(DER64_OBJ) $(X25519_64_OBJ) $(P256_64_OBJ) $(RSA64_OBJ) $(GCM64_OBJ) $(AES64_OBJ) $(SHA256_64_OBJ) $(CRYPTO64_OBJ) $(USER64_OBJ_DIR)/posix.o src/user64/linker.ld | $(USER64_DIR)
+	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(TLSPROBE_REAL64_OBJ) $(TLS_HANDSHAKE64_OBJ) $(TLS_RECORD64_OBJ) $(TLS_KEYS64_OBJ) $(X509_CHAIN64_OBJ) $(X509_64_OBJ) $(DER64_OBJ) $(X25519_64_OBJ) $(P256_64_OBJ) $(RSA64_OBJ) $(GCM64_OBJ) $(AES64_OBJ) $(SHA256_64_OBJ) $(CRYPTO64_OBJ) $(USER64_OBJ_DIR)/posix.o
+
 
 $(VIRTIO_NET64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_NET64_OBJ) $(VIRTIO_NET64_PROBES_OBJ) $(DNS64_OBJ) $(DNS_MESSAGE64_OBJ) src/user64/linker.ld | $(USER64_DIR)
 	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_NET64_OBJ) $(VIRTIO_NET64_PROBES_OBJ) $(DNS64_OBJ) $(DNS_MESSAGE64_OBJ)
@@ -644,6 +655,13 @@ $(DISK64_TLS): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_E
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
 		--efi $(UEFI64_EFI) $@ init64:0x400000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) tlsprobe:0x2000000=$(TLSPROBE64_ELF)
 
+# The kernel spawns whichever module is named "tlsprobe", so the real-internet
+# image ships the MICH_TLS_REAL build under that name. Everything else in the
+# image is identical to the local TLS test.
+$(DISK64_TLS_REAL): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF) $(TLSPROBE_REAL64_ELF)
+	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
+		--efi $(UEFI64_EFI) $@ init64:0x400000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) tlsprobe:0x2000000=$(TLSPROBE_REAL64_ELF)
+
 
 $(DISK64_HARDWARE_RESTART): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
@@ -689,8 +707,8 @@ test64-tls: $(DISK64_TLS)
 # address, validating the chain against the roots compiled into the image.
 # Kept out of the normal matrix on purpose, because a test that needs the
 # internet fails on a train, not in the code.
-test-https-real: $(DISK64_TLS)
-	MICH_TLS_REAL=1 sh ./scripts/qemu-smoke64.sh $(DISK64_TLS) 256M tls
+test-https-real: $(DISK64_TLS_REAL)
+	sh ./scripts/qemu-smoke64.sh $(DISK64_TLS_REAL) 256M tls-real
 
 
 

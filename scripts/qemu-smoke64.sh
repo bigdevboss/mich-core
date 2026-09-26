@@ -10,6 +10,7 @@ if [ "$profile" = "smp" ] || [ "$profile" = "iommu" ]; then qemu_timeout=130; fi
 if [ "$profile" = "msi" ]; then qemu_timeout=300; fi
 if [ "$profile" = "dns" ]; then qemu_timeout=150; fi
 if [ "$profile" = "tls" ]; then qemu_timeout=200; fi
+if [ "$profile" = "tls-real" ]; then qemu_timeout=200; fi
 if [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ] ||
    [ "$profile" = "msi-recovery" ]; then
     qemu_timeout=360
@@ -47,6 +48,44 @@ case "$profile" in
         # Give it a moment to bind before QEMU tries to reach it.
         sleep 3
         set -- -netdev user,id=michnet,guestfwd=tcp:10.0.2.4:443-tcp:127.0.0.1:4433 -device virtio-net-pci,netdev=michnet
+        ;;
+    tls-real)
+        want_nic_none=0
+        # Optional, internet-dependent: reach a real public HTTPS server. No
+        # stand-in and no test anchors -- the guest validates the server's
+        # genuine certificate chain against the CAs compiled into its image.
+        #
+        # The guest connects to the same fixed 10.0.2.4:443 the local test
+        # uses; slirp bridges that to the real host resolved here. If there is
+        # no internet the test is skipped rather than failed, so it is safe to
+        # run on a train.
+        real_host="${MICH_TLS_REAL_HOST:-www.google.com}"
+        real_ip="$(python3 -c 'import socket, sys
+try:
+    print(socket.getaddrinfo(sys.argv[1], 443, socket.AF_INET, socket.SOCK_STREAM)[0][4][0])
+except Exception:
+    pass' "$real_host")"
+        if [ -z "$real_ip" ]; then
+            echo "qemu-smoke64: SKIP tls-real ($real_host did not resolve; no internet)"
+            exit 0
+        fi
+        # A quick reachability probe so an outbound-blocked host also skips
+        # cleanly instead of reporting a handshake failure that is not the
+        # code's fault.
+        if ! python3 -c 'import socket, sys
+s = socket.socket()
+s.settimeout(5)
+try:
+    s.connect((sys.argv[1], 443))
+except Exception:
+    sys.exit(1)
+finally:
+    s.close()' "$real_ip"; then
+            echo "qemu-smoke64: SKIP tls-real ($real_host:443 unreachable; no internet)"
+            exit 0
+        fi
+        echo "qemu-smoke64: tls-real bridging guest 10.0.2.4:443 -> $real_host ($real_ip):443"
+        set -- -netdev "user,id=michnet,guestfwd=tcp:10.0.2.4:443-tcp:$real_ip:443" -device virtio-net-pci,netdev=michnet
         ;;
     dns)
         want_nic_none=0
@@ -622,7 +661,7 @@ done
 # markers can never appear there. Asking for them made those profiles fail on
 # something the image was never built to do.
 case "$profile" in
-    hardware|msi|msi-restart|msi-circuit|msi-recovery|dns|tls)
+    hardware|msi|msi-restart|msi-circuit|msi-recovery|dns|tls|tls-real)
         ;;
     *)
         for marker in \
@@ -722,6 +761,23 @@ if [ "$profile" = "tls" ]; then
     do
         grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
     done
+fi
+if [ "$profile" = "tls-real" ]; then
+    for marker in \
+        "Mich tlsprobe: entropy ready" \
+        "Mich tlsprobe: tcp connected" \
+        "Mich tlsprobe: ClientHello sent" \
+        "Mich tlsprobe: server certificate accepted" \
+        "Mich tlsprobe: server Finished verified" \
+        "Mich tlsprobe: handshake complete" \
+        "Mich tlsprobe: request sent" \
+        "Mich tlsprobe: HTTP response received" \
+        "Mich tlsprobe: https pass"
+    do
+        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+    done
+    # Surface the real status line the guest printed off the wire.
+    grep -F "Mich tlsprobe: HTTP/1." "$log" || true
 fi
 if [ "$profile" = "hardware" ] || [ "$profile" = "msi" ] ||
    [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ] ||

@@ -4,7 +4,11 @@
 #include <mich/timer.h>
 #include <tls_handshake.h>
 #include <crypto.h>
+#ifdef MICH_TLS_REAL
+#include <x509_chain.h>
+#else
 #include "test_anchor.h"
+#endif
 
 // Declared here rather than pulled in through a POSIX header: this module is
 // freestanding and only needs the one entry point.
@@ -17,8 +21,17 @@ extern long getrandom(void *buffer, unsigned long length, unsigned int flags);
 
 #define PROBE_SERVER 0x0A000204u
 #define PROBE_PORT 443u
+#ifdef MICH_TLS_REAL
+// The guest still dials the fixed 10.0.2.4:443 target; the QEMU runner bridges
+// that address straight to the real public server. Only the name presented in
+// SNI and matched against the certificate changes, so the handshake validates
+// a genuine www.google.com chain against the CAs compiled into the image.
+#define PROBE_HOST "www.google.com"
+#define PROBE_HOST_LENGTH 14u
+#else
 #define PROBE_HOST "mich.test"
 #define PROBE_HOST_LENGTH 9u
+#endif
 
 #define READY_ATTEMPTS 40u
 #define READY_DELAY_TICKS 25u
@@ -99,9 +112,17 @@ static int pump(unsigned int handle, unsigned int spins) {
 }
 
 int main(void) {
+#ifdef MICH_TLS_REAL
+    // The real handshake trusts exactly the roots a production client would:
+    // the built-in store (ISRG Root X1, DigiCert Global Root G2, GTS Root R1),
+    // not the throwaway anchor the local test server is signed by.
+    const struct x509_trust_store *store_ptr = x509_builtin_trust_store();
+#else
     static struct x509_trust_store store;
     store.anchors = test_anchors;
     store.count = TEST_ANCHOR_COUNT;
+    const struct x509_trust_store *store_ptr = &store;
+#endif
 
     // The wall clock read from the CMOS chip back in the RTC slice is what
     // decides whether a certificate is inside its validity window.
@@ -147,7 +168,7 @@ int main(void) {
     mich_write("Mich tlsprobe: tcp connected\n");
 
     if (tls_client_init(&client, PROBE_HOST, PROBE_HOST_LENGTH, private_key,
-                        random, session_id, TLS_SESSION_ID_SIZE, &store,
+                        random, session_id, TLS_SESSION_ID_SIZE, store_ptr,
                         now)) {
         mich_write("Mich tlsprobe: init FAIL\n");
         return 1;
@@ -248,11 +269,37 @@ int main(void) {
                     payload_length >= 12u &&
                     // The server answers with its own minor version, so only
                     // the family and the status code are checked.
-                    crypto_equal(payload, "HTTP/1.", 7u) &&
-                    crypto_equal(payload + 9u, "200", 3u)) {
-                    mich_write("Mich tlsprobe: HTTP response received\n");
-                    mich_write("Mich tlsprobe: https pass\n");
-                    return 0;
+                    crypto_equal(payload, "HTTP/1.", 7u)) {
+#ifdef MICH_TLS_REAL
+                    // Echo the status line verbatim: proof the decrypted bytes
+                    // came off the real wire and not a fixture written here.
+                    static char status[80];
+                    static const char label[] = "Mich tlsprobe: ";
+                    unsigned int copied = 0;
+                    for (unsigned int index = 0;
+                         label[index] && copied < sizeof(status) - 2u; index++)
+                        status[copied++] = label[index];
+                    for (unsigned int index = 0;
+                         index < payload_length &&
+                         copied < sizeof(status) - 2u &&
+                         payload[index] != '\r' && payload[index] != '\n';
+                         index++)
+                        status[copied++] = (char)payload[index];
+                    status[copied++] = '\n';
+                    status[copied] = 0;
+                    mich_write(status);
+#endif
+                    if (crypto_equal(payload + 9u, "200", 3u)) {
+                        mich_write("Mich tlsprobe: HTTP response received\n");
+                        mich_write("Mich tlsprobe: https pass\n");
+                        return 0;
+                    }
+#ifdef MICH_TLS_REAL
+                    // A complete status line still proves the stack reached a
+                    // real server and decrypted its reply; only 200 is a pass.
+                    mich_write("Mich tlsprobe: non-200 status\n");
+                    return 1;
+#endif
                 }
                 // Anything else is either a ticket or a record this probe does
                 // not care about; drop it and keep reading.
