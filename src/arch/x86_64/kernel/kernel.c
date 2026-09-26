@@ -149,6 +149,10 @@ struct task_context64 task_contexts[MAX_TASKS];
 u32 current_task_slot;
 u32 timer_ticks;
 #define SPAWN_IMAGE_MAX DRIVER_USER_IMAGE_MAX
+// Stack pages mapped for a spawned user image. One page is not enough for a
+// TLS client that verifies an RSA-4096 trust anchor; eight leaves comfortable
+// headroom while the unmapped page above the top still guards against overflow.
+#define SPAWN_STACK_PAGES 8u
 static const u8 *spawn_images[SPAWN_IMAGE_MAX];
 static u32 spawn_image_sizes[SPAWN_IMAGE_MAX];
 static u32 spawn_image_capabilities[SPAWN_IMAGE_MAX];
@@ -879,14 +883,27 @@ static int spawn64_image(u32 image_id, int parent_id, u32 capabilities,
         task_free_slot(task);
         return -1;
     }
-    paddr_t stack = vm64_alloc_page();
-    if (!stack) {
-        task_free_slot(task);
-        return -1;
-    }
+    // A TLS client that validates an RSA-4096 trust anchor (for example GTS
+    // Root R1 behind a real HTTPS server) drives the modular exponentiation
+    // deep enough that a single page of stack overflows. Map several pages
+    // below the top; the guard page above the top is left unmapped so an
+    // overflow still faults instead of corrupting the heap.
     vaddr_t stack_top = VM64_STACK_TOP;
-    if (vm64_map(space, stack_top - 4096, stack, 1, 0)) {
-        vm64_free_page(stack);
+    paddr_t stack_pages[SPAWN_STACK_PAGES];
+    u32 stack_mapped = 0;
+    while (stack_mapped < SPAWN_STACK_PAGES) {
+        paddr_t page = vm64_alloc_page();
+        if (!page) break;
+        if (vm64_map(space, stack_top - (vaddr_t)(stack_mapped + 1u) * 4096u,
+                     page, 1, 0)) {
+            vm64_free_page(page);
+            break;
+        }
+        stack_pages[stack_mapped++] = page;
+    }
+    if (stack_mapped != SPAWN_STACK_PAGES) {
+        for (u32 index = 0; index < stack_mapped; index++)
+            vm64_free_page(stack_pages[index]);
         task_free_slot(task);
         return -1;
     }
