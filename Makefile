@@ -48,6 +48,7 @@ DISK64_TEST = $(BIN64)/disk-test.img
 DISK64_UNIT = $(BIN64)/disk-unit.img
 DISK64_HARDWARE = $(BIN64)/disk-hardware.img
 DISK64_DNS = $(BIN64)/disk-dns.img
+DISK64_NETBENCH = $(BIN64)/disk-netbench.img
 DISK64_TLS = $(BIN64)/disk-tls.img
 DISK64_TLS_REAL = $(BIN64)/disk-tls-real.img
 DISK64_HARDWARE_RESTART = $(BIN64)/disk-hardware-restart.img
@@ -69,6 +70,7 @@ VIRTIO_NET64_OBJ = $(USER64_OBJ_DIR)/virtio_net.o
 VIRTIO_NET_SAFE64_OBJ = $(USER64_OBJ_DIR)/virtio_net_safe.o
 VIRTIO_NET64_PROBES_OBJ = $(USER64_OBJ_DIR)/virtio_net_probes.o
 DNSPROBE64_OBJ = $(USER64_OBJ_DIR)/dnsprobe.o
+NETBENCH64_OBJ = $(USER64_OBJ_DIR)/netbench.o
 TLSPROBE64_OBJ = $(USER64_OBJ_DIR)/tlsprobe.o
 TLSPROBE_REAL64_OBJ = $(USER64_OBJ_DIR)/tlsprobe_real.o
 DNS64_OBJ = $(USER64_OBJ_DIR)/dns.o
@@ -88,6 +90,7 @@ GCM64_OBJ = $(USER64_OBJ_DIR)/gcm.o
 CRYPTO64_OBJ = $(USER64_OBJ_DIR)/crypto.o
 VIRTIO_NET64_ELF = $(USER64_DIR)/virtio-net.elf
 DNSPROBE64_ELF = $(USER64_DIR)/dnsprobe.elf
+NETBENCH64_ELF = $(USER64_DIR)/netbench.elf
 TLSPROBE64_ELF = $(USER64_DIR)/tlsprobe.elf
 TLSPROBE_REAL64_ELF = $(USER64_DIR)/tlsprobe-real.elf
 VIRTIO_NET64_SELECTOR_CHECK = $(USER64_DIR)/virtio-net-recovery-rip.ok
@@ -587,6 +590,12 @@ $(DNSPROBE64_OBJ): src/user64/dnsprobe/main.c src/user64/include/mich/dns.h src/
 $(DNSPROBE64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(DNSPROBE64_OBJ) $(DNS64_OBJ) $(DNS_MESSAGE64_OBJ) src/user64/linker.ld | $(USER64_DIR)
 	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(DNSPROBE64_OBJ) $(DNS64_OBJ) $(DNS_MESSAGE64_OBJ)
 
+$(NETBENCH64_OBJ): src/user64/netbench/main.c src/user64/include/mich/syscall.h src/user64/include/mich/socket.h src/net/socket_abi.h | $(USER64_OBJ_DIR)
+	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
+
+$(NETBENCH64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(NETBENCH64_OBJ) src/user64/linker.ld | $(USER64_DIR)
+	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(NETBENCH64_OBJ)
+
 $(TLSPROBE64_OBJ): src/user64/tlsprobe/main.c src/user64/tlsprobe/test_anchor.h $(NET)/tls_handshake.h $(CRYPTO)/crypto.h | $(USER64_OBJ_DIR)
 	$(CC) $(USER64_CFLAGS) $(AESFLAGS) -I$(NET) -Werror -c $< -o $@
 
@@ -651,6 +660,16 @@ $(DISK64_HARDWARE): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEF
 $(DISK64_DNS): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF) $(DNSPROBE64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
 		--efi $(UEFI64_EFI) $@ init64:0x400000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) dnsprobe:0=$(DNSPROBE64_ELF)
+# Loopback socket-path benchmark. Ships the same init flags and virtio-net
+# capsule as the dns and tls images so it reuses the kernel's probe-spawn hook,
+# but the kernel recognises the "netbench" module and skips the driver-live
+# recovery lab for this boot: a resident bench task perturbs that lab's tick
+# deadline and pollutes the cycle counts, so the benchmark wants a quiescent
+# kernel. The benchmark itself never touches the NIC; it runs over loopback.
+$(DISK64_NETBENCH): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF) $(NETBENCH64_ELF)
+	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
+		--efi $(UEFI64_EFI) $@ init64:0x400000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) netbench:0=$(NETBENCH64_ELF)
+
 $(DISK64_TLS): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF) $(TLSPROBE64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
 		--efi $(UEFI64_EFI) $@ init64:0x400000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) tlsprobe:0x2000000=$(TLSPROBE64_ELF)
@@ -701,6 +720,8 @@ test64-hardware: $(DISK64_HARDWARE)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_HARDWARE) 128M hardware
 test64-dns: $(DISK64_DNS)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_DNS) 256M dns
+test64-netbench: $(DISK64_NETBENCH)
+	sh ./scripts/qemu-smoke64.sh $(DISK64_NETBENCH) 256M netbench
 test64-tls: $(DISK64_TLS)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_TLS) 256M tls
 # Reaches a real site over the public internet: DNS-less, straight to the
