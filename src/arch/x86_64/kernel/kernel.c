@@ -1869,20 +1869,9 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     if (msi64_init(apic64_id())) KERNEL_PANIC("MSI backend init");
     if (msix64_init(apic64_id())) KERNEL_PANIC("MSI-X backend init");
 #ifdef MICH_TEST_BUILD
-    /* NVMe has to be probed here: after the MSI-X backend exists, before
-       smp64_init() parks the APs. Only the test kernel runs it. */
-    {
-        int nvme = test_nvme64(&test_env);
-        if (nvme < 0 ||
-            test_report_record(TEST_ID_NVME, nvme < 0 ? nvme : 0))
-            KERNEL_PANIC("independent kernel tests");
-        if (!nvme) {
-            serial64_write("Mich test64: nvme controller and prp io pass\n");
-            serial64_write("Mich test64: nvme scatter-gather io pass\n");
-            serial64_write("Mich test64: nvme msi-x completion wake pass\n");
-            serial64_write("Mich test64: nvme blockfs mount pass\n");
-        }
-    }
+    // NVMe has to be probed here: after the MSI-X backend exists and before
+    // smp64_init() parks the APs. What counts as a pass lives in the test.
+    if (tests64_run_nvme(&test_env)) KERNEL_PANIC("independent kernel tests");
 #endif
     if (smp64_init()) KERNEL_PANIC("SMP bring-up");
 #ifdef MICH_TEST_BUILD
