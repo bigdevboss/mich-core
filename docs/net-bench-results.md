@@ -86,31 +86,65 @@ the tick cadence). If `wait` dominates, the stall is on the receive/timer side; 
 `send` dominates, it is TX pacing. Pair this with a host-side `perf kvm stat` VM-
 exit count to separate the guest's coarse timer from any QEMU emulation cost.
 
-### Experiment: a 100 Hz tick collapses the stall
+### The fix: service the TCP timer after each RX, floor at the system tick
 
-`MICH_EAGER_TICK=1` rebuilds the virtio-net capsule to pump the TCP timer engine
-every 10 ms instead of once per second (`VIRTIO_NET_MAINT_PERIOD`). Same emulator,
-same disk, TCG A/B (cycle counts are not wall time under TCG, but the ratio is the
-signal):
+The driver now advances the TCP timer engine right after it drains a receive
+batch, so an ACK that just arrived opens the window and the next segments ship in
+the same loop iteration instead of waiting for the periodic maintenance timer.
+That event-driven pump carries active connections, but a timer that fires with no
+incoming packet (an RTO retransmit on an idle link) has nothing to trigger it, so
+the periodic maintenance tick is kept as the backstop and tightened from 1 s to
+10 ms (1 system tick), which is the cadence a networked kernel should service its
+stack at anyway. An earlier revision proved the cause behind a `MICH_EAGER_TICK`
+build flag that just raised the periodic rate; that knob is now folded into the
+default and removed.
 
-| build            | wire-tx send | wire-tx wait  |
-| ---------------- | ------------ | ------------- |
-| default (1 Hz)   | ~733,000     | 1,010,962,496 |
-| eager (100 Hz)   | ~734,000     | 22,781,914    |
+The wire-tx path in this bench hits exactly such a no-traffic timer wait, so its
+floor is the maintenance period: the A/B below is against that period. Active
+request/response traffic, where every exchange is an event, benefits from the
+post-RX pump on top.
 
-The wait phase drops about 44x while the send phase is unchanged, which confirms
-the stall was the timer-pump cadence and not transport cost. Run the A/B yourself
-(`make` does not track flag changes, so clean between modes):
+A/B, same emulator and disk. TCG measures the ratio (its cycle counts are not
+wall time); KVM measures the wall time on the i3-7100U:
 
-```
-make clean && MICH_KVM=1 MICH_QEMU_TIMEOUT=45 make test64-netbench
-make clean && MICH_KVM=1 MICH_EAGER_TICK=1 MICH_QEMU_TIMEOUT=45 make test64-netbench
-```
+| build                   | wire-tx send | wire-tx wait   | wait wall (KVM) |
+| ----------------------- | ------------ | -------------- | --------------- |
+| before (1 Hz pump)      | ~733,000     | ~1,010,962,496 | ~419,000 us     |
+| after (event + 10 ms)   | ~510,000     | ~24,312,478    | ~10,126 us      |
 
-On KVM the default `wait` is ~1.75-2.4 s; the eager build should bring it down to
-tens of milliseconds. This is a measurement knob, not the final design: the real
-fix is still open (event-driven tick, a higher base tick rate, or a shorter
-maintenance period by default).
+TCG numbers are from the final gated build. The wait phase drops ~42x under TCG
+and ~41x on KVM (0.42 s -> 10 ms), while the send phase is unchanged. On KVM the
+16 KiB gate throughput rises from 0.31 to 12.56 Mbit/s. Loopback RTT (~30 us) is
+unaffected, as expected: it never waited on the pump. The KVM wall column is the
+earlier 100 Hz-pump run; the final gated build should land at the same 10 ms floor
+(re-confirm on hardware).
 
-Bulk throughput and PPS numbers are deferred until the wire RTT is unstalled,
-since a 0.4 s tax swamps everything downstream.
+Note the post-RX pump is gated on packets actually drained, not run every loop
+iteration: an ungated tick cost a maintenance syscall on every idle spin and
+measured ~40M wait under TCG; gating it back to real RX events restored the ~24M
+floor.
+
+### Reference points (external, for orientation only)
+
+Do not read these as a like-for-like ranking. mich here runs over QEMU slirp
+usermode networking (not vhost/tap), single-threaded, without TSO/GSO or
+zero-copy, so its absolute wire throughput is not comparable to a tuned Linux or
+FreeBSD guest. They are here to show the order of magnitude and where the real
+headroom is.
+
+- Linux guest, virtio over KVM, single-stream: iperf3 ~13 Gbit/s, netperf
+  TCP_STREAM ~12,612 Mbit/s. FreeBSD on the same setup: iperf3 ~6.5 Gbit/s,
+  netperf single-stream ~1,233 Mbit/s.
+- KVM guest-to-host virtio throughput ~1.8-2.1 Gbit/s with ~0.85 ms ping latency
+  in older reports; virtio trades a little latency for throughput versus e1000.
+- netperf TCP_RR round-trip latency on close cloud hosts ~66 us; KVM is reported
+  to add roughly +90% latency over native.
+
+The honest read: mich's clean-stack loopback RTT (~30 us) is already in the same
+order as a real TCP_RR round trip, so the per-operation cost of the stack is
+sound. The wire gap is transport/plumbing (slirp, no offloads, single queue), not
+the protocol logic, and the tick fix removed the one bug that made the wire look
+1000x worse than it is.
+
+Bulk throughput and PPS numbers over tap/vhost are the next measurement, now that
+the wire RTT is no longer pinned to the pump cadence.
