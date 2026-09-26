@@ -54,31 +54,37 @@ runs (1004673304 / 1004576912 / 1004683846), and a 16 KiB transfer taking as
 long as a single 64 B round trip only makes sense if both are waiting on the same
 one-shot timer rather than moving bytes.
 
-### Root cause: the TCP ACK-filter (delayed ACK)
+### What paces the wire path
 
-`src/net/tcp.c` implements a FreeBSD-style ACK-filter (`data_ack`,
-`TCP_TIMER_ACK_FILTER`): after acknowledging in-order data it suppresses pure
-ACKs for one interval, floored at `TCP_ACK_FILTER_INTERVAL_MIN = TCP_RTO_INITIAL
-= 100` ms, and a deadline-heap event flushes the held ACK later. For bulk streams
-that is correct and saves ACKs. For a request/response ping-pong it is the
-classic delayed-ACK penalty: each leg can wait on the held ACK plus however long
-until the next `net_interface_tick` flushes it, which stacks up to the ~0.4 s we
-measure per exchange.
+An earlier draft blamed the TCP ACK-filter (delayed ACK). That was wrong: the
+ACK-filter is off by default (`tcp->ack_filter = 0`; only a unit test enables it),
+so it never runs in the bench. The real structural facts, read straight from the
+tree:
 
-Important correction to an earlier assumption: the slow wire-rr was previously
-chalked up to TCG being slow. KVM shows ~0.45 s per round trip too, so this is
-real stack behaviour, not an emulation artifact.
+- The APIC timer runs at 100 Hz (`apic64_timer_start(100)`), so one tick is 10 ms
+  and every TCP timer is quantised to 10 ms.
+- `TCP_RTO_INITIAL = 100` ticks = 1 second: the initial retransmit timeout is a
+  whole second.
+- The TCP timer engine (`net_interface_tick` -> `tcp_tick`: retransmit, RTO,
+  persist, TIME_WAIT) is pumped from the virtio-net driver only when its IPv6
+  maintenance timer fires, and that timer is periodic at 100 ticks, i.e. once per
+  second. Bulk data still moves on NIC interrupts, but anything that falls back on
+  a TCP timer waits on this coarse cadence.
 
-### Options (for discussion, not yet coded)
+So the fixed ~0.42 s wire stall is a guest-side timer-granularity and pump-cadence
+effect, largely independent of QEMU. slirp packet loss can trigger a
+timer-serviced retransmit, but the wait itself is the guest's own coarse cadence,
+not slirp bandwidth. Correction to a second earlier assumption: the slow wire-rr
+was blamed on TCG; KVM shows ~0.45 s per round trip too, so it is real guest
+behaviour, not an emulation artifact.
 
-1. Disable the ACK-filter on the bench connection via the existing
-   `tcp_set_ack_filter(tcp, 0)` and re-measure. Cleanest way to confirm the
-   diagnosis and to get a real RR/latency number for the wire path.
-2. Quick-ACK small request/response exchanges (send an immediate ACK when the
-   segment carried a PSH and the receive buffer drained), keeping the filter for
-   bulk. Closer to Linux `TCP_QUICKACK` / `tcp_in_quickack_mode`.
-3. Check the `net_interface_tick` cadence during the bench; if ticks are coarse,
-   the held ACK waits far past the 100 ms floor and inflates the stall further.
+### Localising it by measurement
+
+`wire-tx` now reports the span split at the last byte handed to the stack:
+`send=` cycles (guest TX pacing) versus `wait=` cycles (peer reply arriving across
+the tick cadence). If `wait` dominates, the stall is on the receive/timer side; if
+`send` dominates, it is TX pacing. Pair this with a host-side `perf kvm stat` VM-
+exit count to separate the guest's coarse timer from any QEMU emulation cost.
 
 Bulk throughput and PPS numbers are deferred until the wire RTT is unstalled,
-since a 0.4 s handshake tax swamps everything downstream.
+since a 0.4 s tax swamps everything downstream.
