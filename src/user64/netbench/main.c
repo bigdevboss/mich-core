@@ -42,6 +42,20 @@
 #define WIRE_RR_COUNT 8u
 #define WIRE_TX_TOTAL 16384u
 
+// UDP wire path. QEMU's user netdev has no udp guestfwd form, so the tcp control
+// alias 10.0.2.4 cannot carry datagrams; the peer's UDP port is reached at the
+// slirp gateway 10.0.2.2 instead, which forwards to the host where the peer
+// binds it on demand. The guest socket must bind the wire interface address, not
+// INADDR_ANY: context_for_address maps 0 to the loopback context, so a send to
+// the gateway would then fail the route-to-context match in socket_send_to.
+// slirp always leases 10.0.2.15 to the first guest, and DHCP has already settled
+// by the time the tcp wire gate above has passed.
+#define GUEST_ADDRESS 0x0A00020Fu
+#define PEER_UDP_ADDRESS 0x0A000202u
+#define PEER_UDP_PORT 15100u
+#define GUEST_UDP_PORT 15200u
+#define WIRE_UDP_COUNT 64u
+
 // The dial is retried because the first attempts can land before the virtio-net
 // capsule has finished DHCP, and a spin budget bounds every socket wait so a
 // silently dead peer fails the run instead of hanging it. The budget is patient
@@ -51,9 +65,18 @@
 #define CONNECT_ATTEMPTS 40u
 #define CONNECT_DELAY_TICKS 25u
 #define IO_SPINS 200000u
+// Blocking-wait budget for the UDP control reads. Unlike IO_SPINS these are real
+// descheduling waits, not busy spins, so the probe sleeps through the busy boot
+// instead of burning a poll budget before the reply lands. The bound only guards
+// against a stream of spurious wakeups with no data; a genuinely silent peer
+// blocks until the harness timeout, which is the same outcome as a spin here.
+#define STREAM_WAITS 100000u
 
 static u64 sample_cycles[SAMPLE_COUNT];
 static u64 wire_cycles[WIRE_RR_COUNT];
+// The datagram request carries a 1472-byte payload, too large to sit on the
+// 8-page module stack next to everything else, so it lives here.
+static struct mich_socket_send_request udp_send_request;
 static u8 wire_payload[MICH_SOCKET_STREAM_PAYLOAD_MAX];
 static u8 wire_incoming[MICH_SOCKET_STREAM_PAYLOAD_MAX];
 
@@ -215,12 +238,15 @@ static int stream_send_all(unsigned int handle, const u8 *data, u32 length) {
     return 0;
 }
 
-// Receives exactly length bytes into out. The peer protocol is lock-step, so it
-// never sends ahead and a chunk never overruns the request. Yields between reads
-// because the bytes are delivered by the virtio capsule on another task.
+// Receives exactly length bytes into out, blocking on the socket event between
+// reads. The peer protocol is lock-step, so it never sends ahead and a chunk
+// never overruns the request. Blocking rather than spinning matters because a
+// probe reaches the wire phase while the boot test suite still competes for the
+// CPU; sleeping until virtio delivers the next chunk keeps a starved probe from
+// exhausting a poll budget before the bytes land.
 static int stream_recv_exact(unsigned int handle, u8 *out, u32 length) {
     u32 got = 0;
-    for (unsigned int spin = 0; spin < IO_SPINS && got < length; spin++) {
+    for (unsigned int wait = 0; wait < STREAM_WAITS && got < length; wait++) {
         struct mich_socket_stream_state_result state;
         state.readiness = 0;
         state.eof = 0;
@@ -233,19 +259,25 @@ static int stream_recv_exact(unsigned int handle, u8 *out, u32 length) {
             if (mich_socket_stream_receive(handle, &chunk)) return -1;
             for (u32 index = 0; index < chunk.length && got < length; index++)
                 out[got++] = chunk.data[index];
+            continue;
         }
         if (state.eof && got < length) return -1;
-        mich_yield();
+        mich_socket_wait(handle);
     }
     return got == length ? 0 : -1;
 }
 
-// Reads the peer's one-line reply into out, NUL-terminated. The reply is the
-// only thing the peer writes after a bulk run, so reading to the newline cannot
-// swallow data-phase bytes.
+// Reads the peer's one-line reply into out, NUL-terminated, blocking on the
+// socket event between reads. The reply is the only thing the peer writes after a
+// bulk run, so reading to the newline cannot swallow data-phase bytes. Blocking
+// is deliberate: a netbench probe reaches the wire phase while the boot test
+// suite is still competing for the CPU, so a busy spin can exhaust its poll
+// budget before the reply arrives; sleeping until there is TCP activity and
+// waking to read it does not. Level-triggered readiness is re-checked each turn,
+// so a wakeup that races the state check cannot be lost.
 static int stream_recv_line(unsigned int handle, char *out, u32 capacity) {
     u32 used = 0;
-    for (unsigned int spin = 0; spin < IO_SPINS; spin++) {
+    for (unsigned int wait = 0; wait < STREAM_WAITS; wait++) {
         struct mich_socket_stream_state_result state;
         state.readiness = 0;
         state.eof = 0;
@@ -264,12 +296,14 @@ static int stream_recv_line(unsigned int handle, char *out, u32 capacity) {
                 }
                 if (used + 1 < capacity) out[used++] = c;
             }
+            // A chunk was drained; loop to check for more before blocking again.
+            continue;
         }
         if (state.eof) {
             out[used] = '\0';
             return used ? 0 : -1;
         }
-        mich_yield();
+        mich_socket_wait(handle);
     }
     return -1;
 }
@@ -304,31 +338,23 @@ static u32 build_command(char *out, const char *verb, u64 a, int has_b, u64 b) {
 // count times and times each exchange. This is the same shape as the loopback
 // measurement, but the path now includes virtio TX/RX, the host bridge, and the
 // peer's own stack, so the delta against loopback is the wire overhead.
-static int wire_rr(u32 count, u32 size) {
-    int handle = connect_peer();
-    if (handle < 0) return -1;
+static int wire_rr(unsigned int handle, u32 count, u32 size) {
     char command[32];
     u32 command_length = build_command(command, "RR", count, 1, size);
-    if (stream_send_all((unsigned int)handle, (const u8 *)command,
-                        command_length)) {
-        mich_handle_close((unsigned int)handle);
+    if (stream_send_all(handle, (const u8 *)command, command_length))
         return -1;
-    }
     for (u32 index = 0; index < size; index++)
         wire_payload[index] = (u8)index;
     u64 total = 0;
     for (u32 round = 0; round < count; round++) {
         u64 start = read_cycles();
-        if (stream_send_all((unsigned int)handle, wire_payload, size) ||
-            stream_recv_exact((unsigned int)handle, wire_incoming, size)) {
-            mich_handle_close((unsigned int)handle);
+        if (stream_send_all(handle, wire_payload, size) ||
+            stream_recv_exact(handle, wire_incoming, size))
             return -1;
-        }
         wire_cycles[round] = read_cycles() - start;
         total += wire_cycles[round];
         mich_yield();
     }
-    mich_handle_close((unsigned int)handle);
     sort_samples(wire_cycles, count);
     mich_write("Mich netbench: wire-rr size=");
     write_decimal(size);
@@ -347,16 +373,11 @@ static int wire_rr(u32 count, u32 size) {
 // Bulk send throughput: the guest streams total_bytes to the peer, which drains
 // and replies with its byte tally. The reply is checked against total_bytes so a
 // truncated stream fails loud instead of reporting a fast but wrong number.
-static int wire_tx(u32 total_bytes) {
-    int handle = connect_peer();
-    if (handle < 0) return -1;
+static int wire_tx(unsigned int handle, u32 total_bytes) {
     char command[32];
     u32 command_length = build_command(command, "TX", total_bytes, 0, 0);
-    if (stream_send_all((unsigned int)handle, (const u8 *)command,
-                        command_length)) {
-        mich_handle_close((unsigned int)handle);
+    if (stream_send_all(handle, (const u8 *)command, command_length))
         return -1;
-    }
     for (u32 index = 0; index < MICH_SOCKET_STREAM_PAYLOAD_MAX; index++)
         wire_payload[index] = (u8)index;
     u64 start = read_cycles();
@@ -365,16 +386,13 @@ static int wire_tx(u32 total_bytes) {
         u32 take = total_bytes - sent;
         if (take > MICH_SOCKET_STREAM_PAYLOAD_MAX)
             take = MICH_SOCKET_STREAM_PAYLOAD_MAX;
-        if (stream_send_all((unsigned int)handle, wire_payload, take)) {
-            mich_handle_close((unsigned int)handle);
+        if (stream_send_all(handle, wire_payload, take))
             return -1;
-        }
         sent += take;
     }
     char reply[32];
-    int status = stream_recv_line((unsigned int)handle, reply, sizeof(reply));
+    int status = stream_recv_line(handle, reply, sizeof(reply));
     u64 elapsed = read_cycles() - start;
-    mich_handle_close((unsigned int)handle);
     if (status || reply[0] != 'O' || reply[1] != 'K' || reply[2] != ' ')
         return -1;
     u64 acked = 0;
@@ -389,6 +407,100 @@ static int wire_tx(u32 total_bytes) {
     write_decimal(elapsed);
     mich_write("\n");
     return 0;
+}
+
+// Binds a datagram socket to the wire interface so its sends route out virtio
+// instead of loopback. Returns the handle or -1; the caller owns the close.
+static int open_wire_udp(void) {
+    int udp = mich_socket_create();
+    if (udp <= 0) return -1;
+    struct mich_socket_bind_request bind;
+    bind.address = GUEST_ADDRESS;
+    bind.port = (u16)GUEST_UDP_PORT;
+    bind.reserved = 0;
+    if (mich_socket_bind((unsigned int)udp, &bind)) {
+        mich_handle_close((unsigned int)udp);
+        return -1;
+    }
+    return udp;
+}
+
+// Small-datagram TX over the wire: the guest blasts count datagrams of size to
+// the peer, then reads back the peer's tally over the shared control stream. UDP
+// gives no delivery guarantee, so the sent-versus-received gap is the small-packet
+// loss this path exists to localise against the lossless loopback numbers.
+// Returns 1 when the peer counted at least one datagram (a report line is
+// printed), 0 when it answered a clean zero (the control stream is still in sync,
+// so the caller may continue), and -1 when the control stream itself broke.
+static int wire_udp_tx(unsigned int control, u32 count, u32 size) {
+    char command[32];
+    // handle_utx reads only the port from the command; the guest owns how many
+    // datagrams it sends and how big they are.
+    u32 command_length = build_command(command, "UTX", PEER_UDP_PORT, 0, 0);
+    char ready[16];
+    if (stream_send_all(control, (const u8 *)command, command_length) ||
+        stream_recv_line(control, ready, sizeof(ready)) ||
+        ready[0] != 'R')
+        // READY gates the blast so the guest never sends before the peer's bind.
+        // A missing READY means the control stream is unusable, so report broken.
+        return -1;
+    int udp = open_wire_udp();
+    // The peer has already promised to reply after its quiescence window, so a
+    // local bind failure leaves an unread reply on the stream: treat it as broken
+    // rather than desync the shared connection for the tests that follow.
+    if (udp < 0) return -1;
+    for (u32 index = 0; index < size; index++)
+        udp_send_request.payload[index] = (u8)index;
+    udp_send_request.destination_address = PEER_UDP_ADDRESS;
+    udp_send_request.destination_port = (u16)PEER_UDP_PORT;
+    udp_send_request.length = (u16)size;
+    u32 sent = 0;
+    u64 start = read_cycles();
+    for (u32 round = 0; round < count; round++) {
+        u32 attempt = 0;
+        // A full virtio TX ring rejects the send; that is local backpressure,
+        // not loss, so yield and retry the same datagram a bounded number of
+        // times before conceding it.
+        while (mich_socket_send_to((unsigned int)udp, &udp_send_request)) {
+            if (++attempt >= 8u) break;
+            mich_yield();
+        }
+        if (attempt < 8u) sent++;
+        mich_yield();
+    }
+    u64 elapsed = read_cycles() - start;
+    char reply[64];
+    int status = stream_recv_line(control, reply, sizeof(reply));
+    mich_handle_close((unsigned int)udp);
+    if (status || reply[0] != 'O' || reply[1] != 'K' || reply[2] != ' ')
+        return -1;
+    u64 packets = 0;
+    u32 index = 3;
+    while (reply[index] >= '0' && reply[index] <= '9')
+        packets = packets * 10u + (u64)(reply[index++] - '0');
+    if (reply[index] != ' ') return -1;
+    index++;
+    u64 bytes = 0;
+    while (reply[index] >= '0' && reply[index] <= '9')
+        bytes = bytes * 10u + (u64)(reply[index++] - '0');
+    // Zero delivered is a clean result, not a stream error: the peer answered a
+    // well-formed "OK 0 0", so the control stream is still in sync and the caller
+    // may keep using it. slirp cannot route guest-to-host datagrams to a
+    // host-bound port, so this is the expected user-net outcome; return 0 to say
+    // "nothing to report, carry on" versus 1 for "real numbers printed".
+    if (!packets) return 0;
+    mich_write("Mich netbench: wire-udp-tx size=");
+    write_decimal(size);
+    mich_write("B sent=");
+    write_decimal(sent);
+    mich_write(" packets=");
+    write_decimal(packets);
+    mich_write(" bytes=");
+    write_decimal(bytes);
+    mich_write(" cycles=");
+    write_decimal(elapsed);
+    mich_write("\n");
+    return 1;
 }
 
 int main(void) {
@@ -417,22 +529,61 @@ int main(void) {
     // the host bridge, and a second stack (the peer) on the far side. The QEMU
     // bench profile launches that peer and bridges it to PEER_ADDRESS, so a dial
     // failure here means broken plumbing and must fail the run, not be skipped.
-    // Bulk TX is the wire correctness gate: it is one-directional, so it proves
-    // the connect, the stream send path, and the byte-accurate reply in about a
-    // second even under TCG, without the per-round polling stalls the round trip
-    // pays through slirp.
-    if (wire_tx(WIRE_TX_TOTAL) != 0) {
+    // Every wire test drives one shared control connection rather than dialling
+    // per test: slirp does not reliably carry a guest's second outbound
+    // connection to a host-bound peer (the first completes, later ones report
+    // connected but never deliver and wedge on the reply), so pipelining TX, UDP,
+    // and the round trip over the single connection that works is what keeps them
+    // all reachable. It also matches how iperf and netperf keep one persistent
+    // control channel, and drops the per-test handshake out of the measurement.
+    int control = connect_peer();
+    if (control < 0) {
         mich_write("Mich netbench: wire FAIL\n");
         return 1;
     }
+    // Bulk TX is the wire correctness gate: it is one-directional, so it proves
+    // the connect, the stream send path, and the byte-accurate reply in about a
+    // second even under TCG, without the per-round polling stalls the round trip
+    // pays through slirp. The commands are lock-step, so it also leaves the shared
+    // stream clean for the tests that follow.
+    if (wire_tx((unsigned int)control, WIRE_TX_TOTAL) != 0) {
+        mich_write("Mich netbench: wire FAIL\n");
+        mich_handle_close((unsigned int)control);
+        return 1;
+    }
     mich_write("Mich netbench: wire report pass\n");
-    // Round-trip latency is reported after the gate and best-effort: each round
-    // through slirp under TCG costs seconds and is dominated by the guest polling
-    // for the reply (rdtsc counts the poll, not the wire), so the emulator may
-    // tear the guest down before it finishes. That is harmless here, and the same
-    // code produces real numbers fast on KVM with vhost where a round trip is
-    // cheap. The return value is intentionally ignored for that reason.
-    (void)wire_rr(WIRE_RR_COUNT, 64u);
+    // Round-trip latency runs first among the best-effort tests because, unlike
+    // UDP under user-net, it produces real numbers even here, and each UDP probe
+    // below spends a fixed peer-side quiescence window waiting for datagrams that
+    // slirp never delivers; running RR first keeps that dead time from starving it
+    // of the emulator's teardown budget. Each round through slirp under TCG is
+    // dominated by the guest polling for the reply (rdtsc counts the poll, not the
+    // wire), so this is a plumbing check here and produces real numbers fast on
+    // KVM with vhost. A non-zero return means the shared stream desynced, so skip
+    // the rest rather than feed a corrupted stream into the UDP probes.
+    int stream_ok = wire_rr((unsigned int)control, WIRE_RR_COUNT, 64u) == 0;
+    // UDP bulk TX exercises the datagram path the tcp gate never touches: the
+    // socket bind to the wire address, the UDP and IPv4 builders, and delivery to
+    // the host peer. It is surfaced, not gated: the control handshake rides the
+    // shared connection, but the datagrams still have to cross to the peer, and
+    // slirp cannot route guest-to-host datagrams to a host-bound port, so under
+    // the user-net CI profile the peer counts zero and no report line prints. It
+    // produces real numbers on the tap/vhost (KVM) topology. Two sizes bracket the
+    // per-packet floor (64B) and the near-MTU cost (1400B). A negative return
+    // means the shared stream desynced, so stop before it corrupts a later test;
+    // reconnecting is not an option because that is the second-connection path
+    // slirp will not carry, which is why everything shares this one connection.
+    int udp_reported = 0;
+    if (stream_ok) {
+        int udp = wire_udp_tx((unsigned int)control, WIRE_UDP_COUNT, 64u);
+        if (udp >= 0) {
+            udp_reported |= udp;
+            udp = wire_udp_tx((unsigned int)control, WIRE_UDP_COUNT, 1400u);
+            udp_reported |= (udp > 0);
+        }
+    }
+    if (udp_reported) mich_write("Mich netbench: udp report pass\n");
+    mich_handle_close((unsigned int)control);
     // A netbench boot runs on a quiescent kernel: the kernel detects this probe
     // in the module set and skips the driver-live-recovery lab that a resident
     // task would otherwise perturb. With no recovery sequence to race, the probe
