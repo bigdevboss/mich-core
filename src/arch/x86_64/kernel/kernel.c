@@ -1915,7 +1915,20 @@ void kernel64_main(u32 magic, struct bd_info *info) {
             virtio_net_recovery_test))
         KERNEL_PANIC("virtio-net manifest");
 #ifdef MICH_TEST_BUILD
-    if (!(init_module->flags & BOOT_MODULE_UNIT_TEST) &&
+    // A netbench boot measures loopback socket cycles and must run on a
+    // quiescent kernel. The driver-live-recovery lab deliberately crashes and
+    // restarts a capsule against a tight tick deadline and a rebind-gap that
+    // both assume the capsule is the only competing userspace task; a second
+    // runnable task (netbench is loopback-only, so it never blocks off the run
+    // queue like dnsprobe does) perturbs that cadence into a spurious recovery
+    // panic and would also skew the cycle counts. Skip the lab for such boots.
+    int bench_boot = 0;
+    for (u32 index = 0; index < info->mods_count; index++)
+        if (module_name_is(&modules[index], "netbench")) {
+            bench_boot = 1;
+            break;
+        }
+    if (!bench_boot && !(init_module->flags & BOOT_MODULE_UNIT_TEST) &&
         driver_live_recovery_prepare())
         KERNEL_PANIC("driver live recovery setup");
 #endif
@@ -1927,7 +1940,8 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     // owns no interface and reaches the network purely through routed sockets.
     for (u32 index = 0; index < info->mods_count; index++) {
         if (!module_name_is(&modules[index], "dnsprobe") &&
-            !module_name_is(&modules[index], "tlsprobe")) continue;
+            !module_name_is(&modules[index], "tlsprobe") &&
+            !module_name_is(&modules[index], "netbench")) continue;
         if (spawn64_image(index, 0, spawn_image_capabilities[index],
                           "probe", 0) < 0)
             KERNEL_PANIC("probe spawn");
@@ -1935,13 +1949,15 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     }
 #endif
 #ifdef MICH_TEST_BUILD
-    if (!(init_module->flags & BOOT_MODULE_UNIT_TEST) &&
+    if (!bench_boot && !(init_module->flags & BOOT_MODULE_UNIT_TEST) &&
         driver_live_recovery_arm())
         KERNEL_PANIC("driver live recovery arm");
     if (tests64_run_irq(&test_env, msi_test, msix_test, virtio_test))
         KERNEL_PANIC("independent IRQ tests");
-    if (!(init_module->flags & BOOT_MODULE_UNIT_TEST)) {
-        // Keep the lifecycle probe out of the init1/init2 handshake.
+    if (!bench_boot && !(init_module->flags & BOOT_MODULE_UNIT_TEST)) {
+        // Keep the lifecycle probe out of the init1/init2 handshake. A bench
+        // boot has no recovery lab to reach COMPLETE and unblock these, so it
+        // must leave the init tasks runnable.
         task_pool[1].state = TASK_BLOCKED_RECV;
         task_pool[2].state = TASK_BLOCKED_RECV;
     }
