@@ -22,15 +22,14 @@
 
 // Period, in 10ms timer ticks, of the maintenance timer that pumps the kernel
 // TCP timer engine (net_interface_tick -> tcp_tick: retransmit, RTO, persist).
-// Default 100 ticks = 1s, which serialises any timer-driven TCP progress onto a
-// 1 Hz cadence and dominates wire latency (see docs/net-bench-results.md).
-// MICH_NET_EAGER_TICK drops it to 10ms to A/B measure how much of the stall that
-// cadence accounts for.
-#ifdef MICH_NET_EAGER_TICK
+// 1 tick = 10ms matches the system timer, the way a networked kernel is meant to
+// service its stack. The loop also pumps the engine right after each RX drain
+// (event-driven), which carries active connections below this floor; the periodic
+// tick is the backstop for a timer that fires with no incoming packet to trigger
+// the event pump, such as an RTO retransmit on an idle link. It used to be 100
+// ticks = 1s, which serialised all timer-driven TCP progress onto a 1 Hz cadence
+// and dominated wire latency (see docs/net-bench-results.md).
 #define VIRTIO_NET_MAINT_PERIOD 1u
-#else
-#define VIRTIO_NET_MAINT_PERIOD 100u
-#endif
 
 static unsigned long long read_cycles(void) {
     unsigned int low;
@@ -1325,7 +1324,18 @@ int main(unsigned long long argument) {
     for (;;) {
         process_tx_completions(&capsule);
         process_tx_batch(&capsule);
-        process_rx_batch(&capsule);
+        unsigned int rx = process_rx_batch(&capsule);
+        // Advance the TCP timer engine right after new segments arrive, so an ACK
+        // that just landed opens the window and the following TX batch ships the
+        // next segments in the same iteration rather than stalling until the
+        // periodic maintenance tick (see docs/net-bench-results.md). Gate on rx:
+        // ticking only when RX was drained keeps active connections at the
+        // interface RTT without spending a maintenance syscall on every idle
+        // spin, and it must run after process_rx_batch has fed the fresh segments
+        // to the stack, not on the bare interrupt, or it ticks on stale state.
+        if (rx && capsule.ipv6_dad_complete &&
+            mich_net_interface_ipv6_maintenance(capsule.interface_handle))
+            return 11;
         process_tx_batch(&capsule);
         if (probes_poll(&capsule) < 0) return 13;
 #ifndef VIRTIO_NET_SAFE_ARTIFACT

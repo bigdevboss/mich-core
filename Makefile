@@ -36,13 +36,6 @@ CFLAGS64 = -m64 -mno-red-zone -msse2 -mno-mmx -nostdlib -nostdinc -fno-builtin -
 USER64_CFLAGS = $(CFLAGS64) -mcmodel=large -Isrc/user64/include
 LDFLAGS64 = -m elf_x86_64 -T $(ARCH64_BOOT)/linker.ld
 
-# A/B knob for the wire-latency experiment: MICH_EAGER_TICK=1 builds the
-# virtio-net capsule to pump the TCP timer engine at 100 Hz instead of 1 Hz.
-# make does not track flag changes, so run `make clean` when switching modes.
-ifdef MICH_EAGER_TICK
-NET_EAGER_TICK_FLAG = -DMICH_NET_EAGER_TICK
-endif
-
 BIN_DIR = bin
 BIN64 = $(BIN_DIR)/x86_64
 OBJ64 = $(BIN64)/obj
@@ -529,7 +522,7 @@ $(POSIXDEMO64_ELF): $(POSIXDEMO64_OBJS) src/user64/linker.ld | $(USER64_DIR)
 	$(LD) -m elf_x86_64 -T src/user64/linker.ld -o $@ $(POSIXDEMO64_OBJS)
 
 $(VIRTIO_NET64_OBJ): src/user64/virtio_net/main.c src/user64/virtio_net/capsule.h src/user64/include/mich/syscall.h src/user64/include/mich/event.h src/user64/include/mich/driver.h src/user64/include/mich/virtio.h src/user64/include/mich/net.h src/user64/include/mich/net_interface.h src/user64/include/mich/timer.h src/user64/include/mich/wait.h src/user64/include/mich/vfs.h src/user64/include/mich/firmware.h | $(USER64_OBJ_DIR)
-	$(CC) $(USER64_CFLAGS) $(NET_EAGER_TICK_FLAG) -Werror -c $< -o $@
+	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
 $(VIRTIO_NET_SAFE64_OBJ): src/user64/virtio_net/safe.c src/user64/include/mich/syscall.h src/user64/include/mich/driver.h src/user64/include/mich/virtio.h src/user64/include/mich/net.h src/user64/include/mich/net_interface.h src/user64/include/mich/bridge.h src/user64/include/mich/wait.h | $(USER64_OBJ_DIR)
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
