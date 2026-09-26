@@ -9,7 +9,7 @@ qemu_timeout=45
 if [ "$profile" = "smp" ] || [ "$profile" = "iommu" ]; then qemu_timeout=130; fi
 if [ "$profile" = "msi" ]; then qemu_timeout=300; fi
 if [ "$profile" = "dns" ]; then qemu_timeout=150; fi
-if [ "$profile" = "netbench" ]; then qemu_timeout=240; fi
+if [ "$profile" = "netbench" ]; then qemu_timeout=300; fi
 if [ "$profile" = "tls" ]; then qemu_timeout=200; fi
 if [ "$profile" = "tls-real" ]; then qemu_timeout=200; fi
 if [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ] ||
@@ -27,6 +27,9 @@ recovery_guestfwd=""
 dns_guestfwd=""
 tls_server_pid=""
 tls_server_log=""
+netbench_peer_pid=""
+netbench_peer_bin=""
+netbench_peer_log=""
 # The firmware needs a machine with a working pflash pair, so every profile
 # runs on q35 now. Profiles that used to ask for it no longer add their own
 # -machine.
@@ -95,11 +98,18 @@ finally:
         ;;
     netbench)
         want_nic_none=0
-        # Plain slirp is enough: the benchmark stays on loopback, and the NIC is
-        # only here so the virtio-net capsule the image ships has a device to
-        # bring up. slirp answers the capsule's DHCP and echo probes on its own,
-        # so no guestfwd is needed.
-        set -- -netdev user,id=michnet -device virtio-net-pci,netdev=michnet
+        # The benchmark runs its loopback pass first, then dials the host peer
+        # over virtio-net for the wire pass. The peer is the same C program the
+        # host-side self-test uses; slirp bridges the guest's fixed 10.0.2.4:4500
+        # target to it, exactly as the tls profile bridges its test server.
+        netbench_peer_bin="$(mktemp)"
+        netbench_peer_log="$(mktemp)"
+        cc -O2 -o "$netbench_peer_bin" scripts/net-bench/peer.c
+        "$netbench_peer_bin" --port 4500 >"$netbench_peer_log" 2>&1 &
+        netbench_peer_pid=$!
+        # Give it a moment to bind before QEMU tries to reach it.
+        sleep 1
+        set -- -netdev user,id=michnet,guestfwd=tcp:10.0.2.4:4500-tcp:127.0.0.1:4500 -device virtio-net-pci,netdev=michnet
         ;;
     msi-recovery)
         want_nic_none=0
@@ -317,7 +327,7 @@ mich_uefi_firmware
 if [ "$want_nic_none" -eq 1 ]; then
     set -- "$@" -nic none
 fi
-trap 'if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; if [ -n "$tls_server_pid" ]; then kill "$tls_server_pid" 2>/dev/null || true; fi; rm -f "$tls_server_log" "$log" "$passive_result" "$active_result" "$recovery_guestfwd" "$dns_guestfwd" "$blk_img" "$nvme_img" "$uefi_vars"' EXIT
+trap 'if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; if [ -n "$tls_server_pid" ]; then kill "$tls_server_pid" 2>/dev/null || true; fi; if [ -n "$netbench_peer_pid" ]; then kill "$netbench_peer_pid" 2>/dev/null || true; fi; rm -f "$tls_server_log" "$netbench_peer_bin" "$netbench_peer_log" "$log" "$passive_result" "$active_result" "$recovery_guestfwd" "$dns_guestfwd" "$blk_img" "$nvme_img" "$uefi_vars"' EXIT
 set +e
 timeout "${qemu_timeout}s" qemu-system-x86_64 \
     -machine q35 \
@@ -790,9 +800,16 @@ if [ "$profile" = "dns" ]; then
     done
 fi
 if [ "$profile" = "netbench" ]; then
-    grep -Fq "Mich netbench: loopback report pass" "$log" || { cat "$log"; exit 1; }
-    # Surface the measured per-packet numbers the guest printed.
+    for marker in \
+        "Mich netbench: loopback report pass" \
+        "Mich netbench: wire report pass"
+    do
+        grep -Fq "$marker" "$log" || { cat "$log"; cat "$netbench_peer_log"; exit 1; }
+    done
+    # Surface the measured numbers the guest printed for both passes.
     grep -F "Mich netbench: loopback-udp" "$log" || true
+    grep -F "Mich netbench: wire-rr" "$log" || true
+    grep -F "Mich netbench: wire-tx" "$log" || true
 fi
 if [ "$profile" = "tls" ]; then
     for marker in \
