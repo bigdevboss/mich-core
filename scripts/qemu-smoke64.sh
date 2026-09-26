@@ -19,6 +19,14 @@ fi
 # OVMF spends a few seconds enumerating devices and probing the boot order
 # before it hands over, which the old BIOS path did not.
 qemu_timeout=$((qemu_timeout + 25))
+# KVM is opt-in via MICH_KVM: CI runs TCG, but a developer on a KVM box exports
+# MICH_KVM=1 to get real host cycles out of the rdtsc benchmark instead of the
+# emulator's. -cpu host is required so the guest reads the real TSC and sees the
+# AES-NI the crypto boot tests use. MICH_QEMU_TIMEOUT overrides the per-profile
+# budget, since a KVM run finishes in seconds where TCG needs minutes.
+accel_cpu="-cpu qemu64,+aes,+pclmulqdq,+ssse3"
+if [ -n "${MICH_KVM:-}" ]; then accel_cpu="-enable-kvm -cpu host"; fi
+if [ -n "${MICH_QEMU_TIMEOUT:-}" ]; then qemu_timeout="$MICH_QEMU_TIMEOUT"; fi
 passive_result=""
 passive_pid=""
 passive_expected=0
@@ -331,7 +339,7 @@ trap 'if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi
 set +e
 timeout "${qemu_timeout}s" qemu-system-x86_64 \
     -machine q35 \
-    -cpu qemu64,+aes,+pclmulqdq,+ssse3 \
+    $accel_cpu \
     -drive if=pflash,format=raw,readonly=on,file="$uefi_code" \
     -drive if=pflash,format=raw,file="$uefi_vars" \
     -drive file="$image",format=raw,if=none,id=esdisk \
