@@ -115,36 +115,34 @@ tap/vhost, but under KVM it already gives real host cycles, low datagram loss, a
 fast round trips, so it is the recommended first wire number. The `wire-tx`,
 `wire-rr`, and `wire-udp-tx` lines are this topology.
 
-### Topology 3: guest to host over tap plus vhost (max throughput, advanced)
+### Topology 3: guest to host over tap plus vhost (real bulk and PPS)
 
-This removes slirp from the path but needs host-side plumbing, because the guest
-runs real DHCP and the current addresses are the slirp subnet (`10.0.2.0/24`,
-guest lease `10.0.2.15`, TCP control at `10.0.2.4`, UDP peer at `10.0.2.2`). On
-the host, as root:
+This removes slirp: tap hands frames straight to the host kernel and vhost-net
+moves the virtio datapath out of QEMU into a host kernel thread, so the wire
+numbers reflect the guest stack rather than the emulator. slirp caps the wire
+path around a few Mbit/s; tap plus vhost lifts that by orders of magnitude, which
+is why the bulk-throughput and packet-rate numbers are only meaningful here.
 
-```
-ip tuntap add dev tap0 mode tap
-ip addr add 10.0.2.2/24 dev tap0
-ip addr add 10.0.2.4/24 dev tap0        # TCP control alias the guest dials
-ip link set tap0 up
-dnsmasq --interface=tap0 --bind-interfaces --except-interface=lo \
-        --dhcp-range=10.0.2.15,10.0.2.15,255.255.255.0,12h \
-        --dhcp-option=3,10.0.2.2 --no-daemon &
-cc -O2 -o peer scripts/net-bench/peer.c
-./peer --port 4500 &
-```
-
-Then boot the guest by hand against the tap with a vhost-backed virtio-net,
-pointing it at the same disk and OVMF the script uses (see the invocation it
-prints, or `scripts/uefi-firmware.sh` for the OVMF paths). The netdev is:
+It is a single command, run as root (creating a tap, addressing it, and serving
+DHCP on it are all privileged):
 
 ```
--netdev tap,id=michnet,ifname=tap0,script=no,downscript=no,vhost=on \
--device virtio-net-pci,netdev=michnet
+sudo scripts/net-bench/kvm-tap-bench.sh
 ```
 
-This path is not yet automated or verified here; if you want it wired into the
-runner and the peer addresses made configurable, that is a small follow-up.
+The script creates `tap0` on the same `10.0.2.0/24` the guest already expects
+(host at `10.0.2.4`, guest lease `10.0.2.15`), starts a DHCP-only dnsmasq on it,
+builds the heavy netbench capsule (`MICH_NET_TAP=1`, which enlarges the transfer
+and iteration counts and dials the peer directly instead of through the slirp
+gateway), runs it under KVM with a vhost-backed virtio-net, and tears the tap and
+DHCP server down on exit. It needs `qemu-system-x86_64`, `dnsmasq`, `iproute2`,
+`/dev/vhost-net` (`modprobe vhost_net`), and `/dev/kvm`. Override `TAP_IF`,
+`HOST_IP`, or `GUEST_IP` by exporting them if the defaults collide with an
+existing interface.
+
+The heavy sizes live behind the `MICH_NETBENCH_TAP` build flag so the CI and
+slirp runs stay tiny enough for the harness budget; `make` does not track flag
+changes, so the script always builds clean.
 
 ## What to send back
 
@@ -156,18 +154,31 @@ qemu-system-x86_64 --version
 uname -a                           # host OS and kernel (Linux or FreeBSD)
 ```
 
-Then the run itself and its bench lines:
+Then the run itself. For the real bulk and PPS numbers use the tap plus vhost
+topology:
 
 ```
-MICH_KVM=1 MICH_QEMU_TIMEOUT=90 make test64-netbench 2>&1 | tee run.log
+sudo scripts/net-bench/kvm-tap-bench.sh 2>&1 | tee run.log
 grep 'Mich netbench:' run.log
 ```
+
+(The slirp topology, `MICH_KVM=1 make test64-netbench`, still works with no host
+setup, but its wire throughput is slirp-bound and its UDP is lossy, so use it only
+for a quick sanity check, not for the headline numbers.)
 
 Copy the whole `grep` output. The lines that matter are `loopback-udp`,
 `wire-tx`, `wire-rr`, and `wire-udp-tx`; each carries its payload size and a
 `cycles=` or `p50=/p99=` field. rdtsc counts reference cycles, so the `lscpu` base
-frequency is what converts them to nanoseconds. Do three runs and keep all three
+frequency is what converts them to real time. Do three runs and keep all three
 (the first is a warmup); report the median.
+
+To turn the logs straight into a CSV with derived throughput (Mbit/s) and packet
+rate (pps) columns, pass the runs and the TSC frequency to the collector:
+
+```
+python3 scripts/net-bench/collect.py --tsc-hz $(lscpu -e=MHZ | tail -1)000000 \
+    run1.log run2.log run3.log -o bench.csv
+```
 
 ## In-guest module and CI
 
@@ -213,5 +224,7 @@ single shared connection exists to avoid.
   slirp under TCG (lossy) and expected clean on KVM.
 - [x] `MICH_KVM=1` KVM run path through the smoke runner.
 - [ ] Guest-to-host UDP receive (URX) and datagram RR (URR) from the module.
-- [ ] tap/vhost topology automated, with the peer addresses made configurable.
+- [x] tap/vhost topology automated (`scripts/net-bench/kvm-tap-bench.sh`), with
+  the tap and lease addresses overridable by environment variable.
+- [x] Collector derives Mbit/s and pps columns from the raw cycle logs.
 - [ ] Reference numbers on real KVM hardware, collected and tabulated.
