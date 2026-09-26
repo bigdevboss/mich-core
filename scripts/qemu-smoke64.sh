@@ -9,6 +9,7 @@ qemu_timeout=45
 if [ "$profile" = "smp" ] || [ "$profile" = "iommu" ]; then qemu_timeout=130; fi
 if [ "$profile" = "msi" ]; then qemu_timeout=300; fi
 if [ "$profile" = "dns" ]; then qemu_timeout=150; fi
+if [ "$profile" = "netbench" ]; then qemu_timeout=240; fi
 if [ "$profile" = "tls" ]; then qemu_timeout=200; fi
 if [ "$profile" = "tls-real" ]; then qemu_timeout=200; fi
 if [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ] ||
@@ -91,6 +92,14 @@ finally:
         want_nic_none=0
         dns_guestfwd="$(mktemp)"
         set -- -netdev user,id=michnet,guestfwd=tcp:10.0.2.4:53-cmd:$dns_guestfwd -device virtio-net-pci,netdev=michnet
+        ;;
+    netbench)
+        want_nic_none=0
+        # Plain slirp is enough: the benchmark stays on loopback, and the NIC is
+        # only here so the virtio-net capsule the image ships has a device to
+        # bring up. slirp answers the capsule's DHCP and echo probes on its own,
+        # so no guestfwd is needed.
+        set -- -netdev user,id=michnet -device virtio-net-pci,netdev=michnet
         ;;
     msi-recovery)
         want_nic_none=0
@@ -334,6 +343,33 @@ if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
     cat "$log"
     exit 1
 fi
+# The netbench profile boots a deliberately quiescent kernel: it skips the
+# driver-live-recovery lab so that lab cannot perturb the loopback timing or
+# pollute the cycle counts. That same lab is what the init role-1/2 CI battery
+# is wired to run behind, so it does not execute here either. This profile is
+# therefore gated on boot-essential plus net plus netbench markers only; the
+# full init battery stays covered by the disk-test and dns profiles.
+if [ "$profile" = "netbench" ]; then
+    for marker in \
+        "Mich Core 0.1.0 x86_64: long mode alive" \
+        "Mich x86_64: GDT and TSS alive" \
+        "Mich x86_64: IDT alive" \
+        "Mich x86_64: panic subsystem ready" \
+        "Mich x86_64: E820 PMM alive" \
+        "Mich x86_64: ACPI tables pass" \
+        "Mich x86_64: PCI enumeration pass" \
+        "Mich x86_64: LAPIC controller pass" \
+        "Mich x86_64: IOAPIC routing pass" \
+        "Mich x86_64: APIC timer pass" \
+        "Mich x86_64: preemptive scheduler pass" \
+        "Mich virtio-net: bootstrap pass" \
+        "Mich virtio-net: DRIVER_OK pass" \
+        "Mich virtio-net: userspace capsule running" \
+        "Mich test64: netbench baseline report pass"
+    do
+        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+    done
+else
 for marker in \
     "Mich Core 0.1.0 x86_64: long mode alive" \
     "Mich x86_64: GDT and TSS alive" \
@@ -657,11 +693,12 @@ for marker in \
 do
     grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
 done
+fi
 # The hardware and msi profiles spawn init without the POSIX modules, so these
 # markers can never appear there. Asking for them made those profiles fail on
 # something the image was never built to do.
 case "$profile" in
-    hardware|msi|msi-restart|msi-circuit|msi-recovery|dns|tls|tls-real)
+    hardware|msi|msi-restart|msi-circuit|msi-recovery|dns|tls|tls-real|netbench)
         ;;
     *)
         for marker in \
@@ -684,6 +721,10 @@ case "$profile" in
         done
         ;;
 esac
+# The netbench profile skips the driver-live-recovery lab, so none of its
+# bootstrap markers exist there; every other profile runs the lab and must show
+# the full crash-restart-fallback sequence in order.
+if [ "$profile" != "netbench" ]; then
 live_primary="Mich test64: driver live primary bootstrap pass"
     live_fallback="Mich test64: driver live fallback bootstrap pass"
     live_isolation="Mich test64: driver live recovery isolation pass"
@@ -703,6 +744,7 @@ live_primary="Mich test64: driver live primary bootstrap pass"
     cat "$log"
     exit 1
 }
+fi
 if [ "$profile" = "uefi" ]; then
     grep -Fq "BigDevBoot UEFI 0.1.0 by bigdevboss" "$log" || {
         cat "$log"
@@ -746,6 +788,11 @@ if [ "$profile" = "dns" ]; then
     do
         grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
     done
+fi
+if [ "$profile" = "netbench" ]; then
+    grep -Fq "Mich netbench: loopback report pass" "$log" || { cat "$log"; exit 1; }
+    # Surface the measured per-packet numbers the guest printed.
+    grep -F "Mich netbench: loopback-udp" "$log" || true
 fi
 if [ "$profile" = "tls" ]; then
     for marker in \
