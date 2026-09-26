@@ -34,27 +34,47 @@
 #define PEER_ADDRESS 0x0A000204u
 #define PEER_PORT 4500u
 
-// Deliberately tiny. In CI the wire path runs under TCG through slirp, where a
-// single round trip crosses the emulator twice and the guest polls for the reply
-// (rdtsc counts every poll, so the cycle figures here are not real latency).
-// This is a plumbing correctness check; the long runs that produce real numbers
-// belong on KVM with vhost and a blocking wait, driven from the host peer.
+// Deliberately tiny by default. In CI the wire path runs under TCG through slirp,
+// where a single round trip crosses the emulator twice and the guest polls for
+// the reply (rdtsc counts every poll, so the cycle figures here are not real
+// latency), and that default is only a plumbing correctness check.
+//
+// MICH_NETBENCH_TAP selects the KVM tap/vhost topology, where vhost moves the
+// virtio datapath into the host kernel and tap replaces slirp's userspace TCP, so
+// the wire figures reflect the guest stack rather than the emulator. The transfer
+// size and iteration counts then grow to what a real bulk and round-trip
+// measurement needs; that run is expected on KVM, where a blocking wait makes the
+// cycles real wall time. make does not track flag changes, so rebuild clean when
+// switching topology.
+#ifdef MICH_NETBENCH_TAP
+#define WIRE_RR_COUNT 1000u
+#define WIRE_TX_TOTAL 67108864u
+#else
 #define WIRE_RR_COUNT 8u
 #define WIRE_TX_TOTAL 16384u
+#endif
 
-// UDP wire path. QEMU's user netdev has no udp guestfwd form, so the tcp control
-// alias 10.0.2.4 cannot carry datagrams; the peer's UDP port is reached at the
-// slirp gateway 10.0.2.2 instead, which forwards to the host where the peer
-// binds it on demand. The guest socket must bind the wire interface address, not
-// INADDR_ANY: context_for_address maps 0 to the loopback context, so a send to
-// the gateway would then fail the route-to-context match in socket_send_to.
-// slirp always leases 10.0.2.15 to the first guest, and DHCP has already settled
-// by the time the tcp wire gate above has passed.
+// UDP wire path. On slirp (the default) QEMU's user netdev has no udp guestfwd
+// form, so the tcp control alias 10.0.2.4 cannot carry datagrams; the peer's UDP
+// port is reached at the slirp gateway 10.0.2.2 instead, which forwards to the
+// host where the peer binds it on demand. On the tap/vhost topology there is no
+// gateway: the peer is a plain host socket on the tap address, so datagrams go to
+// the same host the tcp control connection already reaches. The guest socket must
+// bind the wire interface address, not INADDR_ANY: context_for_address maps 0 to
+// the loopback context, so a send would then fail the route-to-context match in
+// socket_send_to. slirp leases 10.0.2.15 to the first guest and the tap DHCP
+// server is configured to lease the same, and DHCP has already settled by the
+// time the tcp wire gate above has passed.
 #define GUEST_ADDRESS 0x0A00020Fu
+#ifdef MICH_NETBENCH_TAP
+#define PEER_UDP_ADDRESS PEER_ADDRESS
+#define WIRE_UDP_COUNT 50000u
+#else
 #define PEER_UDP_ADDRESS 0x0A000202u
+#define WIRE_UDP_COUNT 64u
+#endif
 #define PEER_UDP_PORT 15100u
 #define GUEST_UDP_PORT 15200u
-#define WIRE_UDP_COUNT 64u
 
 // The dial is retried because the first attempts can land before the virtio-net
 // capsule has finished DHCP, and a spin budget bounds every socket wait so a
