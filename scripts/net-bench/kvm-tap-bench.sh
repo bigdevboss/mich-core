@@ -60,18 +60,32 @@ ip link set "$TAP_IF" up
 # DHCP only: --port=0 turns off the dnsmasq DNS server so it never fights
 # systemd-resolved for port 53, and a single-address range hands the guest the
 # fixed lease the capsule expects. --bind-interfaces plus --except-interface keep
-# it off every other interface on the box.
+# it off every other interface on the box. The guest capsule rejects any offer
+# that lacks a router (option 3), a netmask, and a server id, so the router is set
+# explicitly to the host tap address rather than trusting a default. --no-daemon
+# keeps the pid trackable so cleanup can stop it (a daemonized dnsmasq would leak
+# past a deleted tap), and --log-dhcp writes every DHCP transaction into the run
+# log so a lease failure is visible instead of silent.
 dnsmasq \
+    --no-daemon \
+    --log-dhcp \
+    --log-facility=- \
     --interface="$TAP_IF" \
     --bind-interfaces \
     --except-interface=lo \
     --port=0 \
     --dhcp-range="$GUEST_IP,$GUEST_IP,$NETMASK,1h" \
+    --dhcp-option=3,"$HOST_IP" \
     --dhcp-authoritative \
     --no-resolv \
-    --no-hosts \
-    --pid-file="/run/kvm-tap-bench-dnsmasq.pid" &
+    --no-hosts &
 dnsmasq_pid=$!
+
+# A backgrounded dnsmasq that dies at startup (a port clash, a bad option) would
+# otherwise leave the guest with no lease and only a silent wire failure to show
+# for it, so confirm it is actually serving before spending minutes on the build.
+sleep 1
+kill -0 "$dnsmasq_pid" 2>/dev/null || fail "dnsmasq exited at startup (see its log above)"
 
 echo "kvm-tap-bench: tap=$TAP_IF host=$HOST_IP guest=$GUEST_IP, building heavy netbench capsule"
 
