@@ -18,6 +18,7 @@
 #   TAP_IF   tap interface name          (default tap0)
 #   HOST_IP  address on the host side     (default 10.0.2.4, the peer address)
 #   GUEST_IP address leased to the guest  (default 10.0.2.15)
+#   MICH_TAP_TCPDUMP=1  capture the tap traffic to the log for wire debugging
 set -eu
 
 TAP_IF="${TAP_IF:-tap0}"
@@ -31,6 +32,14 @@ NETMASK="255.255.255.0"
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 tap_owner="${SUDO_USER:-root}"
 dnsmasq_pid=""
+tcpdump_pid=""
+
+# Opt-in wire capture. When the wire pass fails there is no way to tell a dropped
+# handshake (firewall, bad checksum) from a stack bug without seeing the frames,
+# so MICH_TAP_TCPDUMP=1 snapshots the tap while the run happens. -v prints the
+# checksum verdict per segment, which is what separates a guest checksum bug from
+# a host-side drop.
+MICH_TAP_TCPDUMP="${MICH_TAP_TCPDUMP:-0}"
 
 fail() { echo "kvm-tap-bench: $1" >&2; exit 1; }
 
@@ -44,6 +53,7 @@ command -v ip >/dev/null 2>&1 || fail "ip not found (pacman -S iproute2)"
 [ -c /dev/kvm ] || fail "/dev/kvm missing (KVM not available)"
 
 cleanup() {
+    [ -n "$tcpdump_pid" ] && kill "$tcpdump_pid" 2>/dev/null || true
     [ -n "$dnsmasq_pid" ] && kill "$dnsmasq_pid" 2>/dev/null || true
     ip link show "$TAP_IF" >/dev/null 2>&1 && ip link del "$TAP_IF" 2>/dev/null || true
     # Undo the root ownership the in-place build would otherwise leave behind.
@@ -56,6 +66,16 @@ ip link show "$TAP_IF" >/dev/null 2>&1 && ip link del "$TAP_IF"
 ip tuntap add dev "$TAP_IF" mode tap user "$tap_owner"
 ip addr add "$HOST_IP/24" dev "$TAP_IF"
 ip link set "$TAP_IF" up
+
+# Start the capture before DHCP so the log shows the whole conversation: the DHCP
+# handshake, the ARP for the peer, the ICMP that already works, and the TCP SYN
+# whose fate is the open question. -l keeps it line buffered into the tee, and the
+# count bound lets it end on its own if cleanup is missed.
+if [ "$MICH_TAP_TCPDUMP" = "1" ]; then
+    command -v tcpdump >/dev/null 2>&1 || fail "tcpdump not found (pacman -S tcpdump)"
+    tcpdump -i "$TAP_IF" -n -v -l -c 200 'arp or icmp or tcp or udp' &
+    tcpdump_pid=$!
+fi
 
 # DHCP only: --port=0 turns off the dnsmasq DNS server so it never fights
 # systemd-resolved for port 53, and a single-address range hands the guest the
