@@ -78,21 +78,35 @@ to itself.
 
 ## In-guest module and CI
 
-The guest bench module (`src/user64/netbench`) runs the full UDP socket path over
-loopback and reports cycles per round-trip. The kernel spawns it through the same
-probe hook as the dns and tls probes, but recognises the `netbench` module and
-skips the driver-live-recovery lab for that boot. The lab deliberately crashes and
-restarts a driver capsule against a tight tick deadline; a resident bench task
-both perturbs that timing (a spurious recovery panic) and skews the cycle counts,
-so the benchmark wants a quiescent kernel. The `netbench` smoke profile is
-therefore gated on boot-essential plus net plus netbench markers only, since the
-full init CI battery (which is wired behind that same lab) stays covered by the
-`disk-test` and `dns` profiles.
+The guest bench module (`src/user64/netbench`) runs two passes. The loopback pass
+times the full UDP socket path in-kernel and reports cycles per round-trip. The
+wire pass then dials the host peer over virtio-net (the guest is the active side)
+and measures the socket path across the real NIC, the host bridge, and the peer's
+own stack, so the delta against loopback is the wire overhead.
+
+The kernel spawns the module through the same probe hook as the dns and tls
+probes, but recognises the `netbench` module and skips the driver-live-recovery
+lab for that boot. The lab deliberately crashes and restarts a driver capsule
+against a tight tick deadline; a resident bench task both perturbs that timing (a
+spurious recovery panic) and skews the cycle counts, so the benchmark wants a
+quiescent kernel. The `netbench` smoke profile is therefore gated on
+boot-essential plus net plus netbench markers only, since the full init CI battery
+(which is wired behind that same lab) stays covered by the `disk-test` and `dns`
+profiles.
+
+The wire pass is gated on bulk TX (`TX`): it is one-directional, so it proves the
+connect, the stream send path, and the byte-accurate reply in about a second even
+under TCG. Round-trip latency (`RR`) is reported best-effort after the gate: each
+round through slirp under TCG costs seconds and is dominated by the guest polling
+for the reply, so the emulator often tears the guest down before it prints. The
+same code produces real latency numbers on KVM with vhost, where a round trip is
+cheap; that is where the RR and PPS numbers are meant to be collected.
 
 ## Status
 
 - [x] Host peer, protocol v1, self-tested over loopback (TX/RX/RR/UDP).
-- [x] Guest bench module (loopback socket path; peer wiring is next).
+- [x] Guest bench module, loopback socket path.
 - [x] Makefile targets and QEMU bench profile (`make test64-netbench`).
-- [ ] Guest-to-host socket path from the module to the peer.
-- [ ] Reference numbers on real KVM hardware.
+- [x] Guest-to-host socket path from the module to the peer (TCP TX gate + RR).
+- [ ] Guest-to-host UDP path (PPS and datagram RR) from the module.
+- [ ] Reference numbers on real KVM hardware with tap/vhost.
