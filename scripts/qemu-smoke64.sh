@@ -117,7 +117,18 @@ finally:
         netbench_peer_pid=$!
         # Give it a moment to bind before QEMU tries to reach it.
         sleep 1
-        set -- -netdev user,id=michnet,guestfwd=tcp:10.0.2.4:4500-tcp:127.0.0.1:4500 -device virtio-net-pci,netdev=michnet
+        if [ -n "${MICH_NET_TAP:-}" ]; then
+            # tap+vhost topology: vhost moves the virtio datapath into the host
+            # kernel and tap replaces slirp's userspace TCP, so the wire numbers
+            # reflect the guest stack, not the emulator. The tap device, its host
+            # address, and the guest's DHCP lease are set up by the caller
+            # (scripts/net-bench/kvm-tap-bench.sh); the peer binds INADDR_ANY, so
+            # it answers on the tap host address the guest dials.
+            tap_if="${MICH_TAP_IF:-tap0}"
+            set -- -netdev "tap,id=michnet,ifname=$tap_if,script=no,downscript=no,vhost=on" -device virtio-net-pci,netdev=michnet
+        else
+            set -- -netdev user,id=michnet,guestfwd=tcp:10.0.2.4:4500-tcp:127.0.0.1:4500 -device virtio-net-pci,netdev=michnet
+        fi
         ;;
     msi-recovery)
         want_nic_none=0

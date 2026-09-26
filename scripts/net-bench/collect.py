@@ -71,9 +71,12 @@ def parse(lines, run, hz, rows):
         m = WIRE_UDP.search(line)
         if m:
             size, sent, pkts, byts, cyc = (int(x) for x in m.groups())
+            # Packet rate is the point of this metric, so derive it once the TSC
+            # frequency is known rather than leave the reader to divide by hand.
+            pps = round(pkts / (cyc / hz), 1) if hz and cyc else ""
             rows.append({
                 "run": run, "metric": "wire-udp-tx", "size_b": size,
-                "packets": pkts, "p50_cyc": cyc, "p50_us": us(cyc, hz),
+                "packets": pkts, "pps": pps, "p50_cyc": cyc, "p50_us": us(cyc, hz),
             })
 
 
@@ -93,7 +96,7 @@ def main():
     else:
         parse(sys.stdin, 1, args.tsc_hz, rows)
 
-    fields = ["run", "metric", "size_b", "packets", "min_cyc", "avg_cyc",
+    fields = ["run", "metric", "size_b", "packets", "pps", "min_cyc", "avg_cyc",
               "p50_cyc", "p99_cyc", "p50_us", "mbit_s",
               "send_cyc", "wait_cyc", "send_us", "wait_us"]
     out = sys.stdout if args.out == "-" else open(args.out, "w", newline="")

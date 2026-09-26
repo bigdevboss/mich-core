@@ -36,6 +36,14 @@ CFLAGS64 = -m64 -mno-red-zone -msse2 -mno-mmx -nostdlib -nostdinc -fno-builtin -
 USER64_CFLAGS = $(CFLAGS64) -mcmodel=large -Isrc/user64/include
 LDFLAGS64 = -m elf_x86_64 -T $(ARCH64_BOOT)/linker.ld
 
+# The netbench capsule grows to real bulk and packet-rate sizes and dials the
+# peer directly only on the tap/vhost (KVM) topology; MICH_NET_TAP selects that
+# build. make does not track flag changes, so run `make clean` when switching
+# topology. The same variable switches qemu-smoke64.sh to a tap+vhost netdev.
+ifdef MICH_NET_TAP
+NETBENCH_TAP_FLAG = -DMICH_NETBENCH_TAP
+endif
+
 BIN_DIR = bin
 BIN64 = $(BIN_DIR)/x86_64
 OBJ64 = $(BIN64)/obj
@@ -591,7 +599,7 @@ $(DNSPROBE64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(DNSPRO
 	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(DNSPROBE64_OBJ) $(DNS64_OBJ) $(DNS_MESSAGE64_OBJ)
 
 $(NETBENCH64_OBJ): src/user64/netbench/main.c src/user64/include/mich/syscall.h src/user64/include/mich/socket.h src/net/socket_abi.h | $(USER64_OBJ_DIR)
-	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
+	$(CC) $(USER64_CFLAGS) $(NETBENCH_TAP_FLAG) -Werror -c $< -o $@
 
 $(NETBENCH64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(NETBENCH64_OBJ) src/user64/linker.ld | $(USER64_DIR)
 	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(NETBENCH64_OBJ)
