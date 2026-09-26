@@ -142,6 +142,12 @@ finally:
         ;;
 esac
 log="$(mktemp)"
+# QEMU 11.x full-buffers a stdio serial that is redirected to a file and drops
+# the buffer when timeout(1) delivers SIGTERM, so a fast KVM guest that finishes
+# early and idles to the deadline leaves an empty log. -serial file: writes the
+# guest console unbuffered, and qemu's own diagnostics get their own sink so the
+# two writers never clobber the same fd.
+qemu_diag="$(mktemp)"
 if [ "$profile" = "msi" ] || [ "$profile" = "msi-restart" ] ||
    [ "$profile" = "msi-circuit" ] || [ "$profile" = "msi-recovery" ]; then
     passive_result="$(mktemp)"
@@ -335,7 +341,7 @@ mich_uefi_firmware
 if [ "$want_nic_none" -eq 1 ]; then
     set -- "$@" -nic none
 fi
-trap 'if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; if [ -n "$tls_server_pid" ]; then kill "$tls_server_pid" 2>/dev/null || true; fi; if [ -n "$netbench_peer_pid" ]; then kill "$netbench_peer_pid" 2>/dev/null || true; fi; rm -f "$tls_server_log" "$netbench_peer_bin" "$netbench_peer_log" "$log" "$passive_result" "$active_result" "$recovery_guestfwd" "$dns_guestfwd" "$blk_img" "$nvme_img" "$uefi_vars"' EXIT
+trap 'if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; if [ -n "$tls_server_pid" ]; then kill "$tls_server_pid" 2>/dev/null || true; fi; if [ -n "$netbench_peer_pid" ]; then kill "$netbench_peer_pid" 2>/dev/null || true; fi; rm -f "$tls_server_log" "$netbench_peer_bin" "$netbench_peer_log" "$log" "$qemu_diag" "$passive_result" "$active_result" "$recovery_guestfwd" "$dns_guestfwd" "$blk_img" "$nvme_img" "$uefi_vars"' EXIT
 set +e
 timeout "${qemu_timeout}s" qemu-system-x86_64 \
     -machine q35 \
@@ -349,15 +355,16 @@ timeout "${qemu_timeout}s" qemu-system-x86_64 \
     -drive file="$nvme_img",format=raw,if=none,id=michnvme \
     -device nvme,drive=michnvme,serial=michx0 \
     -m "$memory" \
-    -serial stdio \
+    -serial file:"$log" \
     -vga std \
     -display none \
     -no-reboot \
     -no-shutdown \
-    "$@" >"$log" 2>&1
+    "$@" >"$qemu_diag" 2>&1
 status=$?
 set -e
 if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
+    cat "$qemu_diag"
     cat "$log"
     exit 1
 fi
