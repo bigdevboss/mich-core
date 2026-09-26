@@ -1,17 +1,21 @@
 // Host-side peer for the mich-core network benchmark. The guest under test is
-// always the active side: it opens one TCP control connection per test, sends a
-// single newline-terminated command, and drives the data phase. This peer only
-// exists so the guest has something real on the wire to talk to when it is not
-// looping back to itself, so it stays deliberately dumb: no measurement happens
-// here, all timing is taken inside the guest with rdtsc. Keeping the peer out of
-// the measurement path is what lets the numbers describe the mich stack rather
-// than this program or the host's scheduler.
+// always the active side: it opens a TCP control connection, then sends one or
+// more newline-terminated commands over it and drives each data phase. It
+// pipelines the whole session over a single connection because slirp does not
+// reliably carry a guest's second outbound connection to a host-bound peer. This
+// peer only exists so the guest has something real on the wire to talk to when it
+// is not looping back to itself, so it stays deliberately dumb: no measurement
+// happens here, all timing is taken inside the guest with rdtsc. Keeping the peer
+// out of the measurement path is what lets the numbers describe the mich stack
+// rather than this program or the host's scheduler.
 //
-// Protocol v1 (all fields decimal ASCII, one command line per connection):
-//   TX  <total>              guest sends <total> bytes on this TCP connection;
-//                            peer drains to EOF and replies "OK <received>\n".
+// Protocol (all fields decimal ASCII; a connection carries a sequence of command
+// lines, each followed by its own data phase, until the guest closes):
+//   TX  <total>              guest sends exactly <total> bytes on this TCP
+//                            connection; peer reads them and replies
+//                            "OK <received>\n".
 //   RX  <total>              peer sends <total> bytes on this TCP connection as
-//                            fast as it can, then closes (guest times receive).
+//                            fast as it can; the guest reads exactly that many.
 //   RR  <count> <size>       peer echoes <size> bytes, <count> times (latency).
 //   UTX <port> <count> <size> peer binds UDP <port>, replies "READY\n", then
 //                            counts arriving datagrams until a quiet gap and
@@ -293,7 +297,33 @@ static int dispatch(int fd, const char *command) {
     return -1;
 }
 
+// Runs one control connection to completion: read command lines and drive each
+// data phase until the guest closes. The guest pipelines several tests over one
+// connection because slirp does not reliably carry its second outbound
+// connection to a host-bound peer, so a working connection has to serve the
+// whole session. Every handler consumes exactly its data phase (TX reads exactly
+// <total> bytes, RR exactly <count>*<size>, UDP runs on a side socket), so the
+// stream is always positioned at the next command line on return. Blocking I/O
+// is fine here because the connection has its own process, so a slow or silent
+// client only stalls itself.
+static void serve_connection(int fd) {
+    // Nagle would batch the tiny RR replies and corrupt the latency numbers,
+    // which is exactly what this peer must not do.
+    int nodelay = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+    char command[COMMAND_MAX];
+    while (!read_command(fd, command, sizeof(command)) && command[0])
+        if (dispatch(fd, command)) return;
+}
+
 static void serve(int listen_fd, int once) {
+    // Handle each connection in its own child so one stalled client cannot wedge
+    // the accept loop and starve the others. A port scanner that connects and
+    // then sends nothing (as happens in shared CI sandboxes) would otherwise
+    // block read_command forever in a single-threaded loop and every later test
+    // connection with it. SIG_IGN on SIGCHLD lets the kernel reap the children,
+    // so there is nothing to wait on here.
+    signal(SIGCHLD, SIG_IGN);
     for (;;) {
         struct sockaddr_in from;
         socklen_t from_len = sizeof(from);
@@ -303,15 +333,21 @@ static void serve(int listen_fd, int once) {
             log_errno("accept");
             return;
         }
-        // Nagle would batch the tiny RR replies and corrupt the latency
-        // numbers, which is exactly what this peer must not do.
-        int nodelay = 1;
-        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
-        char command[COMMAND_MAX];
-        if (!read_command(fd, command, sizeof(command)) && command[0])
-            dispatch(fd, command);
+        if (once) {
+            serve_connection(fd);
+            close(fd);
+            return;
+        }
+        pid_t child = fork();
+        if (child == 0) {
+            close(listen_fd);
+            serve_connection(fd);
+            close(fd);
+            _exit(0);
+        }
+        // The parent never touches this connection again; the child owns it.
         close(fd);
-        if (once) return;
+        if (child < 0) log_errno("fork");
     }
 }
 
