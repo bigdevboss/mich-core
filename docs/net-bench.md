@@ -76,9 +76,23 @@ Filled in with the exact `qemu-system-x86_64` KVM + virtio + tap/vhost invocatio
 once the guest bench module lands. Loopback needs no host setup: the guest talks
 to itself.
 
+## In-guest module and CI
+
+The guest bench module (`src/user64/netbench`) runs the full UDP socket path over
+loopback and reports cycles per round-trip. The kernel spawns it through the same
+probe hook as the dns and tls probes, but recognises the `netbench` module and
+skips the driver-live-recovery lab for that boot. The lab deliberately crashes and
+restarts a driver capsule against a tight tick deadline; a resident bench task
+both perturbs that timing (a spurious recovery panic) and skews the cycle counts,
+so the benchmark wants a quiescent kernel. The `netbench` smoke profile is
+therefore gated on boot-essential plus net plus netbench markers only, since the
+full init CI battery (which is wired behind that same lab) stays covered by the
+`disk-test` and `dns` profiles.
+
 ## Status
 
 - [x] Host peer, protocol v1, self-tested over loopback (TX/RX/RR/UDP).
-- [ ] Guest bench module (loopback first, then socket path to the peer).
-- [ ] Makefile targets and QEMU bench profile.
+- [x] Guest bench module (loopback socket path; peer wiring is next).
+- [x] Makefile targets and QEMU bench profile (`make test64-netbench`).
+- [ ] Guest-to-host socket path from the module to the peer.
 - [ ] Reference numbers on real KVM hardware.
