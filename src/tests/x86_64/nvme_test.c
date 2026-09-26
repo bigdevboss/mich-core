@@ -9,6 +9,8 @@
 #include "nvme.h"
 #include "kernel64_internal.h"
 #include "tests64.h"
+#include "test_report.h"
+#include "serial64.h"
 
 static int service_collect(struct kernel_object *dev, u64 id, i32 *status,
                            u32 *transferred) {
@@ -206,4 +208,21 @@ int test_nvme64(const struct test64_env *env) {
         vfs_file_active_count() == files &&
         vfs_mount_active_count() == mounts;
     return valid ? 0 : -1;
+}
+
+// The kernel decides when NVMe can be probed; what a pass looks like, and
+// which markers say so, belongs here with the rest of the tests.
+int tests64_run_nvme(const struct test64_env *env) {
+    int outcome = test_nvme64(env);
+    // Negative is a failure, zero is a pass, and positive means the profile
+    // has no NVMe device to probe: the unit image carries none, and that is
+    // not an error.
+    if (outcome < 0) return -1;
+    if (test_report_record(TEST_ID_NVME, 0)) return -1;
+    if (outcome) return 0;
+    serial64_write("Mich test64: nvme controller and prp io pass\n");
+    serial64_write("Mich test64: nvme scatter-gather io pass\n");
+    serial64_write("Mich test64: nvme msi-x completion wake pass\n");
+    serial64_write("Mich test64: nvme blockfs mount pass\n");
+    return 0;
 }

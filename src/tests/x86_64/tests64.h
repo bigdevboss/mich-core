@@ -89,5 +89,6 @@ int tests64_run_hardware(const struct test64_env *env,
 int tests64_run_irq(const struct test64_env *env,
                     int msi, int msix, int virtio);
 int tests64_run_smp(void);
+int tests64_run_nvme(const struct test64_env *env);
 
 #endif
