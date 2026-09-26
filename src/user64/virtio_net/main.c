@@ -20,6 +20,18 @@
 #define VIRTIO_NET_TCP_SYN 0x02
 #define VIRTIO_NET_TCP_ACK 0x10
 
+// Period, in 10ms timer ticks, of the maintenance timer that pumps the kernel
+// TCP timer engine (net_interface_tick -> tcp_tick: retransmit, RTO, persist).
+// Default 100 ticks = 1s, which serialises any timer-driven TCP progress onto a
+// 1 Hz cadence and dominates wire latency (see docs/net-bench-results.md).
+// MICH_NET_EAGER_TICK drops it to 10ms to A/B measure how much of the stall that
+// cadence accounts for.
+#ifdef MICH_NET_EAGER_TICK
+#define VIRTIO_NET_MAINT_PERIOD 1u
+#else
+#define VIRTIO_NET_MAINT_PERIOD 100u
+#endif
+
 static unsigned long long read_cycles(void) {
     unsigned int low;
     unsigned int high;
@@ -1351,7 +1363,9 @@ int main(unsigned long long argument) {
             if (!capsule.ipv6_dad_complete) {
                 if (mich_net_interface_ipv6_complete_dad(
                         capsule.interface_handle) ||
-                    mich_timer_arm(capsule.ipv6_timer_handle, 100, 100))
+                    mich_timer_arm(capsule.ipv6_timer_handle,
+                                   VIRTIO_NET_MAINT_PERIOD,
+                                   VIRTIO_NET_MAINT_PERIOD))
                     return 11;
                 capsule.ipv6_dad_complete = 1;
                 mich_write("Mich virtio-net: external IPv6 DAD pass\n");
