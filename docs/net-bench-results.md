@@ -86,5 +86,31 @@ the tick cadence). If `wait` dominates, the stall is on the receive/timer side; 
 `send` dominates, it is TX pacing. Pair this with a host-side `perf kvm stat` VM-
 exit count to separate the guest's coarse timer from any QEMU emulation cost.
 
+### Experiment: a 100 Hz tick collapses the stall
+
+`MICH_EAGER_TICK=1` rebuilds the virtio-net capsule to pump the TCP timer engine
+every 10 ms instead of once per second (`VIRTIO_NET_MAINT_PERIOD`). Same emulator,
+same disk, TCG A/B (cycle counts are not wall time under TCG, but the ratio is the
+signal):
+
+| build            | wire-tx send | wire-tx wait  |
+| ---------------- | ------------ | ------------- |
+| default (1 Hz)   | ~733,000     | 1,010,962,496 |
+| eager (100 Hz)   | ~734,000     | 22,781,914    |
+
+The wait phase drops about 44x while the send phase is unchanged, which confirms
+the stall was the timer-pump cadence and not transport cost. Run the A/B yourself
+(`make` does not track flag changes, so clean between modes):
+
+```
+make clean && MICH_KVM=1 MICH_QEMU_TIMEOUT=45 make test64-netbench
+make clean && MICH_KVM=1 MICH_EAGER_TICK=1 MICH_QEMU_TIMEOUT=45 make test64-netbench
+```
+
+On KVM the default `wait` is ~1.75-2.4 s; the eager build should bring it down to
+tens of milliseconds. This is a measurement knob, not the final design: the real
+fix is still open (event-driven tick, a higher base tick rate, or a shorter
+maintenance period by default).
+
 Bulk throughput and PPS numbers are deferred until the wire RTT is unstalled,
 since a 0.4 s tax swamps everything downstream.
