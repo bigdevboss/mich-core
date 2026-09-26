@@ -18,7 +18,8 @@ import sys
 # different key sets, so match them individually instead of one loose splitter.
 LOOPBACK = re.compile(
     r"loopback-udp size=(\d+)B min=(\d+) avg=(\d+) p50=(\d+) p99=(\d+)")
-WIRE_TX = re.compile(r"wire-tx bytes=(\d+) cycles=(\d+)")
+WIRE_TX = re.compile(
+    r"wire-tx bytes=(\d+) cycles=(\d+)(?: send=(\d+) wait=(\d+))?")
 WIRE_RR = re.compile(
     r"wire-rr size=(\d+)B min=(\d+) avg=(\d+) p50=(\d+) p99=(\d+)")
 WIRE_UDP = re.compile(
@@ -44,13 +45,18 @@ def parse(lines, run, hz, rows):
             continue
         m = WIRE_TX.search(line)
         if m:
-            byts, cyc = (int(x) for x in m.groups())
+            byts, cyc = int(m.group(1)), int(m.group(2))
+            send = int(m.group(3)) if m.group(3) else ""
+            wait = int(m.group(4)) if m.group(4) else ""
             # Bulk TX reports one aggregate cycle count for the whole transfer,
             # so throughput is bytes over that span rather than a percentile.
             mbps = round(byts / (cyc / hz) * 8 / 1e6, 3) if hz else ""
             rows.append({
                 "run": run, "metric": "wire-tx-bulk", "size_b": byts,
                 "p50_cyc": cyc, "p50_us": us(cyc, hz), "mbit_s": mbps,
+                "send_cyc": send, "wait_cyc": wait,
+                "send_us": us(send, hz) if send != "" else "",
+                "wait_us": us(wait, hz) if wait != "" else "",
             })
             continue
         m = WIRE_RR.search(line)
@@ -88,7 +94,8 @@ def main():
         parse(sys.stdin, 1, args.tsc_hz, rows)
 
     fields = ["run", "metric", "size_b", "packets", "min_cyc", "avg_cyc",
-              "p50_cyc", "p99_cyc", "p50_us", "mbit_s"]
+              "p50_cyc", "p99_cyc", "p50_us", "mbit_s",
+              "send_cyc", "wait_cyc", "send_us", "wait_us"]
     out = sys.stdout if args.out == "-" else open(args.out, "w", newline="")
     writer = csv.DictWriter(out, fieldnames=fields)
     writer.writeheader()

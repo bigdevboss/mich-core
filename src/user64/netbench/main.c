@@ -390,9 +390,18 @@ static int wire_tx(unsigned int handle, u32 total_bytes) {
             return -1;
         sent += take;
     }
+    // Split the span at the last byte handed to the stack. The wire path shows a
+    // fixed ~0.4s cost that does not scale with payload; reporting the send phase
+    // apart from the wait phase localises it, because the two have different
+    // suspects: send is guest TX pacing, wait is the peer reply arriving across
+    // the coarse 10ms tick and once-per-second TCP timer pump.
+    u64 send_done = read_cycles();
     char reply[32];
     int status = stream_recv_line(handle, reply, sizeof(reply));
-    u64 elapsed = read_cycles() - start;
+    u64 end = read_cycles();
+    u64 elapsed = end - start;
+    u64 send_cycles = send_done - start;
+    u64 wait_cycles = end - send_done;
     if (status || reply[0] != 'O' || reply[1] != 'K' || reply[2] != ' ')
         return -1;
     u64 acked = 0;
@@ -405,6 +414,10 @@ static int wire_tx(unsigned int handle, u32 total_bytes) {
     write_decimal(total_bytes);
     mich_write(" cycles=");
     write_decimal(elapsed);
+    mich_write(" send=");
+    write_decimal(send_cycles);
+    mich_write(" wait=");
+    write_decimal(wait_cycles);
     mich_write("\n");
     return 0;
 }
