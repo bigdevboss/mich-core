@@ -33,6 +33,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <signal.h>
+#include <sys/prctl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -311,6 +312,15 @@ static void serve_connection(int fd) {
     // which is exactly what this peer must not do.
     int nodelay = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+    // A client that connects and then goes quiet must not pin this connection
+    // process and its control-port socket forever. That happens when a guest
+    // reboots between runs: its old ESTABLISHED connection is left behind, and a
+    // child blocked in a data-phase read would hold the port until the kernel's
+    // own orphan timeout, poisoning the next run's handshake. No legitimate
+    // benchmark phase is silent this long, so a receive with no bytes for this
+    // window is a dead connection and the child gives up on it.
+    struct timeval idle = {30, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &idle, sizeof(idle));
     char command[COMMAND_MAX];
     while (!read_command(fd, command, sizeof(command)) && command[0])
         if (dispatch(fd, command)) return;
@@ -324,6 +334,7 @@ static void serve(int listen_fd, int once) {
     // connection with it. SIG_IGN on SIGCHLD lets the kernel reap the children,
     // so there is nothing to wait on here.
     signal(SIGCHLD, SIG_IGN);
+    pid_t parent = getpid();
     for (;;) {
         struct sockaddr_in from;
         socklen_t from_len = sizeof(from);
@@ -341,6 +352,17 @@ static void serve(int listen_fd, int once) {
         pid_t child = fork();
         if (child == 0) {
             close(listen_fd);
+            // The harness only tracks the peer parent's pid, so on teardown it
+            // kills the parent and leaves these connection children orphaned in
+            // ESTABLISHED, still holding the control port. The next run's guest
+            // boots fresh, hands out the same deterministic ephemeral ports, and
+            // its SYNs land on those stale sockets, which answer with RFC 5961
+            // challenge-ACKs instead of a handshake and wedge the wire pass. Tie
+            // the child's life to the parent so a killed run leaves nothing.
+            prctl(PR_SET_PDEATHSIG, SIGKILL);
+            // If the parent died in the window between fork and prctl, the death
+            // signal was already missed; detect the orphaning and exit.
+            if (getppid() != parent) _exit(0);
             serve_connection(fd);
             close(fd);
             _exit(0);
