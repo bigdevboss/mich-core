@@ -58,6 +58,7 @@ DISK64_HARDWARE = $(BIN64)/disk-hardware.img
 DISK64_DNS = $(BIN64)/disk-dns.img
 DISK64_NETBENCH = $(BIN64)/disk-netbench.img
 DISK64_VIRTIO_BLK = $(BIN64)/disk-virtio-blk.img
+DISK64_NVME = $(BIN64)/disk-nvme.img
 DISK64_TLS = $(BIN64)/disk-tls.img
 DISK64_TLS_REAL = $(BIN64)/disk-tls-real.img
 DISK64_HARDWARE_RESTART = $(BIN64)/disk-hardware-restart.img
@@ -76,6 +77,7 @@ POSIXAPP64_OBJS = $(USER64_OBJ_DIR)/crt0_posix.o $(USER64_OBJ_DIR)/syscall.o $(U
 POSIXDEMO64_ELF = $(USER64_DIR)/posixdemo64.elf
 POSIXDEMO64_OBJS = $(USER64_OBJ_DIR)/crt0_posix.o $(USER64_OBJ_DIR)/syscall.o $(USER64_OBJ_DIR)/posix.o $(USER64_OBJ_DIR)/process.o $(USER64_OBJ_DIR)/string.o $(USER64_OBJ_DIR)/stdio.o $(USER64_OBJ_DIR)/stdlib.o $(USER64_OBJ_DIR)/posixdemo.o
 VIRTIO_BLK64_OBJ = $(USER64_OBJ_DIR)/virtio_blk.o
+NVME64_OBJ = $(USER64_OBJ_DIR)/nvme_capsule.o
 VIRTIO_NET64_OBJ = $(USER64_OBJ_DIR)/virtio_net.o
 VIRTIO_NET_SAFE64_OBJ = $(USER64_OBJ_DIR)/virtio_net_safe.o
 VIRTIO_NET64_PROBES_OBJ = $(USER64_OBJ_DIR)/virtio_net_probes.o
@@ -99,6 +101,7 @@ AES64_OBJ = $(USER64_OBJ_DIR)/aes.o
 GCM64_OBJ = $(USER64_OBJ_DIR)/gcm.o
 CRYPTO64_OBJ = $(USER64_OBJ_DIR)/crypto.o
 VIRTIO_BLK64_ELF = $(USER64_DIR)/virtio-blk.elf
+NVME64_ELF = $(USER64_DIR)/nvme.elf
 VIRTIO_NET64_ELF = $(USER64_DIR)/virtio-net.elf
 DNSPROBE64_ELF = $(USER64_DIR)/dnsprobe.elf
 NETBENCH64_ELF = $(USER64_DIR)/netbench.elf
@@ -535,6 +538,9 @@ $(POSIXDEMO64_ELF): $(POSIXDEMO64_OBJS) src/user64/linker.ld | $(USER64_DIR)
 $(VIRTIO_BLK64_OBJ): src/user64/virtio_blk/main.c src/user64/virtio_blk/capsule.h src/user64/include/mich/syscall.h src/user64/include/mich/driver.h src/user64/include/mich/virtio.h src/user64/include/mich/ring.h src/user64/include/mich/memory.h src/user64/include/mich/event.h src/user64/include/mich/block.h | $(USER64_OBJ_DIR)
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
+$(NVME64_OBJ): src/user64/nvme/main.c src/user64/nvme/capsule.h src/user64/include/mich/syscall.h src/user64/include/mich/driver.h src/user64/include/mich/hardware.h src/user64/include/mich/ring.h src/user64/include/mich/memory.h src/user64/include/mich/event.h src/user64/include/mich/block.h | $(USER64_OBJ_DIR)
+	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
+
 $(VIRTIO_NET64_OBJ): src/user64/virtio_net/main.c src/user64/virtio_net/capsule.h src/user64/include/mich/syscall.h src/user64/include/mich/event.h src/user64/include/mich/driver.h src/user64/include/mich/virtio.h src/user64/include/mich/net.h src/user64/include/mich/net_interface.h src/user64/include/mich/timer.h src/user64/include/mich/wait.h src/user64/include/mich/vfs.h src/user64/include/mich/firmware.h | $(USER64_OBJ_DIR)
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
@@ -631,6 +637,11 @@ $(VIRTIO_BLK64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRT
 # Builds the block-driver capsule on its own, without a boot image.
 user64-virtio-blk: $(VIRTIO_BLK64_ELF)
 
+$(NVME64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(NVME64_OBJ) src/user64/linker.ld | $(USER64_DIR)
+	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(NVME64_OBJ)
+
+user64-nvme: $(NVME64_ELF)
+
 $(VIRTIO_NET64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_NET64_OBJ) $(VIRTIO_NET64_PROBES_OBJ) $(DNS64_OBJ) $(DNS_MESSAGE64_OBJ) src/user64/linker.ld | $(USER64_DIR)
 	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_NET64_OBJ) $(VIRTIO_NET64_PROBES_OBJ) $(DNS64_OBJ) $(DNS_MESSAGE64_OBJ)
 
@@ -673,6 +684,10 @@ $(DISK64_TEST): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_
 # still pass) plus the virtio-blk capsule the kernel spots by module name.
 $(DISK64_VIRTIO_BLK): mkuefi64.py $(KERNEL64_ELF) $(KERNEL64_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(POSIXAPP64_ELF) $(POSIXDEMO64_ELF) $(VIRTIO_BLK64_ELF)
 	$(PYTHON) mkuefi64.py --efi $(UEFI64_EFI) $@ init64:0x20000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF) virtio-blk:0=$(VIRTIO_BLK64_ELF)
+
+# Production kernel plus the NVMe capsule the kernel spots by module name.
+$(DISK64_NVME): mkuefi64.py $(KERNEL64_ELF) $(KERNEL64_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(POSIXAPP64_ELF) $(POSIXDEMO64_ELF) $(NVME64_ELF)
+	$(PYTHON) mkuefi64.py --efi $(UEFI64_EFI) $@ init64:0x20000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF) nvme:0=$(NVME64_ELF)
 
 $(DISK64_UNIT): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(POSIXAPP64_ELF) $(POSIXDEMO64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
@@ -749,6 +764,8 @@ test64-netbench: $(DISK64_NETBENCH)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_NETBENCH) 256M netbench
 test64-virtio-blk: $(DISK64_VIRTIO_BLK)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_VIRTIO_BLK) 256M virtio-blk
+test64-nvme: $(DISK64_NVME)
+	sh ./scripts/qemu-smoke64.sh $(DISK64_NVME) 256M nvme
 test64-tls: $(DISK64_TLS)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_TLS) 256M tls
 # Reaches a real site over the public internet: DNS-less, straight to the
@@ -821,4 +838,4 @@ DEPFILES = $(OBJS64:.o=.d) $(OBJS64_TEST:.o=.d) $(PORTABLE64_OBJS:.o=.d) \
 clean:
 	rm -rf $(BIN_DIR)
 
-.PHONY: all user64-virtio-blk test64-virtio-blk run64 test64 test64-prod test64-unit test64-highmem test-https-real test64-tls test64-dns test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-msi-restart-stability test64-msi-circuit-stability test64-msi-recovery-stability test64-pcie test64-panic release-check clean
+.PHONY: all user64-virtio-blk test64-virtio-blk user64-nvme test64-nvme run64 test64 test64-prod test64-unit test64-highmem test-https-real test64-tls test64-dns test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-msi-restart-stability test64-msi-circuit-stability test64-msi-recovery-stability test64-pcie test64-panic release-check clean

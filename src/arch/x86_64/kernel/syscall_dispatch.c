@@ -582,6 +582,34 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         }
         return (u64)-1;
     }
+    if (number == 215) {
+        // Guest-physical address at a byte offset inside a resource the caller
+        // owns, so a userspace driver capsule can program a device DMA engine
+        // (NVMe admin/IO queues and PRP entries) that speaks physical, not
+        // virtual, addresses. Scoped to the caller's own mappable memory, so it
+        // exposes nothing the capsule cannot already reach through its device.
+        struct kernel_object *object =
+            handle_get(&task_pool[current_task_slot], (u32)arg0,
+                       KRIGHT_READ | KRIGHT_MAP, KOBJECT_NONE);
+        if (!object) return (u64)-1;
+        if (object->type == KOBJECT_DMA) {
+            const struct dma_resource *resource = dma_resource_get(object);
+            if (!resource || arg1 >= (u64)resource->pages * 4096)
+                return (u64)-1;
+            // Bus address, so an IOMMU-bound region reports its IOVA (equal to
+            // the physical when no IOMMU is present).
+            return (u64)resource->bus_address + arg1;
+        }
+        if (object->type == KOBJECT_PAGE ||
+            object->type == KOBJECT_SHARED_MEMORY) {
+            const struct page_resource *resource = page_resource_get(object);
+            if (!resource || resource->revoked ||
+                arg1 >= (u64)resource->pages * 4096)
+                return (u64)-1;
+            return (u64)resource->physical[arg1 / 4096] + (arg1 % 4096);
+        }
+        return (u64)-1;
+    }
     if (number == 58) {
         if (!arg1 || arg1 > 0x7FFFFFFFULL) return (u64)(i64)EINVAL;
         struct kernel_object *object =
