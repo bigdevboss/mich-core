@@ -243,8 +243,8 @@ static int connect_peer(void) {
 
 static int stream_send_all(unsigned int handle, const u8 *data, u32 length) {
     u32 sent = 0;
-    unsigned int stall = 0;
-    while (sent < length) {
+    unsigned int wait = 0;
+    while (sent < length && wait < STREAM_WAITS) {
         struct mich_socket_stream_data chunk;
         u32 take = length - sent;
         if (take > MICH_SOCKET_STREAM_PAYLOAD_MAX)
@@ -253,27 +253,29 @@ static int stream_send_all(unsigned int handle, const u8 *data, u32 length) {
         chunk.reserved = 0;
         for (u32 index = 0; index < take; index++)
             chunk.data[index] = data[sent + index];
-        if (mich_socket_stream_send(handle, &chunk)) {
-            // A refused chunk is back-pressure, not a fault. The stack caps queued
-            // bytes at TCP_SEND_BUFFER_MAX, so any transfer larger than that fills
-            // it faster than the wire drains and the queue call declines the chunk.
-            // Confirm the connection is still alive, yield to the capsule that
-            // drains the buffer, and retry. The old all-or-nothing loop failed the
-            // whole send here, which is why wire-tx died the instant it outgrew one
-            // send buffer on the tap path, where slirp's tiny gate never reached it.
-            struct mich_socket_stream_state_result state;
-            state.readiness = 0;
-            if (mich_socket_stream_state(handle, &state)) return -1;
-            if (state.readiness & (SOCKET_READY_ERROR | SOCKET_READY_HANGUP))
-                return -1;
-            if (++stall >= IO_SPINS) return -1;
-            mich_yield();
+        if (!mich_socket_stream_send(handle, &chunk)) {
+            sent += take;
+            wait = 0;
             continue;
         }
-        stall = 0;
-        sent += take;
+        // A refused chunk is back-pressure, not a fault. The stack caps queued
+        // bytes at TCP_SEND_BUFFER_MAX, so a bulk transfer outruns the wire and
+        // the queue declines the chunk until an ACK drains the buffer. Block on
+        // the socket event the way stream_recv_line blocks on incoming data,
+        // rather than spinning on the scheduler tick: the send attempt is itself
+        // the readiness probe, and mich_socket_wait sleeps until the next TCP
+        // activity wakes it, so throughput follows the ACK cadence instead of one
+        // send buffer per timer tick. The event is remembered, so an ACK that
+        // races this check cannot be lost; the next attempt simply succeeds.
+        struct mich_socket_stream_state_result state;
+        state.readiness = 0;
+        if (mich_socket_stream_state(handle, &state)) return -1;
+        if (state.readiness & (SOCKET_READY_ERROR | SOCKET_READY_HANGUP))
+            return -1;
+        wait++;
+        mich_socket_wait(handle);
     }
-    return 0;
+    return sent == length ? 0 : -1;
 }
 
 // Receives exactly length bytes into out, blocking on the socket event between
