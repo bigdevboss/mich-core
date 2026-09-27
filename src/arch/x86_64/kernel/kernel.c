@@ -517,12 +517,9 @@ static int manager64_register_virtio_net(int external_probe, int restart_test,
         ? 0 : -1;
 }
 
-// Registers the userspace virtio-blk capsule (docs/driver-vynos.md, M1). The
-// caller registers this only when a "virtio-blk" boot module is present, so an
-// ordinary image that still drives virtio-blk in-kernel keeps the device
-// unclaimed by a capsule. Matches on vendor and device id and leaves the class
-// triplet wildcarded, because 0x1042/0x1001 already identify virtio-blk
-// uniquely and QEMU's reported storage class varies by machine.
+// Registered only when a "virtio-blk" boot module is present, so ordinary images
+// keep driving virtio-blk in-kernel. Wildcards the class triplet since
+// 0x1042/0x1001 already identify virtio-blk uniquely.
 static int manager64_register_virtio_blk(u32 image_id) {
     struct driver_user_manifest manifest;
     u8 *bytes = (u8 *)&manifest;
@@ -538,9 +535,7 @@ static int manager64_register_virtio_blk(u32 image_id) {
     manifest.image_id = image_id;
     manifest.reset_policy = DRIVER_RESET_IF_SUPPORTED;
     manifest.firmware_count = 0;
-    // Handed to the capsule as its entry argument; it fails closed unless this
-    // matches VIRTIO_BLK_MAGIC ("VBLK") so a misrouted image cannot drive the
-    // device.
+    // Must match the capsule's VIRTIO_BLK_MAGIC ("VBLK") entry check.
     manifest.argument = 0x56424C4BULL;
     manifest.match_count = 2;
     for (u32 index = 0; index < manifest.match_count; index++) {
@@ -1733,8 +1728,7 @@ static int devfs64_init(void) {
     return 0;
 }
 
-// Not test-only: the production kernel matches the "virtio-blk" boot module by
-// name to decide whether to register the userspace capsule manifest.
+// Not test-only: production matches the "virtio-blk" boot module by name.
 static int module_name_is(const struct bd_module *module, const char *name) {
     if (module->cmdline < 0x1000 || module->cmdline >= 0x100000) return 0;
     const char *text = (const char *)(uptr_t)module->cmdline;
@@ -2027,9 +2021,6 @@ void kernel64_main(u32 magic, struct bd_info *info) {
             virtio_net_restart_test, virtio_net_circuit_test,
             virtio_net_recovery_test))
         KERNEL_PANIC("virtio-net manifest");
-    // Register the virtio-blk capsule only for an image that ships it, so every
-    // other boot leaves the device to the in-kernel driver and block tests. The
-    // module index is the capsule's spawn image (docs/driver-vynos.md, M1).
     for (u32 index = 0; index < info->mods_count; index++) {
         if (!module_name_is(&modules[index], "virtio-blk")) continue;
         if (manager64_register_virtio_blk(index))

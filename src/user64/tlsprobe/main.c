@@ -10,22 +10,19 @@
 #include "test_anchor.h"
 #endif
 
-// Declared here rather than pulled in through a POSIX header: this module is
-// freestanding and only needs the one entry point.
+// Freestanding module: declared here rather than pulled from a POSIX header.
 extern long getrandom(void *buffer, unsigned long length, unsigned int flags);
 
-// Drives a complete TLS 1.3 handshake against a real server and sends one HTTP
-// request over it. Everything before this slice was checked against published
-// vectors; this is the first time the certificate branch and the record
-// reassembly run against a peer that was not written here.
+// Full TLS 1.3 handshake against a real server plus one HTTP request: the first
+// time the certificate branch and record reassembly run against an outside peer
+// (everything before was checked against published vectors).
 
 #define PROBE_SERVER 0x0A000204u
 #define PROBE_PORT 443u
 #ifdef MICH_TLS_REAL
-// The guest still dials the fixed 10.0.2.4:443 target; the QEMU runner bridges
-// that address straight to the real public server. Only the name presented in
-// SNI and matched against the certificate changes, so the handshake validates
-// a genuine www.google.com chain against the CAs compiled into the image.
+// Guest dials the fixed 10.0.2.4:443; the QEMU runner bridges it to the real
+// public server. Only the SNI name changes, so the handshake validates a genuine
+// www.google.com chain against the CAs compiled into the image.
 #define PROBE_HOST "www.google.com"
 #define PROBE_HOST_LENGTH 14u
 #else
@@ -79,8 +76,8 @@ static int send_all(unsigned int handle, const u8 *data, unsigned int length) {
     return 0;
 }
 
-// Reads whatever has arrived and feeds it to the state machine, which is the
-// only place that knows where records and messages end.
+// Feeds whatever arrived to the state machine (the only place that knows where
+// records and messages end).
 static int pump(unsigned int handle, unsigned int spins) {
     for (unsigned int spin = 0; spin < spins; spin++) {
         struct mich_socket_stream_state_result state;
@@ -93,9 +90,8 @@ static int pump(unsigned int handle, unsigned int spins) {
             chunk.length = 0;
             chunk.reserved = 0;
             if (!mich_socket_stream_receive(handle, &chunk) && chunk.length) {
-                // Let the driver capsule run before the next read: a record
-                // that is still in flight otherwise never arrives, and the
-                // reassembly stalls waiting for bytes nobody is delivering.
+                // Yield so the driver capsule delivers the in-flight record;
+                // without it reassembly stalls waiting for bytes nobody sends.
                 mich_yield();
                 if (tls_client_feed(&client, chunk.data, chunk.length))
                     return -1;
@@ -103,9 +99,8 @@ static int pump(unsigned int handle, unsigned int spins) {
             }
         }
         if (state.eof) return -1;
-        // The frames are delivered by the driver capsule, so every turn has to
-        // yield. Spinning here starves the task that would hand over the rest
-        // of the handshake.
+        // The driver capsule delivers frames, so spinning here starves the task
+        // that hands over the rest of the handshake; yield every turn.
         mich_yield();
     }
     return -1;
@@ -113,9 +108,8 @@ static int pump(unsigned int handle, unsigned int spins) {
 
 int main(void) {
 #ifdef MICH_TLS_REAL
-    // The real handshake trusts exactly the roots a production client would:
-    // the built-in store (ISRG Root X1, DigiCert Global Root G2, GTS Root R1),
-    // not the throwaway anchor the local test server is signed by.
+    // Trust the production roots (ISRG Root X1, DigiCert Global Root G2, GTS Root
+    // R1), not the throwaway anchor the local test server is signed by.
     const struct x509_trust_store *store_ptr = x509_builtin_trust_store();
 #else
     static struct x509_trust_store store;
@@ -124,8 +118,7 @@ int main(void) {
     const struct x509_trust_store *store_ptr = &store;
 #endif
 
-    // The wall clock read from the CMOS chip back in the RTC slice is what
-    // decides whether a certificate is inside its validity window.
+    // CMOS wall clock decides whether the certificate is inside its validity window.
     unsigned long long now = mich_wall_clock();
     if (!now) {
         mich_write("Mich tlsprobe: wall clock FAIL\n");
@@ -233,8 +226,7 @@ int main(void) {
     }
     mich_write("Mich tlsprobe: request sent\n");
 
-    // The reply arrives as records like any other traffic, so the same
-    // reassembly is reused and the decrypted payload is inspected here.
+    // Reply arrives as records like any other traffic: reuse the same reassembly.
     unsigned int buffered = 0;
     for (unsigned int spin = 0; spin < IO_SPINS; spin++) {
         struct mich_socket_stream_state_result state;
@@ -251,8 +243,7 @@ int main(void) {
                      index < chunk.length && buffered < sizeof(incoming);
                      index++)
                     incoming[buffered++] = chunk.data[index];
-                // Same reason as during the handshake: the capsule needs a
-                // turn or the rest of the reply never shows up.
+                // Yield: the capsule needs a turn or the rest of the reply never lands.
                 mich_yield();
             }
         }
@@ -267,12 +258,11 @@ int main(void) {
                                      &payload_length, &type) &&
                     type == TLS_CONTENT_APPLICATION_DATA &&
                     payload_length >= 12u &&
-                    // The server answers with its own minor version, so only
-                    // the family and the status code are checked.
+                    // Server picks its own minor version: check only family + status.
                     crypto_equal(payload, "HTTP/1.", 7u)) {
 #ifdef MICH_TLS_REAL
-                    // Echo the status line verbatim: proof the decrypted bytes
-                    // came off the real wire and not a fixture written here.
+                    // Echo the status line verbatim: proof the decrypted bytes came
+                    // off the real wire, not a local fixture.
                     static char status[80];
                     static const char label[] = "Mich tlsprobe: ";
                     unsigned int copied = 0;
@@ -295,14 +285,13 @@ int main(void) {
                         return 0;
                     }
 #ifdef MICH_TLS_REAL
-                    // A complete status line still proves the stack reached a
-                    // real server and decrypted its reply; only 200 is a pass.
+                    // A status line proves the stack reached a real server and
+                    // decrypted the reply; only 200 is a pass.
                     mich_write("Mich tlsprobe: non-200 status\n");
                     return 1;
 #endif
                 }
-                // Anything else is either a ticket or a record this probe does
-                // not care about; drop it and keep reading.
+                // Ticket or record this probe ignores: drop it and keep reading.
                 unsigned int rest = buffered - TLS_RECORD_HEADER_SIZE - body;
                 for (unsigned int index = 0; index < rest; index++)
                     incoming[index] = incoming[TLS_RECORD_HEADER_SIZE + body +

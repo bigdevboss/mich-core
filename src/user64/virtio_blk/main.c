@@ -5,11 +5,8 @@
 
 #include "capsule.h"
 
-// Milestone 1 of the block driver vynos (docs/driver-vynos.md): a userspace
-// capsule that brings virtio-blk up in user space through device configuration
-// and prints a smoke marker. Request/completion rings and serving the kernel
-// block layer arrive in M2; this file proves the bring-up path first, mirroring
-// the virtio_net capsule template.
+// Userspace virtio-blk capsule: brings the device up through configuration and
+// prints a smoke marker. Rings and serving the kernel block layer come later.
 
 static int transition(struct virtio_blk_capsule *capsule,
                       unsigned int expected, unsigned int next) {
@@ -40,9 +37,8 @@ static int bootstrap(struct virtio_blk_capsule *capsule) {
         if (resource->kind == MICH_DRIVER_RESOURCE_BRIDGE)
             capsule->bridge_handle = resource->handle;
     }
-    // The request queue and its interrupt are wired from M2 on. Require the
-    // resources the manifest grants now so a capsule handed an incomplete grant
-    // fails at bring-up rather than at first I/O.
+    // Require the manifest's grants up front so an incomplete grant fails at
+    // bring-up, not at first I/O.
     if (!capsule->pci_handle || !capsule->bridge_handle ||
         !capsule->queue_irq_handle)
         return -1;
@@ -93,8 +89,7 @@ static int read_config(struct virtio_blk_capsule *capsule) {
                                   ((unsigned int)request.data[21] << 8) |
                                   ((unsigned int)request.data[22] << 16) |
                                   ((unsigned int)request.data[23] << 24);
-        // The block layer and the driver ABI are fixed at 512-byte sectors, so
-        // a device advertising any other logical block size is unservable here.
+        // The block layer and ABI are fixed at 512-byte sectors.
         if (block_size != MICH_BLOCK_SECTOR_SIZE) return -1;
         capsule->block_size = block_size;
     } else {

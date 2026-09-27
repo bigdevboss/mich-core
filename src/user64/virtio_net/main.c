@@ -20,15 +20,11 @@
 #define VIRTIO_NET_TCP_SYN 0x02
 #define VIRTIO_NET_TCP_ACK 0x10
 
-// Period, in 10ms timer ticks, of the maintenance timer that pumps the kernel
-// TCP timer engine (net_interface_tick -> tcp_tick: retransmit, RTO, persist).
-// 1 tick = 10ms matches the system timer, the way a networked kernel is meant to
-// service its stack. The loop also pumps the engine right after each RX drain
-// (event-driven), which carries active connections below this floor; the periodic
-// tick is the backstop for a timer that fires with no incoming packet to trigger
-// the event pump, such as an RTO retransmit on an idle link. It used to be 100
-// ticks = 1s, which serialised all timer-driven TCP progress onto a 1 Hz cadence
-// and dominated wire latency (see docs/net-bench.md).
+// Period (10ms ticks) of the maintenance timer pumping the kernel TCP timer
+// engine (retransmit, RTO, persist). Backstop only: the loop also pumps after each
+// RX drain, so active connections run below this floor and the tick just covers
+// timers that fire with no incoming packet (e.g. RTO on an idle link). Was 1s,
+// which serialised TCP progress at 1 Hz and dominated wire latency (see net-bench.md).
 #define VIRTIO_NET_MAINT_PERIOD 1u
 
 static unsigned long long read_cycles(void) {
@@ -994,9 +990,8 @@ static unsigned int process_rx_batch(struct virtio_net_capsule *capsule) {
             capsule->interface_handle, chunk, requests + processed);
         if (done > chunk) break;
         processed += done;
-        // The core has recorded a rejected request but leaves its buffer
-        // driver-owned.  Mark it for the release pass, then preserve the
-        // remaining valid frames in this bounded batch.
+            // Core rejected the request but left its buffer driver-owned: mark it
+            // for the release pass, keep the remaining valid frames in the batch.
         if (done != chunk) requests[processed++].length = 0;
     }
     // Acquire after the frame is parsed: replacement buffers may reuse
@@ -1091,18 +1086,11 @@ static void report_itr(struct virtio_net_capsule *capsule) {
     mich_write(text);
 }
 
-//
-// Adaptive interrupt moderation: the virtio guest counterpart of
-// FreeBSD's ixgbe AIM / iflib. The kernel auto-masks every MSI-X on
-// delivery, so the used rings are drained while the IRQs stay masked:
-// packets that land during processing cannot raise a spurious bridge
-// wakeup. Re-arming is deferred until the rings are empty (or the
-// per-wake process cap is reached), and the per-wake collect budget is
-// adapted from the load snapshot the way the EITR register is adapted
-// on real hardware: a full first collect, i.e. work left behind, grows
-// the budget so bursts amortize over fewer wakes; an under-used wake
-// shrinks it so light traffic keeps low latency; in between it holds.
-//
+// Adaptive interrupt moderation (cf. FreeBSD ixgbe AIM / iflib). IRQs stay masked
+// while the used rings drain, so re-arming is deferred until the rings are empty
+// (or the per-wake cap is hit). The collect budget adapts like a real EITR: a full
+// first collect grows it (bursts amortize over fewer wakes); an under-used wake
+// shrinks it (light traffic keeps low latency).
 static void itr_drain(struct virtio_net_capsule *capsule) {
     unsigned int rx_total = 0;
     unsigned int tx_total = 0;
@@ -1314,10 +1302,9 @@ int main(unsigned long long argument) {
     capsule.itr_budget_rx = VIRTIO_NET_BATCH_BUDGET;
     capsule.itr_budget_tx = VIRTIO_NET_BATCH_BUDGET;
     struct mich_wait_many_request waits;
-    // The interface event is the fourth wait source: the kernel signals it
-    // when it publishes an outbound frame, so an otherwise idle capsule wakes
-    // to ship a request-reply segment at the interface RTT rather than at the
-    // 10ms maintenance cadence (the TX doorbell, see net_interface.c).
+        // Fourth wait source (TX doorbell): the kernel signals it on publishing an
+        // outbound frame, so an idle capsule ships at interface RTT, not the 10ms
+        // maintenance cadence (see net_interface.c).
     waits.count = 4;
     waits.timeout = 0;
     for (unsigned int index = 0; index < MICH_WAIT_MANY_MAX; index++)
@@ -1330,14 +1317,10 @@ int main(unsigned long long argument) {
         process_tx_completions(&capsule);
         process_tx_batch(&capsule);
         unsigned int rx = process_rx_batch(&capsule);
-        // Advance the TCP timer engine right after new segments arrive, so an ACK
-        // that just landed opens the window and the following TX batch ships the
-        // next segments in the same iteration rather than stalling until the
-        // periodic maintenance tick (see docs/net-bench.md). Gate on rx:
-        // ticking only when RX was drained keeps active connections at the
-        // interface RTT without spending a maintenance syscall on every idle
-        // spin, and it must run after process_rx_batch has fed the fresh segments
-        // to the stack, not on the bare interrupt, or it ticks on stale state.
+        // Tick the TCP engine right after RX drains, so a just-landed ACK opens the
+        // window and the next TX batch ships in the same iteration instead of
+        // waiting for the maintenance tick (see net-bench.md). Gate on rx so idle
+        // spins spend no syscall; must run after process_rx_batch or it ticks stale.
         if (rx && capsule.ipv6_dad_complete &&
             mich_net_interface_ipv6_maintenance(capsule.interface_handle))
             return 11;
