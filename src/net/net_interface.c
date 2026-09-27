@@ -101,6 +101,15 @@ static int publish_frame(struct net_interface *interface, u64 buffer_id,
     }
     interface->stats.tx_packets++;
     interface->stats.tx_bytes += length;
+    // Ring the transmit doorbell. An idle driver capsule blocks on the
+    // interface event, and nothing else wakes it once the queue is armed:
+    // a freshly published frame would otherwise wait for the capsule's
+    // periodic maintenance timer (10 ms) before it ships. Bulk transfers
+    // hide this because RX-completion IRQs wake the capsule often enough to
+    // drain the ring, but a single-outstanding request-reply has no such
+    // IRQ in the gap, so the wire round trip collapses onto the maintenance
+    // cadence instead of the interface RTT.
+    event_signal(interface->event);
     return 0;
 }
 
