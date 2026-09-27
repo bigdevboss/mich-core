@@ -426,8 +426,19 @@ static int wire_tx(unsigned int handle, u32 total_bytes) {
         u32 take = total_bytes - sent;
         if (take > MICH_SOCKET_STREAM_PAYLOAD_MAX)
             take = MICH_SOCKET_STREAM_PAYLOAD_MAX;
-        if (stream_send_all(handle, wire_payload, take))
+        if (stream_send_all(handle, wire_payload, take)) {
+            // Localise a wedged bulk send by reporting how far it got. A stall in
+            // the TX back-pressure wakeup path stops partway, which this byte
+            // offset separates from a connect fault (fails at zero) and a reply
+            // fault (fails at full length), so the next run points straight at the
+            // suspect instead of a bare "wire FAIL".
+            mich_write("Mich netbench: wire-tx SEND FAIL at=");
+            write_decimal(sent);
+            mich_write(" of=");
+            write_decimal(total_bytes);
+            mich_write("\n");
             return -1;
+        }
         sent += take;
     }
     // Split the span at the last byte handed to the stack. The wire path shows a
@@ -442,14 +453,28 @@ static int wire_tx(unsigned int handle, u32 total_bytes) {
     u64 elapsed = end - start;
     u64 send_cycles = send_done - start;
     u64 wait_cycles = end - send_done;
-    if (status || reply[0] != 'O' || reply[1] != 'K' || reply[2] != ' ')
+    if (status || reply[0] != 'O' || reply[1] != 'K' || reply[2] != ' ') {
+        // The whole payload left the guest but the peer's tally never arrived or
+        // did not start with "OK ": the wait phase, not the send phase, is at
+        // fault (peer reply lost, or the RX wakeup that should deliver it).
+        mich_write("Mich netbench: wire-tx REPLY FAIL\n");
         return -1;
+    }
     u64 acked = 0;
     for (u32 index = 3; reply[index]; index++) {
         if (reply[index] < '0' || reply[index] > '9') return -1;
         acked = acked * 10u + (u64)(reply[index] - '0');
     }
-    if (acked != total_bytes) return -1;
+    if (acked != total_bytes) {
+        // A well-formed reply that counts fewer bytes than were sent means the
+        // stream truncated in flight rather than wedged, a different fault again.
+        mich_write("Mich netbench: wire-tx ACK MISMATCH acked=");
+        write_decimal(acked);
+        mich_write(" sent=");
+        write_decimal(total_bytes);
+        mich_write("\n");
+        return -1;
+    }
     mich_write("Mich netbench: wire-tx bytes=");
     write_decimal(total_bytes);
     mich_write(" cycles=");
