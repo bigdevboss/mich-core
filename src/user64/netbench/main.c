@@ -283,9 +283,30 @@ static int stream_send_all(unsigned int handle, const u8 *data, u32 length) {
         // races this check cannot be lost; the next attempt simply succeeds.
         struct mich_socket_stream_state_result state;
         state.readiness = 0;
-        if (mich_socket_stream_state(handle, &state)) return -1;
-        if (state.readiness & (SOCKET_READY_ERROR | SOCKET_READY_HANGUP))
+        state.state = 0;
+        state.error = 0;
+        if (mich_socket_stream_state(handle, &state)) {
+            mich_write("Mich netbench: send state query failed\n");
             return -1;
+        }
+        if (state.readiness & (SOCKET_READY_ERROR | SOCKET_READY_HANGUP)) {
+            // Report why the connection died so a wire-tx SEND FAIL separates a
+            // peer reset (error set, RST) from a peer half-close (HANGUP with no
+            // error, FIN) and names the TCP state it broke in.
+            mich_write("Mich netbench: send broke state=");
+            write_decimal(state.state);
+            mich_write(" ready=");
+            write_decimal(state.readiness);
+            mich_write(" err=");
+            if (state.error < 0) {
+                mich_write("-");
+                write_decimal((u64)(-(i64)state.error));
+            } else {
+                write_decimal((u64)state.error);
+            }
+            mich_write("\n");
+            return -1;
+        }
         // Fail only on real time without progress, not on wakeup count: the
         // notify sources above can wake the writer far faster than the buffer
         // drains. Unsigned tick subtraction wraps cleanly, so a counter rollover
