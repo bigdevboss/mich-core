@@ -85,8 +85,14 @@ into Option 2 after nvme lands.
   the kernel object and capsule below consume it.
 - M1 (walking skeleton): `src/user64/virtio_blk` capsule that boots, negotiates
   virtio-blk, reads capacity, and prints `Mich virtio-blk: bootstrap pass`.
-  Reuses the net capsule bring-up sequence. Build target plus a smoke marker.
-  Proves a userspace capsule can drive the device; no kernel routing yet.
+  Reuses the net capsule bring-up sequence. Proves a userspace capsule can drive
+  the device; no ring transport or I/O serving yet.
+  Spawn wiring is in place so the marker is observable: the kernel registers a
+  virtio-blk driver manifest when a "virtio-blk" boot module is present
+  (`manager64_register_virtio_blk`), the driver manager auto-spawns the capsule
+  against the virtio-blk-pci device, and `make test64-virtio-blk` boots the
+  `disk-virtio-blk.img` image and greps for the marker. The registration is
+  gated on the module so every other image keeps driving virtio-blk in-kernel.
 - M2 (serve I/O): kernel block-interface object plus
   `block_bind_capsule_transport`; route `block_submit`/`block_service` through
   the rings; capsule serves reads and writes. Point the existing block tests
