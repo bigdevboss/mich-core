@@ -18,7 +18,8 @@
 #   TAP_IF   tap interface name          (default tap0)
 #   HOST_IP  address on the host side     (default 10.0.2.4, the peer address)
 #   GUEST_IP address leased to the guest  (default 10.0.2.15)
-#   MICH_TAP_TCPDUMP=1  capture the tap traffic to the log for wire debugging
+#   MICH_TAP_TCPDUMP=1  capture tap TCP to netbench-tap.txt for wire debugging
+#   MICH_TAP_PCAP=path  override where that capture is written
 set -eu
 
 TAP_IF="${TAP_IF:-tap0}"
@@ -33,6 +34,10 @@ repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 tap_owner="${SUDO_USER:-root}"
 dnsmasq_pid=""
 tcpdump_pid=""
+# Where the opt-in wire capture lands. A bulk run is tens of thousands of
+# packets, so it must stream to a file rather than the terminal; the tail of it
+# is what shows the stall.
+tcpdump_out="${MICH_TAP_PCAP:-$repo_root/netbench-tap.txt}"
 
 # Opt-in wire capture. When the wire pass fails there is no way to tell a dropped
 # handshake (firewall, bad checksum) from a stack bug without seeing the frames,
@@ -58,6 +63,9 @@ cleanup() {
     ip link show "$TAP_IF" >/dev/null 2>&1 && ip link del "$TAP_IF" 2>/dev/null || true
     # Undo the root ownership the in-place build would otherwise leave behind.
     [ "$tap_owner" != "root" ] && chown -R "$tap_owner" "$repo_root/bin" 2>/dev/null || true
+    # The capture is written as root; hand it back so it can be read without sudo.
+    [ "$tap_owner" != "root" ] && [ -f "$tcpdump_out" ] && \
+        chown "$tap_owner" "$tcpdump_out" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -69,12 +77,17 @@ ip link set "$TAP_IF" up
 
 # Start the capture before DHCP so the log shows the whole conversation: the DHCP
 # handshake, the ARP for the peer, the ICMP that already works, and the TCP SYN
-# whose fate is the open question. -l keeps it line buffered into the tee, and the
-# count bound lets it end on its own if cleanup is missed.
+# whose fate is the open question. Stream TCP to a file with sequence and ack
+# numbers (-S absolute, so a retransmit or a run of duplicate acks is obvious
+# across the whole transfer) and no packet cap: the earlier -c 200 stopped during
+# the handshake, long before a multi-megabyte bulk stall, so it never caught the
+# failure it was meant to explain. -l keeps it line buffered so a killed run still
+# leaves a complete tail on disk.
 if [ "$MICH_TAP_TCPDUMP" = "1" ]; then
     command -v tcpdump >/dev/null 2>&1 || fail "tcpdump not found (pacman -S tcpdump)"
-    tcpdump -i "$TAP_IF" -n -v -l -c 200 'arp or icmp or tcp or udp' &
+    tcpdump -i "$TAP_IF" -n -S -l 'tcp' >"$tcpdump_out" 2>/dev/null &
     tcpdump_pid=$!
+    echo "kvm-tap-bench: wire capture -> $tcpdump_out"
 fi
 
 # DHCP only: --port=0 turns off the dnsmasq DNS server so it never fights
