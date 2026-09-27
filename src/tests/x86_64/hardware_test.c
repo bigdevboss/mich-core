@@ -164,7 +164,7 @@ static int test_irq_event(const struct test64_env *env) {
         object_release(event);
         return -5;
     }
-    irq64_dispatch(resource->vector);
+    irq64_dispatch(&(struct exception_frame64){ .vector = resource->vector });
     resource = irq_resource_get(irq);
     int valid = env->owner->state == TASK_RUNNING && resource &&
                 resource->masked;
@@ -196,7 +196,7 @@ static int test_irq_event(const struct test64_env *env) {
         return -10;
     }
     u32 expected_source = resource->source;
-    irq64_dispatch(resource->vector);
+    irq64_dispatch(&(struct exception_frame64){ .vector = resource->vector });
     resource = irq_resource_get(irq);
     valid = resource && resource->masked &&
             delivered_source == expected_source;
@@ -233,7 +233,7 @@ static int test_irq_event(const struct test64_env *env) {
         return -16;
     }
     expected_source = resource->source;
-    irq64_dispatch(resource->vector);
+    irq64_dispatch(&(struct exception_frame64){ .vector = resource->vector });
     struct bridge_notification notification;
     valid = env->owner->state == TASK_RUNNING &&
             bridge_endpoint_read(bridge, &notification) == 0 &&
