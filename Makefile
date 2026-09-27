@@ -628,9 +628,7 @@ $(TLSPROBE_REAL64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(T
 $(VIRTIO_BLK64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_BLK64_OBJ) src/user64/linker.ld | $(USER64_DIR)
 	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_BLK64_OBJ)
 
-# The block-driver capsule is not yet wired into a boot image; the kernel
-# manifest and disk-module wiring that spawns it against virtio-blk land in M2
-# (docs/driver-vynos.md). This target builds the M1 capsule on its own.
+# Builds the block-driver capsule on its own, without a boot image.
 user64-virtio-blk: $(VIRTIO_BLK64_ELF)
 
 $(VIRTIO_NET64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_NET64_OBJ) $(VIRTIO_NET64_PROBES_OBJ) $(DNS64_OBJ) $(DNS_MESSAGE64_OBJ) src/user64/linker.ld | $(USER64_DIR)
@@ -671,11 +669,8 @@ $(DISK64_TEST): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
 		--efi $(UEFI64_EFI) $@ init64:0x20000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF)
 
-# The virtio-blk bring-up image (docs/driver-vynos.md, M1). It ships the same
-# production kernel and init as the default disk so init's process tests still
-# have their posix images, and adds the virtio-blk capsule. The kernel spots the
-# "virtio-blk" module, registers its driver manifest, and the driver manager
-# spawns the capsule against the virtio-blk-pci device the smoke script attaches.
+# Ships the default disk (kernel, init, posix images so init's process tests
+# still pass) plus the virtio-blk capsule the kernel spots by module name.
 $(DISK64_VIRTIO_BLK): mkuefi64.py $(KERNEL64_ELF) $(KERNEL64_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(POSIXAPP64_ELF) $(POSIXDEMO64_ELF) $(VIRTIO_BLK64_ELF)
 	$(PYTHON) mkuefi64.py --efi $(UEFI64_EFI) $@ init64:0x20000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF) virtio-blk:0=$(VIRTIO_BLK64_ELF)
 

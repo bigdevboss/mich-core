@@ -1220,9 +1220,6 @@ if [ "$profile" = "amd-iommu" ]; then
     done
 fi
 if [ "$profile" = "virtio-blk" ]; then
-    # The driver manager spawns the userspace virtio-blk capsule against the
-    # virtio-blk-pci device this script always attaches; the marker is printed
-    # once bring-up reaches device configuration (docs/driver-vynos.md, M1).
     grep -Fq "Mich virtio-blk: bootstrap pass" "$log" || {
         cat "$log"
         exit 1

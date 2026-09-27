@@ -3,27 +3,22 @@
 #include <mich/timer.h>
 #include <mich/event.h>
 
-// Exercises the resolver transport against a host-side responder reached
-// through the QEMU guest forward. The parser is covered by dns_test.c in the
-// kernel image; what only a real exchange can prove is the socket path:
-// retries, the timeout, the switch to TCP, and the two-byte length prefix.
-//
-// The forward is TCP-only (QEMU rejects guestfwd=udp), so nothing ever answers
-// the UDP attempts. That is deliberate: the resolver has to burn its retries,
-// time out, and fall back before a single byte of the reply can arrive.
+// Exercises the resolver transport against a host-side responder over the QEMU
+// guest forward. The parser is covered by dns_test.c; only a real exchange proves
+// the socket path: retries, timeout, switch to TCP, two-byte length prefix.
+// The forward is TCP-only (QEMU rejects guestfwd=udp), so the UDP attempts go
+// unanswered by design and force the retry/timeout/fallback path.
 
 #define DNSPROBE_SERVER 0x0A000204u
 #define DNSPROBE_NAME "probe.mich"
 #define DNSPROBE_EXPECTED 0xC000024Du
-// The capsule finishes DHCP within the first handful of ticks, so this only
-// covers that gap. Each attempt costs a full UDP retry budget plus a TCP
-// exchange, so a large count would outlast the profile timeout.
+// Each attempt costs a full UDP retry budget plus a TCP exchange, so a large
+// count would outlast the profile timeout.
 #define DNSPROBE_READY_ATTEMPTS 4u
 #define DNSPROBE_READY_DELAY_TICKS 25u
 
-// A yield loop keeps this task runnable and takes scheduler turns away from
-// the driver capsule, whose live recovery probe gives each of its phases a
-// fixed tick budget. Blocking on a timer instead leaves those ticks alone.
+// Block on a timer rather than a yield loop: a yield loop steals scheduler turns
+// from the driver capsule's live-recovery probe, which budgets ticks per phase.
 static void wait_ticks(unsigned int ticks) {
     int timer = mich_timer_create();
     if (timer <= 0) {
@@ -43,8 +38,7 @@ int main(void) {
     }
     mich_write("Mich dnsprobe: resolver ready\n");
 
-    // The capsule brings the link up and finishes DHCP on its own schedule, so
-    // there is no route to the responder for the first few hundred ticks.
+    // No route to the responder until the capsule finishes DHCP (first few hundred ticks).
     struct dns_result result;
     int resolved = -1;
     for (unsigned int attempt = 0;
@@ -60,10 +54,8 @@ int main(void) {
         mich_write("Mich dnsprobe: address mismatch FAIL\n");
         return 1;
     }
-    // The responder is reachable over TCP only, because QEMU has no UDP guest
-    // forward. An answer therefore proves the UDP attempt produced nothing and
-    // the resolver fell back, parsed the two-byte length prefix and accepted
-    // the reply.
+    // Responder is TCP-only, so an answer proves the UDP attempt produced nothing
+    // and the resolver fell back, parsed the length prefix and accepted the reply.
     mich_write("Mich dnsprobe: TCP fallback and framing pass\n");
 
     // The second lookup must not touch the wire at all.
