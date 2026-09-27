@@ -28,7 +28,7 @@
 // tick is the backstop for a timer that fires with no incoming packet to trigger
 // the event pump, such as an RTO retransmit on an idle link. It used to be 100
 // ticks = 1s, which serialised all timer-driven TCP progress onto a 1 Hz cadence
-// and dominated wire latency (see docs/net-bench-results.md).
+// and dominated wire latency (see docs/net-bench.md).
 #define VIRTIO_NET_MAINT_PERIOD 1u
 
 static unsigned long long read_cycles(void) {
@@ -1333,7 +1333,7 @@ int main(unsigned long long argument) {
         // Advance the TCP timer engine right after new segments arrive, so an ACK
         // that just landed opens the window and the following TX batch ships the
         // next segments in the same iteration rather than stalling until the
-        // periodic maintenance tick (see docs/net-bench-results.md). Gate on rx:
+        // periodic maintenance tick (see docs/net-bench.md). Gate on rx:
         // ticking only when RX was drained keeps active connections at the
         // interface RTT without spending a maintenance syscall on every idle
         // spin, and it must run after process_rx_batch has fed the fresh segments
