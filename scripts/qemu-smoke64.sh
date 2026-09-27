@@ -10,6 +10,7 @@ if [ "$profile" = "smp" ] || [ "$profile" = "iommu" ]; then qemu_timeout=130; fi
 if [ "$profile" = "msi" ]; then qemu_timeout=300; fi
 if [ "$profile" = "dns" ]; then qemu_timeout=150; fi
 if [ "$profile" = "netbench" ]; then qemu_timeout=300; fi
+if [ "$profile" = "virtio-blk" ]; then qemu_timeout=120; fi
 if [ "$profile" = "tls" ]; then qemu_timeout=200; fi
 if [ "$profile" = "tls-real" ]; then qemu_timeout=200; fi
 if [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ] ||
@@ -1217,6 +1218,15 @@ if [ "$profile" = "amd-iommu" ]; then
     do
         grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
     done
+fi
+if [ "$profile" = "virtio-blk" ]; then
+    # The driver manager spawns the userspace virtio-blk capsule against the
+    # virtio-blk-pci device this script always attaches; the marker is printed
+    # once bring-up reaches device configuration (docs/driver-vynos.md, M1).
+    grep -Fq "Mich virtio-blk: bootstrap pass" "$log" || {
+        cat "$log"
+        exit 1
+    }
 fi
 bad="$(grep -Ei "FAIL|failure|bad boot protocol|exception vector" "$log" || true)"
 if [ "$profile" = "iommu" ]; then
