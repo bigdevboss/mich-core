@@ -57,6 +57,7 @@ DISK64_UNIT = $(BIN64)/disk-unit.img
 DISK64_HARDWARE = $(BIN64)/disk-hardware.img
 DISK64_DNS = $(BIN64)/disk-dns.img
 DISK64_NETBENCH = $(BIN64)/disk-netbench.img
+DISK64_VIRTIO_BLK = $(BIN64)/disk-virtio-blk.img
 DISK64_TLS = $(BIN64)/disk-tls.img
 DISK64_TLS_REAL = $(BIN64)/disk-tls-real.img
 DISK64_HARDWARE_RESTART = $(BIN64)/disk-hardware-restart.img
@@ -670,6 +671,14 @@ $(DISK64_TEST): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
 		--efi $(UEFI64_EFI) $@ init64:0x20000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF)
 
+# The virtio-blk bring-up image (docs/driver-vynos.md, M1). It ships the same
+# production kernel and init as the default disk so init's process tests still
+# have their posix images, and adds the virtio-blk capsule. The kernel spots the
+# "virtio-blk" module, registers its driver manifest, and the driver manager
+# spawns the capsule against the virtio-blk-pci device the smoke script attaches.
+$(DISK64_VIRTIO_BLK): mkuefi64.py $(KERNEL64_ELF) $(KERNEL64_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(POSIXAPP64_ELF) $(POSIXDEMO64_ELF) $(VIRTIO_BLK64_ELF)
+	$(PYTHON) mkuefi64.py --efi $(UEFI64_EFI) $@ init64:0x20000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF) virtio-blk:0=$(VIRTIO_BLK64_ELF)
+
 $(DISK64_UNIT): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(POSIXAPP64_ELF) $(POSIXDEMO64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
 		--efi $(UEFI64_EFI) $@ init64:0x120000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF)
@@ -743,6 +752,8 @@ test64-dns: $(DISK64_DNS)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_DNS) 256M dns
 test64-netbench: $(DISK64_NETBENCH)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_NETBENCH) 256M netbench
+test64-virtio-blk: $(DISK64_VIRTIO_BLK)
+	sh ./scripts/qemu-smoke64.sh $(DISK64_VIRTIO_BLK) 256M virtio-blk
 test64-tls: $(DISK64_TLS)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_TLS) 256M tls
 # Reaches a real site over the public internet: DNS-less, straight to the
@@ -815,4 +826,4 @@ DEPFILES = $(OBJS64:.o=.d) $(OBJS64_TEST:.o=.d) $(PORTABLE64_OBJS:.o=.d) \
 clean:
 	rm -rf $(BIN_DIR)
 
-.PHONY: all user64-virtio-blk run64 test64 test64-prod test64-unit test64-highmem test-https-real test64-tls test64-dns test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-msi-restart-stability test64-msi-circuit-stability test64-msi-recovery-stability test64-pcie test64-panic release-check clean
+.PHONY: all user64-virtio-blk test64-virtio-blk run64 test64 test64-prod test64-unit test64-highmem test-https-real test64-tls test64-dns test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-msi-restart-stability test64-msi-circuit-stability test64-msi-recovery-stability test64-pcie test64-panic release-check clean
