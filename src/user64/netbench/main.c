@@ -92,6 +92,18 @@
 // blocks until the harness timeout, which is the same outcome as a spin here.
 #define STREAM_WAITS 100000u
 
+// Zero-progress window for the bulk sender, in 10ms ticks. A wakeup count is the
+// wrong bound for back-pressure: socket_tcp_notify fires on every inbound segment
+// and on the maintenance tick (net_interface.c), so a transient persist window or
+// a burst of pure ACKs wakes the writer many times without freeing send-buffer
+// room. Counting those wakeups drained the whole budget in a fraction of a second
+// and failed a live connection at a random offset. Bound the stall by elapsed
+// time with no accepted chunk instead: a healthy transfer resets the clock on
+// every chunk the stack takes, so only a connection that makes zero progress for
+// the full window is declared dead. The window sits above TCP RTO backoff yet
+// well below the peer's 30s receive timeout, so genuine recovery still completes.
+#define SEND_STALL_TICKS 1000u
+
 static u64 sample_cycles[SAMPLE_COUNT];
 static u64 wire_cycles[WIRE_RR_COUNT];
 // The datagram request carries a 1472-byte payload, too large to sit on the
@@ -243,8 +255,9 @@ static int connect_peer(void) {
 
 static int stream_send_all(unsigned int handle, const u8 *data, u32 length) {
     u32 sent = 0;
-    unsigned int wait = 0;
-    while (sent < length && wait < STREAM_WAITS) {
+    unsigned int progress_tick = mich_ticks();
+    unsigned int wakes = 0;
+    while (sent < length) {
         struct mich_socket_stream_data chunk;
         u32 take = length - sent;
         if (take > MICH_SOCKET_STREAM_PAYLOAD_MAX)
@@ -255,7 +268,8 @@ static int stream_send_all(unsigned int handle, const u8 *data, u32 length) {
             chunk.data[index] = data[sent + index];
         if (!mich_socket_stream_send(handle, &chunk)) {
             sent += take;
-            wait = 0;
+            progress_tick = mich_ticks();
+            wakes = 0;
             continue;
         }
         // A refused chunk is back-pressure, not a fault. The stack caps queued
@@ -272,10 +286,24 @@ static int stream_send_all(unsigned int handle, const u8 *data, u32 length) {
         if (mich_socket_stream_state(handle, &state)) return -1;
         if (state.readiness & (SOCKET_READY_ERROR | SOCKET_READY_HANGUP))
             return -1;
-        wait++;
+        // Fail only on real time without progress, not on wakeup count: the
+        // notify sources above can wake the writer far faster than the buffer
+        // drains. Unsigned tick subtraction wraps cleanly, so a counter rollover
+        // mid-run still yields the correct elapsed span. Report the burned wakeup
+        // count so a recurrence separates a spurious-wakeup storm (a large count
+        // over the window) from a genuinely silent peer (a small one).
+        if (mich_ticks() - progress_tick >= SEND_STALL_TICKS) {
+            mich_write("Mich netbench: send stall wakes=");
+            write_decimal(wakes);
+            mich_write(" ready=");
+            write_decimal(state.readiness);
+            mich_write("\n");
+            return -1;
+        }
+        wakes++;
         mich_socket_wait(handle);
     }
-    return sent == length ? 0 : -1;
+    return 0;
 }
 
 // Receives exactly length bytes into out, blocking on the socket event between
