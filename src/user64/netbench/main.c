@@ -243,6 +243,7 @@ static int connect_peer(void) {
 
 static int stream_send_all(unsigned int handle, const u8 *data, u32 length) {
     u32 sent = 0;
+    unsigned int stall = 0;
     while (sent < length) {
         struct mich_socket_stream_data chunk;
         u32 take = length - sent;
@@ -252,7 +253,24 @@ static int stream_send_all(unsigned int handle, const u8 *data, u32 length) {
         chunk.reserved = 0;
         for (u32 index = 0; index < take; index++)
             chunk.data[index] = data[sent + index];
-        if (mich_socket_stream_send(handle, &chunk)) return -1;
+        if (mich_socket_stream_send(handle, &chunk)) {
+            // A refused chunk is back-pressure, not a fault. The stack caps queued
+            // bytes at TCP_SEND_BUFFER_MAX, so any transfer larger than that fills
+            // it faster than the wire drains and the queue call declines the chunk.
+            // Confirm the connection is still alive, yield to the capsule that
+            // drains the buffer, and retry. The old all-or-nothing loop failed the
+            // whole send here, which is why wire-tx died the instant it outgrew one
+            // send buffer on the tap path, where slirp's tiny gate never reached it.
+            struct mich_socket_stream_state_result state;
+            state.readiness = 0;
+            if (mich_socket_stream_state(handle, &state)) return -1;
+            if (state.readiness & (SOCKET_READY_ERROR | SOCKET_READY_HANGUP))
+                return -1;
+            if (++stall >= IO_SPINS) return -1;
+            mich_yield();
+            continue;
+        }
+        stall = 0;
         sent += take;
     }
     return 0;
