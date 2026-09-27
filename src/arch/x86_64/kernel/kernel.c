@@ -1558,6 +1558,10 @@ void exception64_dispatch(struct exception_frame64 *frame) {
     serial64_hex(frame->vector);
     serial64_write(" rip=");
     serial64_hex(frame->rip);
+    // Name the faulting task so a contained user fault points at the capsule or
+    // the workload directly rather than leaving the reader to map a bare rip.
+    serial64_write(" task=");
+    serial64_write(task_pool[current_task_slot].name);
     serial64_write("\n");
 #ifdef MICH_TEST_BUILD
     if (frame->vector == 14) {
