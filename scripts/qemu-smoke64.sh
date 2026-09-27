@@ -11,6 +11,7 @@ if [ "$profile" = "msi" ]; then qemu_timeout=300; fi
 if [ "$profile" = "dns" ]; then qemu_timeout=150; fi
 if [ "$profile" = "netbench" ]; then qemu_timeout=300; fi
 if [ "$profile" = "virtio-blk" ]; then qemu_timeout=120; fi
+if [ "$profile" = "nvme" ]; then qemu_timeout=300; fi
 if [ "$profile" = "tls" ]; then qemu_timeout=200; fi
 if [ "$profile" = "tls-real" ]; then qemu_timeout=200; fi
 if [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ] ||
@@ -434,6 +435,28 @@ elif [ "$profile" = "virtio-blk" ]; then
     do
         grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
     done
+elif [ "$profile" = "nvme" ]; then
+    # Same reduced gate as virtio-blk: the production kernel carries no in-kernel
+    # NVMe driver and no test64 battery, so the capsule is the driver. Gate on
+    # boot-essential markers plus the capsule bringing the real controller up and
+    # reaching its serve state.
+    for marker in \
+        "Mich Core 0.1.0 x86_64: long mode alive" \
+        "Mich x86_64: GDT and TSS alive" \
+        "Mich x86_64: IDT alive" \
+        "Mich x86_64: panic subsystem ready" \
+        "Mich x86_64: E820 PMM alive" \
+        "Mich x86_64: ACPI tables pass" \
+        "Mich x86_64: PCI enumeration pass" \
+        "Mich x86_64: LAPIC controller pass" \
+        "Mich x86_64: IOAPIC routing pass" \
+        "Mich x86_64: APIC timer pass" \
+        "Mich x86_64: preemptive scheduler pass" \
+        "Mich nvme: bootstrap pass" \
+        "Mich nvme: serve pass"
+    do
+        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+    done
 else
 for marker in \
     "Mich Core 0.1.0 x86_64: long mode alive" \
@@ -630,7 +653,6 @@ for marker in \
     "Mich test64: nvme scatter-gather io pass" \
     "Mich test64: nvme msi-x completion wake pass" \
     "Mich test64: nvme blockfs mount pass" \
-    "Mich x86_64: userspace nvme device pass" \
     "Mich test64: ICMP checksum pass" \
     "Mich test64: ICMP echo request and reply pass" \
     "Mich test64: ICMP rate limit pass" \
@@ -762,7 +784,7 @@ fi
 # markers can never appear there. Asking for them made those profiles fail on
 # something the image was never built to do.
 case "$profile" in
-    hardware|msi|msi-restart|msi-circuit|msi-recovery|dns|tls|tls-real|netbench|virtio-blk)
+    hardware|msi|msi-restart|msi-circuit|msi-recovery|dns|tls|tls-real|netbench|virtio-blk|nvme)
         ;;
     *)
         for marker in \
@@ -789,7 +811,8 @@ esac
 # bootstrap markers exist there; every other profile runs the lab and must show
 # the full crash-restart-fallback sequence in order. The virtio-blk profile boots
 # the production kernel, which has no recovery lab, so it is excluded too.
-if [ "$profile" != "netbench" ] && [ "$profile" != "virtio-blk" ]; then
+if [ "$profile" != "netbench" ] && [ "$profile" != "virtio-blk" ] &&
+   [ "$profile" != "nvme" ]; then
 live_primary="Mich test64: driver live primary bootstrap pass"
     live_fallback="Mich test64: driver live fallback bootstrap pass"
     live_isolation="Mich test64: driver live recovery isolation pass"
@@ -1247,6 +1270,14 @@ if [ "$profile" = "virtio-blk" ]; then
     for marker in \
         "Mich virtio-blk: bootstrap pass" \
         "Mich virtio-blk: serve pass"
+    do
+        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+    done
+fi
+if [ "$profile" = "nvme" ]; then
+    for marker in \
+        "Mich nvme: bootstrap pass" \
+        "Mich nvme: serve pass"
     do
         grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
     done
