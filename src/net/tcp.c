@@ -1836,6 +1836,33 @@ int tcp_tick(struct tcp_context *tcp, u32 now,
     return 0;
 }
 
+// Returns the id of the next active connection at or after *cursor that still
+// has queued bytes the peer window would accept, advancing *cursor past it, or 0
+// when none remain. tcp_tick is timer driven and only surfaces connections with
+// a live retransmit, persist, or time-wait deadline, so a send buffer stranded
+// by a coalesced ACK (flight fell to zero and the window is open, but no timer
+// is armed to re-pump it) is invisible to it and the writer would sleep until
+// the peer's receive timeout. The interface tick pumps this as the one send
+// path that is not event clocked. Gate on a non-zero window so a genuine
+// zero-window stall stays the persist timer's job.
+u64 tcp_pending_send(struct tcp_context *tcp, u32 *cursor) {
+    if (!tcp || !cursor) return 0;
+    for (u32 i = *cursor; i < TCP_CONNECTION_MAX; i++) {
+        struct tcp_connection *c = &tcp->connections[i];
+        if (!c->active || !c->send_window) continue;
+        if (c->state != TCP_STATE_ESTABLISHED &&
+            c->state != TCP_STATE_CLOSE_WAIT)
+            continue;
+        if (c->send_buffer_offset >= c->send_buffer_length &&
+            !c->send_loan_count)
+            continue;
+        *cursor = i + 1;
+        return id_for(c, i);
+    }
+    *cursor = TCP_CONNECTION_MAX;
+    return 0;
+}
+
 int tcp_close(struct tcp_context *tcp, u64 id) {
     struct tcp_connection *c = by_id(tcp, id);
     if (!c) return -1;

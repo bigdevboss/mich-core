@@ -1818,6 +1818,19 @@ void net_interface_tick(struct kernel_object *object, u32 now) {
                 flush_tcp(interface, transmit.connection_id) < 0)
                 break;
         }
+        // Backstop the ACK clock. flush_tcp runs on every guest send and every
+        // inbound ACK, but if the ACK that would have re-armed the pump was
+        // coalesced away the send-buffer tail is left with no timer to surface
+        // it through tcp_tick, so the writer sleeps until the peer times out.
+        // Drain any such stranded connection here and wake its writer. One pass
+        // over the table per tick bounds the cost; a remainder rides the next.
+        u32 cursor = 0;
+        for (u32 scan = 0; scan < TCP_CONNECTION_MAX; scan++) {
+            u64 pending = tcp_pending_send(interface->tcp, &cursor);
+            if (!pending) break;
+            if (flush_tcp(interface, pending) < 0) break;
+            socket_tcp_notify(interface->tcp, pending);
+        }
     }
     if (interface->ipv6_state != NET_INTERFACE_IPV6_DISABLED)
         icmpv6_tick(&interface->icmpv6, now);

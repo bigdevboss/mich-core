@@ -397,6 +397,7 @@ int tcp_detach(struct tcp_context *tcp, u64 id, u32 now,
                struct tcp_transmit *transmit);
 int tcp_tick(struct tcp_context *tcp, u32 now,
              struct tcp_transmit *transmit);
+u64 tcp_pending_send(struct tcp_context *tcp, u32 *cursor);
 int tcp_close(struct tcp_context *tcp, u64 id);
 const struct tcp_cc_ops *tcp_cc_reno(void);
 const struct tcp_cc_ops *tcp_cc_bbr(void);
