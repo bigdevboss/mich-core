@@ -438,15 +438,11 @@ static struct tcp_connection *by_id(struct tcp_context *tcp, u64 id) {
     return c->active && c->generation == (u32)(id >> 32) ? c : 0;
 }
 
-//
-// Global deadline min-heap. Every timer (retransmit entries, persist
-// probes, TIME_WAIT expiry, ACK-filter flushes) is a node; tcp_tick pops
-// the minimum. Deadlines are updated by pushing a new node: stale nodes
-// fail their per-kind validation at pop time (the entry's current
-// deadline no longer matches), and connection reuse is caught by the
-// timer_version token. This replaces the per-tick O(connections * slots)
-// linear sweep with O(log N) per event and an O(1) idle tick.
-//
+// Global deadline min-heap. Every timer (retransmit, persist, TIME_WAIT, ACK-
+// filter flush) is a node; tcp_tick pops the minimum. Deadlines update by pushing
+// a new node: stale nodes fail per-kind validation at pop (their deadline no longer
+// matches) and reuse is caught by timer_version. Replaces the per-tick
+// O(connections * slots) sweep with O(log N) per event and an O(1) idle tick.
 static void deadline_push(struct tcp_context *tcp, u32 slot, u32 kind,
                           u32 entry, u32 deadline) {
     if (tcp->deadline_count >= TCP_DEADLINE_MAX) return;
@@ -663,12 +659,9 @@ static void syn_options(struct tcp_context *tcp, u8 *options, u16 *length) {
     *length = 8;
 }
 
-//
-// Derive SACK blocks from the out-of-order buffer. The OOO queue is the
-// single source of reassembly state, so it doubles as the SACK range
-// table: no separate range storage. Up to two blocks (the highest two,
-// RFC 2018 fits two in a 40-byte header) after sorting and coalescing.
-//
+// Derive SACK blocks from the OOO buffer, which is the single source of
+// reassembly state and so doubles as the SACK range table (no separate storage).
+// Up to two blocks after sorting/coalescing (RFC 2018 fits two in a 40-byte header).
 static u16 write_sack(struct tcp_context *tcp, struct tcp_connection *c,
                       u8 *out, u32 cap) {
     u32 seqs[TCP_OUT_OF_ORDER_MAX];
@@ -767,13 +760,9 @@ static void rt_sample(struct tcp_context *tcp, struct tcp_connection *c,
     tcp->cc->on_rtt(c, sample, flight, tcp->now);
 }
 
-//
-// ACK processing. SACK blocks retire fully covered in-flight entries
-// (releasing their retransmit copies); the lowest still-active entry is
-// then the loss candidate for fast retransmit. Congestion-window policy
-// is delegated to the pluggable CC; entry deadline changes are mirrored
-// into the global deadline heap.
-//
+// ACK processing. SACK blocks retire fully covered in-flight entries; the lowest
+// still-active entry is then the fast-retransmit loss candidate. Congestion-window
+// policy is delegated to the pluggable CC; deadline changes mirror into the heap.
 static void acknowledge(struct tcp_context *tcp, struct tcp_connection *c,
                         u32 slot, const struct tcp_segment_view *s) {
     if (s->sack_block_count) {
@@ -839,9 +828,9 @@ static void acknowledge(struct tcp_context *tcp, struct tcp_connection *c,
 static int append_receive(struct tcp_context *tcp,
                           struct tcp_connection *c,
                           const u8 *data, u32 length) {
-    // Grants take the head of the byte stream; only the spill beyond the
-    // grant queue reaches the receive buffer, so grant bytes are always
-    // older than buffer bytes and the read order stays well defined.
+        // Grants take the head of the stream; only spill beyond the grant queue
+        // reaches the receive buffer, so grant bytes are always older and read
+        // order stays well defined.
     u32 grant_space = 0;
     for (u32 index = 0; index < TCP_RECEIVE_GRANT_MAX; index++) {
         const struct tcp_receive_grant *grant = &c->receive_grants[index];
@@ -918,13 +907,10 @@ static int queue_out_of_order(struct tcp_context *tcp,
     return -1;
 }
 
-//
-// ACK-filter (FreeBSD tcp_ackfilter, mode 1): after acknowledging new
-// in-order data, suppress further pure-ACK responses until one RTT
-// elapses; a deadline-heap event flushes the pending ACK. OOO, duplicate
-// and FIN responses always bypass the filter so fast retransmit
-// signalling and SACK never lose a segment of latency.
-//
+// ACK-filter (FreeBSD tcp_ackfilter, mode 1): after acking new in-order data,
+// suppress further pure-ACKs for one RTT; a deadline-heap event flushes the pending
+// ACK. OOO, duplicate and FIN responses bypass it so fast retransmit and SACK
+// never lose a segment of latency.
 static void data_ack(struct tcp_context *tcp, struct tcp_response *r,
                      struct tcp_connection *c, u32 slot, u32 flags) {
     if (tcp->ack_filter && !(flags & TCP_FLAG_FIN) &&
@@ -1836,14 +1822,12 @@ int tcp_tick(struct tcp_context *tcp, u32 now,
     return 0;
 }
 
-// Returns the id of the next active connection at or after *cursor that still
-// has queued bytes the peer window would accept, advancing *cursor past it, or 0
-// when none remain. tcp_tick is timer driven and only surfaces connections with
-// a live retransmit, persist, or time-wait deadline, so a send buffer stranded
-// by a coalesced ACK (flight fell to zero and the window is open, but no timer
-// is armed to re-pump it) is invisible to it and the writer would sleep until
-// the peer's receive timeout. The interface tick pumps this as the one send
-// path that is not event clocked. Gate on a non-zero window so a genuine
+// Next active connection at or after *cursor with queued bytes the peer window
+// accepts, advancing *cursor past it, or 0 when none remain. tcp_tick only surfaces
+// connections with a live timer, so a send buffer stranded by a coalesced ACK
+// (flight hit zero, window open, no timer armed to re-pump) is invisible to it and
+// the writer would sleep until the peer's receive timeout. The interface tick pumps
+// this, the one non-event-clocked send path. Gate on a non-zero window so a real
 // zero-window stall stays the persist timer's job.
 u64 tcp_pending_send(struct tcp_context *tcp, u32 *cursor) {
     if (!tcp || !cursor) return 0;

@@ -149,17 +149,15 @@ struct task_context64 task_contexts[MAX_TASKS];
 u32 current_task_slot;
 u32 timer_ticks;
 
-// Set by the wake hook (task64_set_result) whenever a task transitions to
-// runnable, cleared and consumed only by the device-IRQ return path. It
-// is the precise signal that an IRQ unblocked someone: without it a woken
-// capsule waits for the next 10 ms timer tick before the scheduler runs
-// it, which on a single-core netbench shows up as ~9 ms of wire latency
-// because the only other runnable task is the ring-3 idle busy-loop.
+// Set by the wake hook when a task turns runnable, consumed by the device-IRQ
+// return path: the precise signal that an IRQ unblocked someone. Without it a
+// woken capsule waits for the next 10ms tick, which on single-core netbench costs
+// ~9ms of wire latency (the only other runnable task is the ring-3 idle loop).
 static u32 resched_pending;
 #define SPAWN_IMAGE_MAX DRIVER_USER_IMAGE_MAX
-// Stack pages mapped for a spawned user image. One page is not enough for a
-// TLS client that verifies an RSA-4096 trust anchor; eight leaves comfortable
-// headroom while the unmapped page above the top still guards against overflow.
+// Stack pages for a spawned user image. One page overflows a TLS client that
+// verifies an RSA-4096 anchor; eight leaves headroom, and the unmapped page above
+// the top still guards overflow.
 #define SPAWN_STACK_PAGES 8u
 static const u8 *spawn_images[SPAWN_IMAGE_MAX];
 static u32 spawn_image_sizes[SPAWN_IMAGE_MAX];
@@ -283,10 +281,9 @@ struct kernel_object *platform64_irq_object(u32 irq) {
     return irq < 16 ? platform_irq[irq] : 0;
 }
 
-// Copy the interrupted ring-3 register state out of a device-IRQ or
-// exception frame into a task context. The frame (struct exception_frame64)
-// carries a vector+error pair the general interrupt_frame64 helpers do not,
-// so this is deliberately separate from interrupt_save/interrupt_load.
+// Copy interrupted ring-3 state from a device-IRQ/exception frame into a task
+// context. Separate from interrupt_save/interrupt_load because exception_frame64
+// carries a vector+error pair the general interrupt_frame64 helpers do not.
 static void frame64_save_user(struct task_context64 *context,
                               const struct exception_frame64 *frame) {
     context->rax = frame->rax;
@@ -336,12 +333,10 @@ static void frame64_load_user(struct exception_frame64 *frame,
     frame->ss = 0x1B;
 }
 
-// Switch to the task the current IRQ just unblocked, on iret. Mirrors the
-// BSP timer preempt (save current, round-robin pick, load next) but drives
-// it off the device-IRQ frame. Preconditions are hard: only the BSP retires
-// capsule MSIs; a frame that interrupted ring 0 carries no SS/RSP, so a
-// save/load round trip would corrupt the interrupted kernel context; and
-// there must be a different runnable task to hand the CPU to.
+// Switch on iret to the task the current IRQ just unblocked. Mirrors the BSP timer
+// preempt but drives off the device-IRQ frame. Hard preconditions: only the BSP
+// retires capsule MSIs; a ring-0 frame carries no SS/RSP so a save/load would
+// corrupt the interrupted kernel context; and a different runnable task must exist.
 static void irq64_preempt(struct exception_frame64 *frame) {
     u32 next;
     if (smp64_cpu_index() != 0) return;
@@ -1015,11 +1010,9 @@ static int spawn64_image(u32 image_id, int parent_id, u32 capabilities,
         task_free_slot(task);
         return -1;
     }
-    // A TLS client that validates an RSA-4096 trust anchor (for example GTS
-    // Root R1 behind a real HTTPS server) drives the modular exponentiation
-    // deep enough that a single page of stack overflows. Map several pages
-    // below the top; the guard page above the top is left unmapped so an
-    // overflow still faults instead of corrupting the heap.
+    // An RSA-4096 anchor validation (e.g. GTS Root R1) drives modexp deep enough
+    // to overflow a single stack page. Map several below the top; the unmapped
+    // guard above the top makes an overflow fault instead of corrupting the heap.
     vaddr_t stack_top = VM64_STACK_TOP;
     paddr_t stack_pages[SPAWN_STACK_PAGES];
     u32 stack_mapped = 0;
@@ -1050,9 +1043,8 @@ static int spawn64_image(u32 image_id, int parent_id, u32 capabilities,
         return -1;
     }
     context->rdi = argument;
-    // The init image runs the same test sequence in every profile, but only
-    // some profiles spawn it with the POSIX modules. Hand it the module flags
-    // so it can skip what this profile never started.
+    // The init image runs the same sequence in every profile, but only some spawn
+    // it with the POSIX modules. Pass the flags so it skips what was never started.
     context->rsi = spawn_image_flags[image_id];
     context->rsp = stack_top;
     context->rip = entry;
@@ -1568,11 +1560,8 @@ static void reap_orphan_zombies(void) {
 }
 
 void exception64_dispatch(struct exception_frame64 *frame) {
-        //
-    // NMI is serviceable, not fatal: the firmware still running on a
-    // secondary CPU during bring-up can raise one, and NMIs carry no
-    // error state Mich Core needs to act on. Just return.
-    //
+        // NMI is serviceable, not fatal: firmware on a secondary CPU during bring-up
+    // can raise one, and it carries no error state to act on. Just return.
     u32 slot;
     if (frame->vector == 2)
         return;
@@ -2028,13 +2017,12 @@ void kernel64_main(u32 magic, struct bd_info *info) {
         break;
     }
 #ifdef MICH_TEST_BUILD
-    // A netbench boot measures loopback socket cycles and must run on a
-    // quiescent kernel. The driver-live-recovery lab deliberately crashes and
-    // restarts a capsule against a tight tick deadline and a rebind-gap that
-    // both assume the capsule is the only competing userspace task; a second
-    // runnable task (netbench is loopback-only, so it never blocks off the run
-    // queue like dnsprobe does) perturbs that cadence into a spurious recovery
-    // panic and would also skew the cycle counts. Skip the lab for such boots.
+    // A netbench boot measures loopback cycles and needs a quiescent kernel. The
+    // driver-live-recovery lab crashes and restarts a capsule against a tight tick
+    // deadline and rebind-gap that both assume the capsule is the only userspace
+    // task; netbench is loopback-only (never blocks off the run queue like dnsprobe
+    // does), so its second runnable task perturbs that cadence into a spurious
+    // recovery panic and skews the counts. Skip the lab for such boots.
     int bench_boot = 0;
     for (u32 index = 0; index < info->mods_count; index++)
         if (module_name_is(&modules[index], "netbench")) {
@@ -2048,9 +2036,8 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     if (manager64_set_pci_inventory())
         KERNEL_PANIC("driver PCI inventory");
 #ifdef MICH_TEST_BUILD
-    // The dns profile carries a probe that drives the resolver against a
-    // host-side responder. It is an ordinary process, not a driver capsule: it
-    // owns no interface and reaches the network purely through routed sockets.
+    // The dns probe is an ordinary process, not a driver capsule: it owns no
+    // interface and reaches the network purely through routed sockets.
     for (u32 index = 0; index < info->mods_count; index++) {
         if (!module_name_is(&modules[index], "dnsprobe") &&
             !module_name_is(&modules[index], "tlsprobe") &&

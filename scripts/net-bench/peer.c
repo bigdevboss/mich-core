@@ -1,13 +1,10 @@
-// Host-side peer for the mich-core network benchmark. The guest under test is
-// always the active side: it opens a TCP control connection, then sends one or
-// more newline-terminated commands over it and drives each data phase. It
-// pipelines the whole session over a single connection because slirp does not
-// reliably carry a guest's second outbound connection to a host-bound peer. This
-// peer only exists so the guest has something real on the wire to talk to when it
-// is not looping back to itself, so it stays deliberately dumb: no measurement
-// happens here, all timing is taken inside the guest with rdtsc. Keeping the peer
-// out of the measurement path is what lets the numbers describe the mich stack
-// rather than this program or the host's scheduler.
+// Host-side peer for the mich-core network benchmark. The guest is always the
+// active side: it opens one TCP control connection, sends newline-terminated
+// commands over it and drives each data phase, pipelining the whole session over a
+// single connection because slirp does not reliably carry a guest's second outbound
+// connection to a host-bound peer. Deliberately dumb: no measurement happens here
+// (the guest times everything with rdtsc), so the numbers describe the mich stack
+// rather than this program or the host scheduler.
 //
 // Protocol (all fields decimal ASCII; a connection carries a sequence of command
 // lines, each followed by its own data phase, until the guest closes):
@@ -46,15 +43,13 @@
 #define COMMAND_MAX 128
 #define BLAST_CHUNK 65536
 
-// A single scratch buffer serves both directions: the payload bytes carry no
-// meaning to the benchmark, only their count and timing do, so we never inspect
-// them and one shared buffer is enough.
+// One scratch buffer for both directions: payload bytes carry no meaning (only
+// count and timing do), so they are never inspected and one buffer suffices.
 static uint8_t scratch[BLAST_CHUNK];
 
-// UDP receive quiescence. A one-way UDP blast has no in-band end marker, so the
-// peer declares the run finished once no datagram has arrived for this long.
-// Long enough to survive a scheduling hiccup on a loaded host, short enough not
-// to pad every run.
+// UDP receive quiescence. A one-way blast has no in-band end marker, so the run is
+// declared finished after this long with no datagram: long enough to survive a
+// scheduling hiccup on a loaded host, short enough not to pad every run.
 #define UDP_QUIET_USEC 300000
 
 static void log_errno(const char *what) {
@@ -158,9 +153,8 @@ static int handle_rr(int fd, uint64_t count, uint32_t size) {
 }
 
 // Binds a UDP socket on port, sends "READY\n" on the control connection so the
-// guest does not race the bind, and returns the UDP fd (or -1). Reporting READY
-// only after the bind succeeds is what removes the startup sleep the TLS test
-// still needs.
+// guest does not race the bind, and returns the fd (or -1). Reporting READY only
+// after the bind succeeds removes the startup sleep the TLS test still needs.
 static int udp_ready(int control_fd, uint16_t port) {
     int udp = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp < 0) {
@@ -275,9 +269,8 @@ static int handle_urr(int control_fd, uint16_t port, uint64_t count,
     return 0;
 }
 
-// Dispatches one command line. Unknown or malformed commands are reported and
-// the connection is dropped rather than guessed at, so a protocol mismatch
-// fails loud instead of producing a plausible but wrong number.
+// Dispatches one command line. Unknown or malformed commands drop the connection
+// rather than guess, so a protocol mismatch fails loud instead of a wrong number.
 static int dispatch(int fd, const char *command) {
     char verb[16];
     unsigned long long a = 0;
@@ -298,27 +291,21 @@ static int dispatch(int fd, const char *command) {
     return -1;
 }
 
-// Runs one control connection to completion: read command lines and drive each
-// data phase until the guest closes. The guest pipelines several tests over one
-// connection because slirp does not reliably carry its second outbound
-// connection to a host-bound peer, so a working connection has to serve the
-// whole session. Every handler consumes exactly its data phase (TX reads exactly
-// <total> bytes, RR exactly <count>*<size>, UDP runs on a side socket), so the
-// stream is always positioned at the next command line on return. Blocking I/O
-// is fine here because the connection has its own process, so a slow or silent
-// client only stalls itself.
+// Runs one control connection to completion: read command lines, drive each data
+// phase until the guest closes. Every handler consumes exactly its data phase (TX
+// reads <total> bytes, RR reads <count>*<size>, UDP runs on a side socket), so the
+// stream is always positioned at the next command line on return. Blocking I/O is
+// fine: the connection owns its process, so a slow client only stalls itself.
 static void serve_connection(int fd) {
     // Nagle would batch the tiny RR replies and corrupt the latency numbers,
     // which is exactly what this peer must not do.
     int nodelay = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
-    // A client that connects and then goes quiet must not pin this connection
-    // process and its control-port socket forever. That happens when a guest
-    // reboots between runs: its old ESTABLISHED connection is left behind, and a
-    // child blocked in a data-phase read would hold the port until the kernel's
-    // own orphan timeout, poisoning the next run's handshake. No legitimate
-    // benchmark phase is silent this long, so a receive with no bytes for this
-    // window is a dead connection and the child gives up on it.
+    // A client that connects then goes quiet must not pin this process and its
+    // control-port socket forever (a guest that reboots between runs leaves an old
+    // ESTABLISHED connection whose child would hold the port until the kernel orphan
+    // timeout, poisoning the next handshake). No real phase is silent this long, so a
+    // receive with no bytes for this window is a dead connection; give up.
     struct timeval idle = {30, 0};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &idle, sizeof(idle));
     char command[COMMAND_MAX];
@@ -327,12 +314,10 @@ static void serve_connection(int fd) {
 }
 
 static void serve(int listen_fd, int once) {
-    // Handle each connection in its own child so one stalled client cannot wedge
-    // the accept loop and starve the others. A port scanner that connects and
-    // then sends nothing (as happens in shared CI sandboxes) would otherwise
-    // block read_command forever in a single-threaded loop and every later test
-    // connection with it. SIG_IGN on SIGCHLD lets the kernel reap the children,
-    // so there is nothing to wait on here.
+    // One child per connection so a stalled client cannot wedge the accept loop and
+    // starve the others (a port scanner that connects and sends nothing, common in
+    // shared CI, would otherwise block read_command forever). SIG_IGN on SIGCHLD
+    // lets the kernel reap children, so there is nothing to wait on here.
     signal(SIGCHLD, SIG_IGN);
     pid_t parent = getpid();
     for (;;) {
@@ -352,13 +337,11 @@ static void serve(int listen_fd, int once) {
         pid_t child = fork();
         if (child == 0) {
             close(listen_fd);
-            // The harness only tracks the peer parent's pid, so on teardown it
-            // kills the parent and leaves these connection children orphaned in
-            // ESTABLISHED, still holding the control port. The next run's guest
-            // boots fresh, hands out the same deterministic ephemeral ports, and
-            // its SYNs land on those stale sockets, which answer with RFC 5961
-            // challenge-ACKs instead of a handshake and wedge the wire pass. Tie
-            // the child's life to the parent so a killed run leaves nothing.
+            // The harness kills only the parent pid on teardown, orphaning these
+            // children in ESTABLISHED holding the control port. The next run reuses
+            // the same deterministic ephemeral ports, so its SYNs hit the stale
+            // sockets and get RFC 5961 challenge-ACKs instead of a handshake, wedging
+            // the wire pass. Tie the child's life to the parent so nothing survives.
             prctl(PR_SET_PDEATHSIG, SIGKILL);
             // If the parent died in the window between fork and prctl, the death
             // signal was already missed; detect the orphaning and exit.
