@@ -26,5 +26,7 @@ int mich_dma_map(unsigned int handle, unsigned long long virtual_address);
 int mich_resource_unmap(unsigned long long virtual_address,
                         unsigned long long length);
 long long mich_resource_length(unsigned int handle);
+unsigned long long mich_resource_physical(unsigned int handle,
+                                          unsigned long long offset);
 
 #endif

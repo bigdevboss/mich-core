@@ -555,6 +555,49 @@ static int manager64_register_virtio_blk(u32 image_id) {
     return driver_manager_register(&manifest) > 0 ? 0 : -1;
 }
 
+// Registered only when an "nvme" boot module is present, so ordinary images keep
+// driving NVMe in-kernel. Matches the NVMe class triplet (01/08/02) and
+// wildcards vendor and device, since any NVMe controller is fair game. The
+// capsule polls completions, so no MSI-X vectors are granted.
+static int manager64_register_nvme(u32 image_id) {
+    struct driver_user_manifest manifest;
+    u8 *bytes = (u8 *)&manifest;
+    for (usize_t index = 0; index < sizeof(manifest); index++) bytes[index] = 0;
+    manifest.abi_version = DRIVER_USER_ABI_VERSION;
+    manifest.size = sizeof(manifest);
+    const char name[] = "nvme";
+    for (u32 index = 0; name[index]; index++) manifest.name[index] = name[index];
+    manifest.restart_policy = DRIVER_RESTART_ON_FAILURE;
+    manifest.max_restarts = 4;
+    manifest.backoff_ticks = 10;
+    manifest.priority = 1;
+    manifest.image_id = image_id;
+    manifest.reset_policy = DRIVER_RESET_IF_SUPPORTED;
+    manifest.firmware_count = 0;
+    // Must match the capsule's NVME_CAPSULE_MAGIC ("NVME") entry check.
+    manifest.argument = 0x4E564D45ULL;
+    manifest.match_count = 1;
+    manifest.matches[0].vendor_id = 0xFFFF;
+    manifest.matches[0].device_id = 0xFFFF;
+    manifest.matches[0].class_code = 0x01;
+    manifest.matches[0].subclass = 0x08;
+    manifest.matches[0].programming_interface = 0x02;
+    manifest.request_count = 4;
+    manifest.requests[0].kind = DRIVER_RESOURCE_PCI;
+    manifest.requests[0].rights = KRIGHT_READ | KRIGHT_CONTROL;
+    manifest.requests[1].kind = DRIVER_RESOURCE_BAR;
+    manifest.requests[1].index = 0;
+    manifest.requests[1].rights = KRIGHT_READ | KRIGHT_WRITE | KRIGHT_MAP;
+    manifest.requests[2].kind = DRIVER_RESOURCE_DMA;
+    // 5 pages: admin SQ/CQ, I/O SQ/CQ, identify (NVME_QUEUES_PAGES in capsule.h).
+    manifest.requests[2].amount = 5;
+    manifest.requests[2].limit = 0xFFFFFFFFULL;
+    manifest.requests[2].rights = KRIGHT_READ | KRIGHT_WRITE | KRIGHT_MAP;
+    manifest.requests[3].kind = DRIVER_RESOURCE_BRIDGE;
+    manifest.requests[3].rights = KRIGHT_READ | KRIGHT_WAIT;
+    return driver_manager_register(&manifest) > 0 ? 0 : -1;
+}
+
 static int manager64_set_pci_inventory(void) {
     struct kernel_object *devices[DRIVER_MANAGER_DEVICE_MAX];
     u32 count = pci64_count();
@@ -2014,6 +2057,12 @@ void kernel64_main(u32 magic, struct bd_info *info) {
         if (!module_name_is(&modules[index], "virtio-blk")) continue;
         if (manager64_register_virtio_blk(index))
             KERNEL_PANIC("virtio-blk manifest");
+        break;
+    }
+    for (u32 index = 0; index < info->mods_count; index++) {
+        if (!module_name_is(&modules[index], "nvme")) continue;
+        if (manager64_register_nvme(index))
+            KERNEL_PANIC("nvme manifest");
         break;
     }
 #ifdef MICH_TEST_BUILD

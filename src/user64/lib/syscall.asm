@@ -51,6 +51,7 @@ global mich_mmio_map
 global mich_dma_map
 global mich_resource_unmap
 global mich_resource_length
+global mich_resource_physical
 global mich_driver_bootstrap
 global mich_driver_stop_ack
 global mich_msi_group_open
@@ -358,6 +359,7 @@ global mich_pci_set_command
 %define SYS_NET_INTERFACE_DRIVER_DEQUEUE_TX_BATCH 172
 %define SYS_NET_INTERFACE_DRIVER_COMPLETE_TX_BATCH 173
 %define SYS_WALL_CLOCK 214
+%define SYS_RESOURCE_PHYSICAL 215
 %define SYS_TICKS 174
 %define SYS_PCI_CONFIG_READ8 175
 %define SYS_PCI_CONFIG_READ16 176
@@ -614,6 +616,11 @@ mich_resource_unmap:
 
 mich_resource_length:
     mov eax, SYS_RESOURCE_LENGTH
+    syscall
+    ret
+
+mich_resource_physical:
+    mov eax, SYS_RESOURCE_PHYSICAL
     syscall
     ret
 
