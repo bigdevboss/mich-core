@@ -1,5 +1,7 @@
 #include "block.h"
+#include "block_driver_abi.h"
 #include "resource.h"
+#include "ring.h"
 #include "event.h"
 #include "cache.h"
 
@@ -35,10 +37,18 @@ struct block_state {
     u32 flags;
     u32 generation;
     u32 revoked;
+    u32 capsule;
     u32 active;
 };
 
 static struct block_state devices[BLOCK_DEVICE_MAX];
+
+// Weak reference to the capsule-registered device so an in-kernel consumer (a
+// test, blockfs) can reach it the way net_interface_lookup exposes a registered
+// interface. Weak is safe because the kernel run queue is single-threaded, so no
+// consumer holds this across a preemption; block_destroy clears it, and a capsule
+// restart simply re-registers, replacing a dead entry.
+static struct kernel_object *capsule_device;
 
 static void copy_bytes(u8 *dst, const u8 *src, u32 n) {
     for (u32 i = 0; i < n; i++) dst[i] = src[i];
@@ -69,6 +79,20 @@ static int transfer(struct block_state *dev, u32 op, u32 lba, u32 sectors,
             copy_bytes(part, sector, BLOCK_SECTOR_SIZE);
     }
     return 0;
+}
+
+// Pointer to a capsule request's single-sector staging area in the shared pool.
+// The pool is laid out one sector per in-kernel slot, so slot indexing keeps the
+// kernel and the capsule agreeing on where a payload lives without a per-request
+// allocator. Returns 0 if the pool is revoked or too small for the slot.
+static u8 *capsule_pool_sector(struct block_state *dev, u32 slot) {
+    struct page_resource *pool = page_resource_get(dev->backing);
+    if (!pool || pool->revoked) return 0;
+    u32 byte = slot * BLOCK_SECTOR_SIZE;
+    u32 page = byte / BLOCK_PAGE_BYTES;
+    u32 off = byte % BLOCK_PAGE_BYTES;
+    if (page >= pool->pages || !pool->physical[page]) return 0;
+    return (u8 *)(uptr_t)pool->physical[page] + off;
 }
 
 static int complete_slot(struct block_state *dev, u32 slot) {
@@ -121,6 +145,7 @@ static void block_destroy(struct kernel_object *object) {
     struct block_state *dev = &devices[object->value - 1];
     if (!dev->active) return;
     if (!dev->revoked) revoke_state(dev);
+    if (capsule_device == object) capsule_device = 0;
     if (dev->event) object_release(dev->event);
     if (dev->queue) object_release(dev->queue);
     if (dev->transport) object_release(dev->transport);
@@ -136,6 +161,7 @@ static void block_destroy(struct kernel_object *object) {
     dev->flags = 0;
     dev->generation = 0;
     dev->revoked = 0;
+    dev->capsule = 0;
     dev->active = 0;
 }
 
@@ -152,6 +178,7 @@ void block_init(void) {
         devices[i].flags = 0;
         devices[i].generation = 0;
         devices[i].revoked = 0;
+        devices[i].capsule = 0;
         devices[i].active = 0;
         for (u32 slot = 0; slot < BLOCK_REQUEST_MAX; slot++) {
             devices[i].requests[slot].sg = 0;
@@ -212,6 +239,7 @@ struct kernel_object *block_create(u32 sector_count, u32 flags) {
         dev->generation++;
         if (!dev->generation) dev->generation = 1;
         dev->revoked = 0;
+        dev->capsule = 0;
         dev->active = 1;
         struct kernel_object *object = object_create(
             KOBJECT_BLOCK, i + 1, block_destroy);
@@ -278,6 +306,7 @@ struct kernel_object *block_bind_transport(u32 sector_count, u32 flags,
         dev->generation++;
         if (!dev->generation) dev->generation = 1;
         dev->revoked = 0;
+        dev->capsule = 0;
         dev->active = 1;
         struct kernel_object *object = object_create(
             KOBJECT_BLOCK, i + 1, block_destroy);
@@ -298,6 +327,107 @@ struct kernel_object *block_bind_transport(u32 sector_count, u32 flags,
         return object;
     }
     return 0;
+}
+
+// Bind a device backed by a userspace capsule instead of an in-kernel driver.
+// The capsule owns three shared objects: a pool (one sector per in-kernel slot),
+// a request ring the kernel produces onto, and a completion ring the capsule
+// produces onto. issue/reap stay null so block_submit and block_service take the
+// ring path. The descriptor sizes and pool capacity are checked here so a
+// mismatched or undersized registration fails at bind, not at first I/O where a
+// bad offset would corrupt memory across the trust boundary.
+struct kernel_object *block_bind_capsule_transport(u32 sector_count, u32 flags,
+    struct kernel_object *pool, struct kernel_object *request_ring,
+    struct kernel_object *completion_ring) {
+    struct page_resource *pages = pool ? page_resource_get(pool) : 0;
+    struct ring_resource *req_ring =
+        request_ring ? ring_resource_get(request_ring) : 0;
+    struct ring_resource *cmp_ring =
+        completion_ring ? ring_resource_get(completion_ring) : 0;
+    if (!sector_count || sector_count > BLOCK_SECTOR_MAX || !pages ||
+        !req_ring || !cmp_ring ||
+        (flags & ~(BLOCK_FLAG_READ_ONLY | BLOCK_FLAG_DEFER)) ||
+        req_ring->descriptor_size != sizeof(struct block_driver_request) ||
+        cmp_ring->descriptor_size != sizeof(struct block_driver_completion) ||
+        (u64)pages->pages * BLOCK_PAGE_BYTES <
+            (u64)BLOCK_REQUEST_MAX * BLOCK_SECTOR_SIZE)
+        return 0;
+    flags |= BLOCK_FLAG_DEFER;
+    for (u32 i = 0; i < BLOCK_DEVICE_MAX; i++) {
+        struct block_state *dev = &devices[i];
+        if (dev->active) continue;
+        struct kernel_object *event = event_create(EVENT_AUTO_RESET, 0);
+        if (!event) return 0;
+        if (object_retain(pool)) {
+            object_release(event);
+            return 0;
+        }
+        if (object_retain(request_ring)) {
+            object_release(pool);
+            object_release(event);
+            return 0;
+        }
+        if (object_retain(completion_ring)) {
+            object_release(request_ring);
+            object_release(pool);
+            object_release(event);
+            return 0;
+        }
+        for (u32 slot = 0; slot < BLOCK_REQUEST_MAX; slot++) {
+            dev->requests[slot].sg = 0;
+            dev->requests[slot].generation = 1;
+            dev->requests[slot].state = BLOCK_REQ_FREE;
+            dev->requests[slot].op = 0;
+            dev->requests[slot].lba = 0;
+            dev->requests[slot].sectors = 0;
+            dev->requests[slot].status = 0;
+            dev->requests[slot].transferred = 0;
+            dev->tokens[slot] = 0;
+        }
+        dev->backing = pool;
+        dev->event = event;
+        dev->queue = request_ring;
+        dev->transport = completion_ring;
+        dev->issue = 0;
+        dev->reap = 0;
+        dev->issue_sg = 0;
+        dev->sector_count = sector_count;
+        dev->flags = flags;
+        dev->generation++;
+        if (!dev->generation) dev->generation = 1;
+        dev->revoked = 0;
+        dev->capsule = 1;
+        dev->active = 1;
+        struct kernel_object *object = object_create(
+            KOBJECT_BLOCK, i + 1, block_destroy);
+        if (!object) {
+            object_release(event);
+            object_release(completion_ring);
+            object_release(request_ring);
+            object_release(pool);
+            dev->backing = 0;
+            dev->event = 0;
+            dev->queue = 0;
+            dev->transport = 0;
+            dev->capsule = 0;
+            dev->active = 0;
+        }
+        return object;
+    }
+    return 0;
+}
+
+// Publish a capsule-backed device for in-kernel consumers. The latest live
+// registration wins so a restarted capsule replaces its predecessor.
+int block_register(struct kernel_object *object) {
+    struct block_state *dev = state_for(object);
+    if (!dev || !dev->capsule) return -1;
+    capsule_device = object;
+    return 0;
+}
+
+struct kernel_object *block_capsule_device(void) {
+    return state_for(capsule_device) ? capsule_device : 0;
 }
 
 int block_info(struct kernel_object *object, struct block_info *info) {
@@ -336,6 +466,37 @@ int block_submit(struct kernel_object *object, u32 op, u32 lba, u32 sectors,
             for (u32 i = 0; i < length; i++) req->data[i] = 0;
         req->state = BLOCK_REQ_PENDING;
         *id = ((u64)req->generation << 32) | (slot + 1);
+        if (dev->capsule) {
+            u8 *pool_sector = capsule_pool_sector(dev, slot);
+            struct ring_resource *ring = ring_resource_get(dev->queue);
+            if (!pool_sector || !ring || ring->revoked ||
+                ring->producer - ring->consumer >= ring->capacity) {
+                req->state = BLOCK_REQ_FREE;
+                req->op = 0;
+                req->lba = 0;
+                req->sectors = 0;
+                *id = 0;
+                return -1;
+            }
+            if (op == BLOCK_OP_WRITE)
+                copy_bytes(pool_sector, req->data, length);
+            struct block_driver_request *entry =
+                ring_resource_descriptor(dev->queue, ring->producer);
+            entry->request_id = *id;
+            entry->op = op;
+            entry->lba = lba;
+            entry->sectors = sectors;
+            entry->pool_offset = slot * BLOCK_SECTOR_SIZE;
+            if (ring_resource_submit(dev->queue, 1)) {
+                req->state = BLOCK_REQ_FREE;
+                req->op = 0;
+                req->lba = 0;
+                req->sectors = 0;
+                *id = 0;
+                return -1;
+            }
+            return 0;
+        }
         if (dev->issue) {
             if (dev->issue(dev->queue, dev->backing, slot, op, lba,
                            req->data, &dev->tokens[slot])) {
@@ -408,6 +569,55 @@ int block_service(struct kernel_object *object) {
     struct block_state *dev = state_for(object);
     if (!dev || dev->revoked) return -1;
     u32 n = 0;
+    if (dev->capsule) {
+        struct ring_resource *ring = ring_resource_get(dev->transport);
+        if (!ring || ring->revoked) return -1;
+        while (ring->producer != ring->consumer) {
+            struct block_driver_completion *entry =
+                ring_resource_descriptor(dev->transport, ring->consumer);
+            u64 request_id = entry->request_id;
+            i32 status = entry->status;
+            u32 transferred = entry->transferred;
+            if (ring_resource_consume(dev->transport, 1)) break;
+            // Everything past the ring is capsule-controlled, so validate the id
+            // maps to an outstanding request of the same generation before acting;
+            // a forged, stale or duplicate completion is dropped, not trusted.
+            u32 low = (u32)request_id;
+            u32 generation = (u32)(request_id >> 32);
+            if (!low || low > BLOCK_REQUEST_MAX) continue;
+            struct block_request *req = &dev->requests[low - 1];
+            if (req->state != BLOCK_REQ_PENDING || req->generation != generation)
+                continue;
+            u32 expected = req->sectors * BLOCK_SECTOR_SIZE;
+            if (status) {
+                req->state = BLOCK_REQ_ERROR;
+                req->status = status;
+                req->transferred = 0;
+            } else if (req->op == BLOCK_OP_READ) {
+                u8 *pool_sector = capsule_pool_sector(dev, low - 1);
+                if (!pool_sector) {
+                    req->state = BLOCK_REQ_ERROR;
+                    req->status = -1;
+                    req->transferred = 0;
+                } else {
+                    copy_bytes(req->data, pool_sector, BLOCK_SECTOR_SIZE);
+                    req->state = BLOCK_REQ_DONE;
+                    req->status = 0;
+                    // The capsule cannot claim more bytes than were requested.
+                    req->transferred =
+                        transferred > expected ? expected : transferred;
+                }
+            } else {
+                req->state = BLOCK_REQ_DONE;
+                req->status = 0;
+                req->transferred =
+                    transferred > expected ? expected : transferred;
+            }
+            event_signal(dev->event);
+            n++;
+        }
+        return n ? 0 : -1;
+    }
     if (dev->reap) {
         for (;;) {
             u32 slot = 0;

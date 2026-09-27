@@ -27,6 +27,11 @@ struct kernel_object *block_bind_transport(u32 sector_count, u32 flags,
     struct kernel_object *transport, struct kernel_object *queue,
     struct kernel_object *dma, block_issue_fn issue, block_reap_fn reap,
     block_issue_sg_fn issue_sg);
+struct kernel_object *block_bind_capsule_transport(u32 sector_count, u32 flags,
+    struct kernel_object *pool, struct kernel_object *request_ring,
+    struct kernel_object *completion_ring);
+int block_register(struct kernel_object *object);
+struct kernel_object *block_capsule_device(void);
 int block_info(struct kernel_object *object, struct block_info *info);
 int block_submit(struct kernel_object *object, u32 op, u32 lba, u32 sectors,
                  void *buffer, u32 length, u64 *id);
