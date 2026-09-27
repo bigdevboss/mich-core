@@ -36,6 +36,7 @@ static void task_clear_dynamic(struct task *t) {
     t->dma_pages_used = 0;
     t->dma_max_addr = 0;
     t->on_cpu = TASK_CPU_NONE;
+    t->is_idle = 0;
     t->name[0] = 0;
 }
 

@@ -1842,6 +1842,9 @@ void kernel64_main(u32 magic, struct bd_info *info) {
         serial64_write("Mich x86_64: process spawn failure\n");
         for (;;) __asm__ volatile("cli; hlt");
     }
+    // The BSP idle task busy-loops in ring 3 and never blocks; flag it so the
+    // scheduler runs it only when no real task is runnable (see task.h).
+    task_pool[0].is_idle = 1;
 #ifdef MICH_TEST_BUILD
     test_report_reset();
     struct test64_env test_env;

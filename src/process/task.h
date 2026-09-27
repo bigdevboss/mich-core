@@ -88,6 +88,13 @@ struct task {
     // CPU currently executing this task, or TASK_CPU_NONE. pick_next
     // skips a task owned by another CPU so two cores cannot run it.
     int on_cpu;
+    // The idle task never blocks, so once the scheduler lands on it the CPU
+    // busy-loops in ring 3 until the next timer tick preempts it. pick_next
+    // treats an idle task as lowest priority and hands the CPU to any other
+    // runnable task first, so a syscall-context wake (the virtio capsule
+    // delivering a received segment to a blocked socket owner) runs the woken
+    // task at once instead of stalling a full ~10ms tick behind the busy-loop.
+    int is_idle;
 };
 
 extern struct task task_pool[MAX_TASKS];
