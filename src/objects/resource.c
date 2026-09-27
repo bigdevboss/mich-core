@@ -501,6 +501,26 @@ struct page_resource *page_resource_get(const struct kernel_object *object) {
     return resource->active ? resource : 0;
 }
 
+paddr_t page_resource_dma_address(const struct kernel_object *object,
+                                  u32 offset, u32 length) {
+    struct page_resource *pool = page_resource_get(object);
+    if (!pool || pool->revoked || !length) return 0;
+    u64 total = (u64)pool->pages * 4096u;
+    if (offset >= total || (u64)length > total - offset) return 0;
+    u32 page = offset / 4096u;
+    u32 page_off = offset % 4096u;
+    // The backing pages come from pmm_alloc_page one at a time and are not
+    // physically contiguous, so a device descriptor that straddled a page
+    // boundary would run off one page into unrelated memory.
+    if ((u64)page_off + length > 4096u) return 0;
+    paddr_t physical = pool->physical[page];
+    // Virtqueues are programmed within the low 1GB DMA window; a page the
+    // allocator placed above it is unreachable by the device, so refuse rather
+    // than hand the capsule a descriptor the device would fault or wild-write on.
+    if (!physical || physical + page_off + length > 0x40000000ULL) return 0;
+    return physical + page_off;
+}
+
 int page_resource_pin(struct kernel_object *object) {
     struct page_resource *resource = page_resource_get(object);
     if (!resource || resource->revoked || resource->pin_count == 0xFFFFFFFFu ||

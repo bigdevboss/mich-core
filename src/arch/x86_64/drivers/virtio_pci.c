@@ -561,6 +561,15 @@ int virtqueue_descriptor_set_packet(struct kernel_object *object, u64 token,
         object, token, ordinal, (u64)(uptr_t)data + offset, length, writable);
 }
 
+int virtqueue_descriptor_set_region(struct kernel_object *object, u64 token,
+                                    u16 ordinal, struct kernel_object *pool,
+                                    u32 offset, u32 length, int writable) {
+    paddr_t physical = page_resource_dma_address(pool, offset, length);
+    if (!physical) return -1;
+    return virtqueue_descriptor_set(object, token, ordinal, physical, length,
+                                    writable);
+}
+
 int virtqueue_chain_release(struct kernel_object *object, u64 token) {
     struct virtqueue_info *queue = virtqueue_get(object);
     if (!queue) return -1;

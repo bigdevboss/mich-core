@@ -107,6 +107,7 @@ global mich_virtio_driver_ok
 global mich_virtio_read_config
 global mich_virtqueue_chain_allocate
 global mich_virtqueue_set_packet
+global mich_virtqueue_set_region
 global mich_virtqueue_publish
 global mich_virtqueue_collect
 global mich_virtqueue_chain_release
@@ -173,6 +174,7 @@ global mich_block_submit
 global mich_block_collect
 global mich_block_revoke
 global mich_block_service
+global mich_block_interface_create
 global mich_virtio_blk_open
 global mich_wall_clock
 global mich_ticks
@@ -283,6 +285,7 @@ global mich_pci_set_command
 %define SYS_VIRTIO_READ_CONFIG 112
 %define SYS_VIRTQUEUE_CHAIN_ALLOCATE 113
 %define SYS_VIRTQUEUE_SET_PACKET 114
+%define SYS_VIRTQUEUE_SET_REGION 187
 %define SYS_VIRTQUEUE_PUBLISH 115
 %define SYS_VIRTQUEUE_COLLECT 116
 %define SYS_VIRTQUEUE_CHAIN_RELEASE 117
@@ -348,6 +351,7 @@ global mich_pci_set_command
 %define SYS_BLOCK_REVOKE 183
 %define SYS_BLOCK_SERVICE 184
 %define SYS_VIRTIO_BLK_OPEN 185
+%define SYS_BLOCK_INTERFACE_CREATE 186
 %define SYS_DRIVER_STOP_ACK 169
 %define SYS_NET_INTERFACE_DRIVER_ACQUIRE_RX_BATCH 170
 %define SYS_NET_INTERFACE_DRIVER_RECEIVE_BATCH 171
@@ -903,6 +907,11 @@ mich_virtqueue_set_packet:
     syscall
     ret
 
+mich_virtqueue_set_region:
+    mov eax, SYS_VIRTQUEUE_SET_REGION
+    syscall
+    ret
+
 mich_virtqueue_publish:
     mov eax, SYS_VIRTQUEUE_PUBLISH
     syscall
@@ -1230,6 +1239,11 @@ mich_block_revoke:
 
 mich_block_service:
     mov eax, SYS_BLOCK_SERVICE
+    syscall
+    ret
+
+mich_block_interface_create:
+    mov eax, SYS_BLOCK_INTERFACE_CREATE
     syscall
     ret
 

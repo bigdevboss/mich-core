@@ -50,6 +50,19 @@ struct virtqueue_packet_request {
     u16 writable;
 };
 
+// Point a descriptor at an offset in a capsule-owned shared-memory pool. The
+// kernel translates the offset to the physical address the device DMAs, so the
+// capsule never supplies a raw address and can only reach memory it owns.
+struct virtqueue_region_request {
+    u32 queue_handle;
+    u32 pool_handle;
+    u64 token;
+    u32 offset;
+    u32 length;
+    u16 ordinal;
+    u16 writable;
+};
+
 struct virtqueue_completion_result {
     u32 queue_handle;
     u32 length;

@@ -15,6 +15,7 @@
 #define mich_virtio_config_request virtio_config_request
 #define mich_virtqueue_chain_request virtqueue_chain_request
 #define mich_virtqueue_packet_request virtqueue_packet_request
+#define mich_virtqueue_region_request virtqueue_region_request
 #define mich_virtqueue_completion_result virtqueue_completion_result
 #define mich_virtqueue_completion_item virtqueue_completion_item
 #define mich_virtqueue_completion_batch virtqueue_completion_batch
@@ -31,6 +32,7 @@ int mich_virtio_read_config(unsigned int handle,
                             struct mich_virtio_config_request *request);
 int mich_virtqueue_chain_allocate(struct mich_virtqueue_chain_request *request);
 int mich_virtqueue_set_packet(struct mich_virtqueue_packet_request *request);
+int mich_virtqueue_set_region(struct mich_virtqueue_region_request *request);
 int mich_virtqueue_publish(struct mich_virtqueue_chain_request *request);
 int mich_virtqueue_collect(struct mich_virtqueue_completion_result *result);
 int mich_virtqueue_chain_release(struct mich_virtqueue_chain_request *request);

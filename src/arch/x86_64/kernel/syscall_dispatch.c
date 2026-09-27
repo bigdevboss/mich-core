@@ -68,6 +68,7 @@
 #include "firmware_abi.h"
 #include "block.h"
 #include "block_abi.h"
+#include "block_driver_abi.h"
 #include "virtio_blk.h"
 #include "nvme.h"
 #include "posix_abi.h"
@@ -2145,6 +2146,62 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         u32 handle = handle_open(task, object, rights);
         object_release(object);
         return handle ? handle : (u64)-1;
+    }
+    if (number == 186) {
+        struct task *task = &task_pool[current_task_slot];
+        struct driver_domain *domain = driver_domain_for_pid(task->id);
+        struct block_driver_register_request request;
+        if (!domain ||
+            vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+            vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)))
+            return (u64)-1;
+        struct kernel_object *pool = handle_get(
+            task, request.pool_handle, KRIGHT_CONTROL, KOBJECT_SHARED_MEMORY);
+        struct kernel_object *req_ring = handle_get(
+            task, request.request_ring_handle, KRIGHT_CONTROL, KOBJECT_RING);
+        struct kernel_object *cmp_ring = handle_get(
+            task, request.completion_ring_handle, KRIGHT_CONTROL, KOBJECT_RING);
+        struct kernel_object *object = pool && req_ring && cmp_ring ?
+            block_bind_capsule_transport(request.sector_count, request.flags,
+                                         pool, req_ring, cmp_ring) : 0;
+        if (!object || block_register(object)) {
+            if (object) object_release(object);
+            return (u64)-1;
+        }
+        struct block_info info;
+        if (block_info(object, &info)) {
+            object_release(object);
+            return (u64)-1;
+        }
+        u32 rights = KRIGHT_READ | KRIGHT_CONTROL | KRIGHT_WAIT |
+                     KRIGHT_TRANSFER;
+        if (!(info.flags & BLOCK_FLAG_READ_ONLY)) rights |= KRIGHT_WRITE;
+        u32 handle = handle_open(task, object, rights);
+        request.device_handle = handle;
+        request.generation = info.generation;
+        if (!handle || vm64_copy_to(task->page_dir, arg0, &request,
+                                    sizeof(request))) {
+            if (handle) handle_close(task, handle);
+            object_release(object);
+            return (u64)-1;
+        }
+        object_release(object);
+        return 0;
+    }
+    if (number == 187) {
+        struct task *task = &task_pool[current_task_slot];
+        struct driver_domain *domain = driver_domain_for_pid(task->id);
+        struct virtqueue_region_request request;
+        if (!domain || vm64_copy_from(task->page_dir, &request, arg0,
+                                     sizeof(request)) || request.writable > 1)
+            return (u64)-1;
+        struct kernel_object *queue = handle_get(
+            task, request.queue_handle, KRIGHT_CONTROL, KOBJECT_VIRTQUEUE);
+        struct kernel_object *pool = handle_get(
+            task, request.pool_handle, KRIGHT_CONTROL, KOBJECT_SHARED_MEMORY);
+        return queue && pool ? (u64)(i64)virtqueue_descriptor_set_region(
+            queue, request.token, request.ordinal, pool, request.offset,
+            request.length, request.writable) : (u64)-1;
     }
     if (number == 214) {
         // UTC only. The CMOS clock carries no zone and the callers that need

@@ -129,6 +129,9 @@ int virtqueue_descriptor_set_packet(struct kernel_object *object, u64 token,
                                     u16 ordinal, struct kernel_object *pool,
                                     u64 buffer_id, u32 offset, u32 length,
                                     int writable);
+int virtqueue_descriptor_set_region(struct kernel_object *object, u64 token,
+                                    u16 ordinal, struct kernel_object *pool,
+                                    u32 offset, u32 length, int writable);
 int virtqueue_chain_release(struct kernel_object *object, u64 token);
 int virtqueue_publish(struct kernel_object *object, u64 token);
 int virtqueue_collect(struct kernel_object *object,
