@@ -21,7 +21,7 @@ static const u8 smp64_user_stub[] = {
     0xEB, 0xFE
 };
 
-// jmp $ — stays in ring3 with IF=1 so the AP timer can use TSS.RSP0.
+// jmp $ - stays in ring3 with IF=1 so the AP timer can use TSS.RSP0.
 static const u8 smp64_user_spin[] = {
     0xEB, 0xFE
 };

@@ -12,10 +12,9 @@
 #include "vm64.h"
 #include "kernel64_internal.h"
 
-// Trampoline chunks (smp_tramp.asm), placed by the BSP into the page
-// at SMP64_TRAMP_BASE: entry 0x000, overlay 0x500, GDTs 0x100, code
-// 0x200/0x300/0x400. SIPI starts the AP at that page (vector =
-// physical >> 12).
+// Trampoline chunks (smp_tramp.asm) placed by the BSP at SMP64_TRAMP_BASE: entry
+// 0x000, overlay 0x500, GDTs 0x100, code 0x200/0x300/0x400. SIPI starts the AP at
+// that page (vector = physical >> 12).
 extern const u8 smp_tramp_gdt[];
 extern const u32 smp_tramp_gdt_size;
 extern const u8 smp_tramp_code16[];
@@ -155,11 +154,9 @@ void smp64_syscall_prepare(void) {
     }
 }
 
-//
-// Kernel: GS_BASE = pcpu, KERNEL_GS_BASE = 0. User: the reverse, so
-// SWAPGS on syscall lands on this CPU's frame. Explicit MSRs, not
-// SWAPGS, so this does not depend on the current GS.
-//
+// Kernel: GS_BASE = pcpu, KERNEL_GS_BASE = 0. User: the reverse, so SWAPGS on
+// syscall lands on this CPU's frame. Explicit MSRs, not SWAPGS, so it does not
+// depend on the current GS.
 static void smp64_gs_kernel(struct smp64_cpu *cpu) {
     u64 addr = (u64)(uptr_t)cpu;
     smp64_wrmsr(MSR_GS_BASE, addr);
@@ -172,10 +169,8 @@ void smp64_gs_user(void) {
     smp64_wrmsr(MSR_KERNEL_GS_BASE, addr);
 }
 
-//
-// Live AP userspace test: never fall through to BSP current_task_slot.
-// Park on the kernel CR3 so the BSP can free the task's space.
-//
+// Live AP userspace test: never fall through to BSP current_task_slot. Park on the
+// kernel CR3 so the BSP can free the task's space.
 int smp64_catch_ap_user(u64 number) {
     struct smp64_cpu *cpu = smp64_this();
     u64 rsp;
@@ -201,11 +196,9 @@ int smp64_catch_ap_user(u64 number) {
     return 1;
 }
 
-//
-// IPI from hlt is same-privilege: the hardware frame has no SS/RSP, so
-// we cannot rewrite it into a user iret. EOI here because this path
-// never returns through irq64_common.
-//
+// IPI from hlt is same-privilege: the frame has no SS/RSP, so it cannot be
+// rewritten into a user iret. EOI here because this path never returns through
+// irq64_common.
 static void smp64_ap_enter_user(struct smp64_cpu *cpu) {
     if (!cpu || cpu->current == SMP64_CURRENT_NONE) return;
     apic64_eoi();
@@ -216,12 +209,9 @@ static void smp64_ap_enter_user(struct smp64_cpu *cpu) {
         __asm__ volatile("cli; hlt" ::: "memory");
 }
 
-//
-// Runs on the secondary CPU in long mode after the trampoline. The
-// trampoline still uses the bootloader PML4 at 0x70000; switch to the
-// kernel CR3 before any ioremap or NX data access. ONLINE is stored
-// after sti so an IPI cannot land with IF=0.
-//
+// Runs on the secondary CPU in long mode after the trampoline, which still uses the
+// bootloader PML4 at 0x70000: switch to kernel CR3 before any ioremap or NX access.
+// ONLINE is stored after sti so an IPI cannot land with IF=0.
 static void smp64_ap_entry(u32 expected_id) {
     const struct acpi_madt_info *madt = acpi64_madt();
     struct smp64_cpu *cpu = 0;
@@ -249,9 +239,9 @@ static void smp64_ap_entry(u32 expected_id) {
         for (;;)
             __asm__ volatile("cli; hlt" ::: "memory");
     }
-    // Shared GDT, private TSS descriptor. LTR of the BSP selector #GPs
-    // because that TSS is already busy; this CPU's slot is still free.
-    // Reload GDTR first: the trampoline only installed the 7-entry view.
+    // Shared GDT, private TSS descriptor. LTR of the BSP selector #GPs (that TSS is
+    // busy); this CPU's slot is still free. Reload GDTR first: the trampoline only
+    // installed the 7-entry view.
     idt64_reload();
     gdt64_load_cpu(cpu->index);
     smp64_cpu_by_apic[expected_id] = cpu;
@@ -505,11 +495,9 @@ u64 smp64_spin_count(void) {
     return smp64_spin_counter;
 }
 
-//
-// Dedicated AP user slot, never init64-two. Stub bytes come from the
-// caller: tests pass their fixtures, host_start passes the idle spin.
-// pin maps the task; arm also makes it this CPU's current for IPI_USER.
-//
+// Dedicated AP user slot, never init64-two. Stub bytes come from the caller (tests
+// pass fixtures, host_start passes the idle spin). pin maps the task; arm also makes
+// it this CPU's current for IPI_USER.
 int smp64_pin_user(u32 index, const u8 *stub, u32 size, u32 *slot_out) {
     struct smp64_cpu *cpu = smp64_cpu(index);
     struct task *task;
@@ -609,8 +597,8 @@ void smp64_disarm_user(u32 index) {
         task_free_slot(&task_pool[slot]);
 }
 
-// jmp $ — AP host idle in ring3. Timer stays masked: TCG timeslice
-// vs the 12s smoke if the AP runs 100 Hz.
+// jmp $ - AP host idle in ring3. Timer stays masked: TCG timeslice vs the 12s
+// smoke if the AP runs 100 Hz.
 static const u8 smp64_host_spin[] = { 0xEB, 0xFE };
 static u32 smp64_host_noted;
 
@@ -622,8 +610,8 @@ int smp64_host_start(void) {
     slot = smp64_cpus[1].current;
     if (slot < MAX_TASKS) {
         task_set_name(&task_pool[slot], "ap-idle");
-        // Same lowest-priority treatment as the BSP idle: this host spin
-        // never blocks, so the scheduler must prefer any real runnable task.
+        // Lowest priority like the BSP idle: this host spin never blocks, so the
+        // scheduler must prefer any real runnable task.
         task_pool[slot].is_idle = 1;
     }
     __atomic_thread_fence(__ATOMIC_RELEASE);

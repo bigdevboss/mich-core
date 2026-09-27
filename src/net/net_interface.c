@@ -101,14 +101,11 @@ static int publish_frame(struct net_interface *interface, u64 buffer_id,
     }
     interface->stats.tx_packets++;
     interface->stats.tx_bytes += length;
-    // Ring the transmit doorbell. An idle driver capsule blocks on the
-    // interface event, and nothing else wakes it once the queue is armed:
-    // a freshly published frame would otherwise wait for the capsule's
-    // periodic maintenance timer (10 ms) before it ships. Bulk transfers
-    // hide this because RX-completion IRQs wake the capsule often enough to
-    // drain the ring, but a single-outstanding request-reply has no such
-    // IRQ in the gap, so the wire round trip collapses onto the maintenance
-    // cadence instead of the interface RTT.
+    // Ring the transmit doorbell: an idle capsule blocks on the interface event and
+    // nothing else wakes it once the queue is armed, so a freshly published frame
+    // would wait for the 10ms maintenance timer. Bulk transfers hide this (RX IRQs
+    // wake the capsule often enough), but a single request-reply has no IRQ in the
+    // gap and its round trip collapses onto the maintenance cadence, not the RTT.
     event_signal(interface->event);
     return 0;
 }
@@ -707,8 +704,7 @@ static int interface_tcp_handler(
     if (response.connection_id)
         socket_tcp_notify(interface->tcp, response.connection_id);
     if (response.valid) {
-        // Reject responses to non-unicast source addresses to avoid
-        // broadcast or multicast amplification.
+        // Reject non-unicast source addresses to avoid broadcast/multicast amplification.
         u8 first = (u8)(packet->source >> 24);
         if (first == 0 || first >= 224) return -1;
         struct tcp_transmit transmit;
@@ -1028,8 +1024,8 @@ int net_interface_tcp_probe_start(struct kernel_object *object,
         !interface->ipv4_ready || interface->tcp_probe_connection ||
         !destination || !port)
         return -1;
-    // Mix next_sequence into the local port so two interfaces with
-    // the same interface_id low byte do not collide.
+    // Mix next_sequence into the local port so two interfaces sharing an
+    // interface_id low byte do not collide.
     u16 local_port = (u16)(55000 +
         ((interface->interface_id + interface->tcp->next_sequence) & 0xFF));
     u64 connection = tcp_active_open(
@@ -1607,9 +1603,8 @@ static int net_interface_receive_frame_ctx(struct net_interface *interface,
                                            const void *frame, u32 length,
                                            u32 now) {
     interface->now = now;
-    // Throttle the ARP cache sweep: it is periodic housekeeping, so run it at
-    // most once per NET_INTERFACE_ARP_RX_TICK_MS instead of on every frame.
-    // The timer path (net_interface_tick) still runs it unconditionally.
+    // Throttle the ARP sweep (periodic housekeeping) to at most once per
+    // NET_INTERFACE_ARP_RX_TICK_MS on the RX path; the timer path runs it always.
     if (interface->arp_ready &&
         (i32)(now - interface->last_arp_tick) >= NET_INTERFACE_ARP_RX_TICK_MS) {
         arp_tick(&interface->arp, now);
@@ -1818,12 +1813,11 @@ void net_interface_tick(struct kernel_object *object, u32 now) {
                 flush_tcp(interface, transmit.connection_id) < 0)
                 break;
         }
-        // Backstop the ACK clock. flush_tcp runs on every guest send and every
-        // inbound ACK, but if the ACK that would have re-armed the pump was
-        // coalesced away the send-buffer tail is left with no timer to surface
-        // it through tcp_tick, so the writer sleeps until the peer times out.
-        // Drain any such stranded connection here and wake its writer. One pass
-        // over the table per tick bounds the cost; a remainder rides the next.
+        // Backstop the ACK clock: flush_tcp runs on every send and inbound ACK, but
+        // a coalesced-away ACK leaves the send-buffer tail with no timer to surface
+        // it through tcp_tick, so the writer sleeps until the peer times out. Drain
+        // any such stranded connection and wake its writer. One pass per tick bounds
+        // the cost; a remainder rides the next.
         u32 cursor = 0;
         for (u32 scan = 0; scan < TCP_CONNECTION_MAX; scan++) {
             u64 pending = tcp_pending_send(interface->tcp, &cursor);

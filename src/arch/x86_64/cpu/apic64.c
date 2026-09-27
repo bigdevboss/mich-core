@@ -99,18 +99,12 @@ u64 apic64_tsc_now(void) {
     return rdtsc64();
 }
 
-//
-// ~10 ms guest-time delay via TSC. The guest TSC runs at 1 GHz under
-// QEMU TCG, so 10^7 ticks ~= 10 ms; on a faster TSC the delay shrinks
-// proportionally and still stays far above the INIT/SIPI minimum
-// spacing. The PIT-based variant is deliberately not used: programming
-// PIT counter 0 raises IRQ 0 while an AP is being brought up, and
-// QEMU's PIT control-word decoding (channel in bits [7:6]) makes the
-// classic control byte unreliable.
-//
-// Spins keep a volatile store: pure rdtsc-only loops compile into very
-// long read-only TBs under TCG, which has been observed to wedge the
-// vCPU; the store breaks the loop into well-behaved TBs.
+// ~10ms guest-time delay via TSC (1 GHz under TCG, so 10^7 ticks ~= 10ms; a faster
+// TSC shrinks it proportionally, still far above the INIT/SIPI minimum spacing).
+// Not PIT-based: programming PIT counter 0 raises IRQ 0 mid AP bring-up, and QEMU's
+// control-word decoding makes the classic control byte unreliable. The spins keep a
+// volatile store: pure rdtsc-only loops compile into long read-only TBs under TCG
+// that have wedged the vCPU; the store breaks the loop into well-behaved TBs.
 static volatile u32 apic64_spin_pad;
 
 static int delay_10ms(void) {
@@ -129,18 +123,12 @@ int apic64_delay_ms(u32 milliseconds) {
     return 0;
 }
 
-//
-// ICR2 [31:24] carries the destination APIC id in xAPIC physical mode.
-//
-// Delivery is synchronous inside the ICR1 store in QEMU, and the TCG
-// APIC never clears the ICR busy bit afterwards (s->icr[0] stays
-// latched until the next APIC reset), so polling the read-back can
-// never succeed under TCG. Worse, the MMIO read-back loop starves the
-// BSP vCPU badly under BQL contention with the secondary's firmware
-// park loop (measured: >6 ms per read). On real hardware the busy bit
-// clears within microseconds of acceptance, so a short TSC spacing
-// delay is the portable replacement.
-//
+// ICR2 [31:24] carries the destination APIC id in xAPIC physical mode. Delivery is
+// synchronous inside the ICR1 store in QEMU, and the TCG APIC never clears the ICR
+// busy bit afterwards (latched until APIC reset), so polling the read-back never
+// succeeds under TCG and the MMIO loop starves the BSP vCPU under BQL contention
+// (measured >6ms per read). Real hardware clears the busy bit in microseconds, so a
+// short TSC spacing delay is the portable replacement.
 static int icr_send(u32 icr1, u32 icr2) {
     u64 deadline = rdtsc64() + 100000ULL;
     write_register(APIC_ICR2, (icr2 & 0xFFu) << 24);
@@ -153,13 +141,10 @@ static int icr_send(u32 icr1, u32 icr2) {
     return 0;
 }
 
-//
-// AP bring-up and IPI primitives. ICR1 encoding (xAPIC, Intel SDM):
-// vector [7:0], delivery mode [10:8] (fixed 0, SMI 2, NMI 4, INIT 5,
-// SIPI 6), assert [14], level trigger [15]. ICR2 [31:24] is the
-// destination APIC id in physical mode. SIPI vector is the 4 KiB page
-// number of the startup address (physical >> 12).
-//
+// AP bring-up and IPI primitives. ICR1 encoding (xAPIC, Intel SDM): vector [7:0],
+// delivery mode [10:8] (fixed 0, SMI 2, NMI 4, INIT 5, SIPI 6), assert [14], level
+// trigger [15]. ICR2 [31:24] is the destination APIC id in physical mode. SIPI
+// vector is the 4 KiB page number of the startup address (physical >> 12).
 int apic64_ap_start(paddr_t physical, u32 expected_id) {
     if (!apic || !physical || (physical & 0xFFF)) return -1;
     u64 base = rdmsr(MSR_APIC_BASE);
@@ -185,9 +170,9 @@ int apic64_ipi(u8 destination, u8 vector) {
 
 int apic64_send_init(u8 destination) {
     if (!apic) return -1;
-    // INIT pulse: assert, then level-triggered deassert. QEMU treats
-    // (level=0, trig=0) as another full INIT; (level=0, trig=1) is the
-    // clean deassert on QEMU and real hardware.
+    // INIT pulse: assert, then level-triggered deassert. QEMU treats (level=0,
+    // trig=0) as another full INIT; (level=0, trig=1) is the clean deassert on both
+    // QEMU and real hardware.
     if (icr_send(APIC_ICR_INIT | APIC_ICR_ASSERT, destination & 0xFFu))
         return -1;
     if (apic64_delay_ms(10)) return -1;
@@ -219,11 +204,9 @@ int apic64_timer_start(u32 hz) {
     return 0;
 }
 
-//
-// Program this CPU's local APIC timer from the BSP calibration. Each
-// CPU sees its own APIC at the same MMIO address, so the AP must run
-// this itself; the BSP cannot write the AP's LVT.
-//
+// Program this CPU's local APIC timer from the BSP calibration. Each CPU sees its
+// own APIC at the same MMIO address, so the AP must run this itself; the BSP cannot
+// write the AP's LVT.
 int apic64_timer_enable(void) {
     if (!apic || !timer_initial) return -1;
     write_register(APIC_TIMER_DIVIDE, 0x3);
