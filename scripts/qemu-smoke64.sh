@@ -27,6 +27,10 @@ qemu_timeout=$((qemu_timeout + 25))
 accel_cpu="-cpu qemu64,+aes,+pclmulqdq,+ssse3"
 if [ -n "${MICH_KVM:-}" ]; then accel_cpu="-enable-kvm -cpu host"; fi
 if [ -n "${MICH_QEMU_TIMEOUT:-}" ]; then qemu_timeout="$MICH_QEMU_TIMEOUT"; fi
+# The serial log is a temp that the exit trap deletes, so a clean run drops the
+# guest report (throughput lines, wire-tx offsets) it never printed. Set
+# MICH_KEEP_LOG to a path to keep a copy for inspection on both pass and fail.
+keep_log="${MICH_KEEP_LOG:-}"
 passive_result=""
 passive_pid=""
 passive_expected=0
@@ -352,7 +356,7 @@ mich_uefi_firmware
 if [ "$want_nic_none" -eq 1 ]; then
     set -- "$@" -nic none
 fi
-trap 'if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; if [ -n "$tls_server_pid" ]; then kill "$tls_server_pid" 2>/dev/null || true; fi; if [ -n "$netbench_peer_pid" ]; then kill "$netbench_peer_pid" 2>/dev/null || true; fi; rm -f "$tls_server_log" "$netbench_peer_bin" "$netbench_peer_log" "$log" "$qemu_diag" "$passive_result" "$active_result" "$recovery_guestfwd" "$dns_guestfwd" "$blk_img" "$nvme_img" "$uefi_vars"' EXIT
+trap 'if [ -n "$keep_log" ] && [ -f "$log" ]; then cp "$log" "$keep_log" 2>/dev/null || true; fi; if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; if [ -n "$tls_server_pid" ]; then kill "$tls_server_pid" 2>/dev/null || true; fi; if [ -n "$netbench_peer_pid" ]; then kill "$netbench_peer_pid" 2>/dev/null || true; fi; rm -f "$tls_server_log" "$netbench_peer_bin" "$netbench_peer_log" "$log" "$qemu_diag" "$passive_result" "$active_result" "$recovery_guestfwd" "$dns_guestfwd" "$blk_img" "$nvme_img" "$uefi_vars"' EXIT
 set +e
 timeout "${qemu_timeout}s" qemu-system-x86_64 \
     -machine q35 \
