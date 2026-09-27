@@ -163,6 +163,8 @@ int page_resource_set_revoke_backend(page_revoke_backend_fn revoke);
 struct kernel_object *page_resource_create(void);
 struct kernel_object *shared_memory_resource_create(u32 pages);
 struct page_resource *page_resource_get(const struct kernel_object *object);
+paddr_t page_resource_dma_address(const struct kernel_object *object,
+                                  u32 offset, u32 length);
 int page_resource_pin(struct kernel_object *object);
 int page_resource_unpin(struct kernel_object *object);
 int page_resource_revoke(struct kernel_object *object);
