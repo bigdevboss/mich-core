@@ -36,7 +36,7 @@ void task64_set_result(u32 slot, i64 result);
 i64 task64_block_switch(void);
 void exception64_dispatch(struct exception_frame64 *frame);
 void timer64_dispatch(struct interrupt_frame64 *frame);
-void irq64_dispatch(u64 vector);
+void irq64_dispatch(struct exception_frame64 *frame);
 u64 syscall64_validate_return(u64 result);
 u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2);
 void kernel64_main(u32 magic, struct bd_info *info);
