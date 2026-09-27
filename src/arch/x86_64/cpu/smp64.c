@@ -620,8 +620,12 @@ int smp64_host_start(void) {
     if (smp64_arm_user(1, smp64_host_spin, sizeof(smp64_host_spin)))
         return -1;
     slot = smp64_cpus[1].current;
-    if (slot < MAX_TASKS)
+    if (slot < MAX_TASKS) {
         task_set_name(&task_pool[slot], "ap-idle");
+        // Same lowest-priority treatment as the BSP idle: this host spin
+        // never blocks, so the scheduler must prefer any real runnable task.
+        task_pool[slot].is_idle = 1;
+    }
     __atomic_thread_fence(__ATOMIC_RELEASE);
     if (smp64_ipi_cpu(1, SMP64_IPI_USER)) {
         smp64_disarm_user(1);
