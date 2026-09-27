@@ -1314,13 +1314,18 @@ int main(unsigned long long argument) {
     capsule.itr_budget_rx = VIRTIO_NET_BATCH_BUDGET;
     capsule.itr_budget_tx = VIRTIO_NET_BATCH_BUDGET;
     struct mich_wait_many_request waits;
-    waits.count = 3;
+    // The interface event is the fourth wait source: the kernel signals it
+    // when it publishes an outbound frame, so an otherwise idle capsule wakes
+    // to ship a request-reply segment at the interface RTT rather than at the
+    // 10ms maintenance cadence (the TX doorbell, see net_interface.c).
+    waits.count = 4;
     waits.timeout = 0;
     for (unsigned int index = 0; index < MICH_WAIT_MANY_MAX; index++)
         waits.handles[index] = 0;
     waits.handles[0] = capsule.bridge_handle;
     waits.handles[1] = capsule.timer_handle;
     waits.handles[2] = capsule.ipv6_timer_handle;
+    waits.handles[3] = capsule.interface_handle;
     for (;;) {
         process_tx_completions(&capsule);
         process_tx_batch(&capsule);
@@ -1384,6 +1389,10 @@ int main(unsigned long long argument) {
                            capsule.interface_handle)) {
                 return 11;
             }
+        } else if (ready == 3) {
+            // TX doorbell: the kernel published an outbound frame. The TX
+            // drain at the top of the loop has already shipped it, so there
+            // is nothing to do here but come back around and wait again.
         } else {
             return 12;
         }
