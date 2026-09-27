@@ -90,7 +90,12 @@ irq64_common:
     push r13
     push r14
     push r15
-    mov rdi, [rsp + 120]
+    ; Hand irq64_dispatch the whole frame, not just the vector: a device
+    ; IRQ that unblocks a capsule reschedules on iret by rewriting this
+    ; frame in place, so the pops below restore the woken task instead of
+    ; the interrupted one. Layout matches struct exception_frame64
+    ; (vector+error sit at [rsp+120]/[rsp+128], read via frame->vector).
+    mov rdi, rsp
     call irq64_dispatch
     call platform64_eoi
     pop r15

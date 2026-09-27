@@ -148,6 +148,14 @@ struct interrupt_frame64 {
 struct task_context64 task_contexts[MAX_TASKS];
 u32 current_task_slot;
 u32 timer_ticks;
+
+// Set by the wake hook (task64_set_result) whenever a task transitions to
+// runnable, cleared and consumed only by the device-IRQ return path. It
+// is the precise signal that an IRQ unblocked someone: without it a woken
+// capsule waits for the next 10 ms timer tick before the scheduler runs
+// it, which on a single-core netbench shows up as ~9 ms of wire latency
+// because the only other runnable task is the ring-3 idle busy-loop.
+static u32 resched_pending;
 #define SPAWN_IMAGE_MAX DRIVER_USER_IMAGE_MAX
 // Stack pages mapped for a spawned user image. One page is not enough for a
 // TLS client that verifies an RSA-4096 trust anchor; eight leaves comfortable
@@ -275,7 +283,87 @@ struct kernel_object *platform64_irq_object(u32 irq) {
     return irq < 16 ? platform_irq[irq] : 0;
 }
 
-void irq64_dispatch(u64 vector) {
+// Copy the interrupted ring-3 register state out of a device-IRQ or
+// exception frame into a task context. The frame (struct exception_frame64)
+// carries a vector+error pair the general interrupt_frame64 helpers do not,
+// so this is deliberately separate from interrupt_save/interrupt_load.
+static void frame64_save_user(struct task_context64 *context,
+                              const struct exception_frame64 *frame) {
+    context->rax = frame->rax;
+    context->rbx = frame->rbx;
+    context->rcx = frame->rcx;
+    context->rdx = frame->rdx;
+    context->rsi = frame->rsi;
+    context->rdi = frame->rdi;
+    context->rbp = frame->rbp;
+    context->r8 = frame->r8;
+    context->r9 = frame->r9;
+    context->r10 = frame->r10;
+    context->r11 = frame->r11;
+    context->r12 = frame->r12;
+    context->r13 = frame->r13;
+    context->r14 = frame->r14;
+    context->r15 = frame->r15;
+    context->rsp = frame->rsp;
+    context->rip = frame->rip;
+    context->rflags = frame->rflags;
+}
+
+// Load a task context back into a frame so iret resumes that task. The user
+// selectors are reasserted because whatever we switch to always returns to
+// ring 3 here.
+static void frame64_load_user(struct exception_frame64 *frame,
+                              const struct task_context64 *context) {
+    frame->rax = context->rax;
+    frame->rbx = context->rbx;
+    frame->rcx = context->rcx;
+    frame->rdx = context->rdx;
+    frame->rsi = context->rsi;
+    frame->rdi = context->rdi;
+    frame->rbp = context->rbp;
+    frame->r8 = context->r8;
+    frame->r9 = context->r9;
+    frame->r10 = context->r10;
+    frame->r11 = context->r11;
+    frame->r12 = context->r12;
+    frame->r13 = context->r13;
+    frame->r14 = context->r14;
+    frame->r15 = context->r15;
+    frame->rsp = context->rsp;
+    frame->rip = context->rip;
+    frame->rflags = context->rflags;
+    frame->cs = 0x23;
+    frame->ss = 0x1B;
+}
+
+// Switch to the task the current IRQ just unblocked, on iret. Mirrors the
+// BSP timer preempt (save current, round-robin pick, load next) but drives
+// it off the device-IRQ frame. Preconditions are hard: only the BSP retires
+// capsule MSIs; a frame that interrupted ring 0 carries no SS/RSP, so a
+// save/load round trip would corrupt the interrupted kernel context; and
+// there must be a different runnable task to hand the CPU to.
+static void irq64_preempt(struct exception_frame64 *frame) {
+    u32 next;
+    if (smp64_cpu_index() != 0) return;
+    if ((frame->cs & 3) != 3) return;
+    if (current_task_slot >= MAX_TASKS) return;
+    next = scheduler64_next_slot();
+    if (next == current_task_slot || task_pool[next].state != TASK_RUNNING)
+        return;
+    frame64_save_user(&task_contexts[current_task_slot], frame);
+    fpu64_save(&task_contexts[current_task_slot]);
+    scheduler64_set_running(next);
+    fpu64_load(&task_contexts[current_task_slot]);
+    frame64_load_user(frame, &task_contexts[current_task_slot]);
+    vm64_activate(task_pool[current_task_slot].page_dir);
+}
+
+void irq64_dispatch(struct exception_frame64 *frame) {
+    u64 vector = frame->vector;
+    // Only wakes raised inside this dispatch should preempt: clear first so
+    // a leftover flag from a timer-tick timeout wake cannot trigger a bogus
+    // switch on the next unrelated device IRQ.
+    resched_pending = 0;
     if (vector >= 0x30 && vector < 0x40) {
         for (u32 irq = 0; irq < 16; irq++) {
             struct kernel_object *object = platform_irq[irq];
@@ -283,14 +371,11 @@ void irq64_dispatch(u64 vector) {
             if (!resource || resource->vector != vector) continue;
             irq_resource_signal(object);
             irq_resource_set_mask(object, 1);
-            return;
+            break;
         }
-    }
-    if (vector >= SMP64_IPI_FIRST && vector <= SMP64_IPI_LAST) {
+    } else if (vector >= SMP64_IPI_FIRST && vector <= SMP64_IPI_LAST) {
         smp64_ipi_dispatch((u32)vector);
-        return;
-    }
-    if (vector >= VECTOR64_MSI_FIRST && vector <= VECTOR64_MSI_LAST) {
+    } else if (vector >= VECTOR64_MSI_FIRST && vector <= VECTOR64_MSI_LAST) {
         struct kernel_object *object =
             (struct kernel_object *)vector64_owner((u8)vector);
         if (object && object->active && object->type == KOBJECT_IRQ) {
@@ -298,6 +383,10 @@ void irq64_dispatch(u64 vector) {
             irq_resource_set_mask(object, 1);
         }
     }
+    // A device IRQ that unblocked a task hands the CPU over on iret instead
+    // of resuming the interrupted ring-3 task until the next timer tick.
+    if (resched_pending)
+        irq64_preempt(frame);
 }
 
 static int supervisor64_resource(
@@ -1258,7 +1347,12 @@ void scheduler64_switch(void) {
 }
 
 void task64_set_result(u32 slot, i64 result) {
-    if (slot < MAX_TASKS) task_contexts[slot].rax = (u64)result;
+    if (slot < MAX_TASKS) {
+        task_contexts[slot].rax = (u64)result;
+        // Record that a task became runnable so the device-IRQ return path
+        // can preempt into it instead of waiting for the next timer tick.
+        resched_pending = 1;
+    }
 }
 
 i64 task64_block_switch(void) {
@@ -1477,24 +1571,7 @@ void exception64_dispatch(struct exception_frame64 *frame) {
     }
 #endif
     struct task_context64 *context = &task_contexts[current_task_slot];
-    context->rax = frame->rax;
-    context->rbx = frame->rbx;
-    context->rcx = frame->rcx;
-    context->rdx = frame->rdx;
-    context->rsi = frame->rsi;
-    context->rdi = frame->rdi;
-    context->rbp = frame->rbp;
-    context->r8 = frame->r8;
-    context->r9 = frame->r9;
-    context->r10 = frame->r10;
-    context->r11 = frame->r11;
-    context->r12 = frame->r12;
-    context->r13 = frame->r13;
-    context->r14 = frame->r14;
-    context->r15 = frame->r15;
-    context->rsp = frame->rsp;
-    context->rip = frame->rip;
-    context->rflags = frame->rflags;
+    frame64_save_user(context, frame);
     fpu64_save(context);
     terminate64(current_task_slot, 128 + (int)frame->vector);
     u32 next = scheduler64_next_slot();
@@ -1505,26 +1582,7 @@ void exception64_dispatch(struct exception_frame64 *frame) {
     scheduler64_set_running(next);
     context = &task_contexts[current_task_slot];
     fpu64_load(context);
-    frame->rax = context->rax;
-    frame->rbx = context->rbx;
-    frame->rcx = context->rcx;
-    frame->rdx = context->rdx;
-    frame->rsi = context->rsi;
-    frame->rdi = context->rdi;
-    frame->rbp = context->rbp;
-    frame->r8 = context->r8;
-    frame->r9 = context->r9;
-    frame->r10 = context->r10;
-    frame->r11 = context->r11;
-    frame->r12 = context->r12;
-    frame->r13 = context->r13;
-    frame->r14 = context->r14;
-    frame->r15 = context->r15;
-    frame->rsp = context->rsp;
-    frame->rip = context->rip;
-    frame->rflags = context->rflags;
-    frame->cs = 0x23;
-    frame->ss = 0x1B;
+    frame64_load_user(frame, context);
     vm64_activate(task_pool[current_task_slot].page_dir);
     serial64_write("Mich x86_64: user exception contained\n");
 }
