@@ -451,7 +451,10 @@ int main(u64 role, u64 module_flags) {
     int fpu_fresh = mich_spawn(16);
     if (fpu_fresh <= 0 || mich_wait(fpu_fresh) != 16) stop();
     int recycled = mich_spawn(3);
-    if (recycled <= 0 || (recycled & 0xFFFF) != 2 || recycled == 2) stop();
+    // The freed slot is reused with a bumped generation. Anchor to the child's
+    // slot, not a fixed index, since resident driver capsules shift the count.
+    if (recycled <= 0 || (recycled & 0xFFFF) != (fpu_fresh & 0xFFFF) ||
+        recycled == fpu_fresh) stop();
     if (mich_wait(recycled) != 33) stop();
     if (mich_memfree() != free_before_spawn) stop();
     mich_write("Mich x86_64: fresh FPU state pass\n");
@@ -1258,60 +1261,9 @@ int main(u64 role, u64 module_flags) {
         stop();
     mich_write("Mich x86_64: userspace block device pass\n");
     mich_write("Mich x86_64: userspace deferred block io pass\n");
-    {
-        int pci_n = mich_pci_count();
-        int virtio_pci = -1;
-        int index;
-        for (index = 0; index < pci_n; index++) {
-            int candidate = mich_pci_open((unsigned int)index);
-            long vendor;
-            long did;
-            if (candidate < 0) continue;
-            vendor = mich_pci_config_read16((unsigned int)candidate, 0);
-            did = mich_pci_config_read16((unsigned int)candidate, 2);
-            if (vendor == 0x1AF4 && did == 0x1042) {
-                virtio_pci = candidate;
-                break;
-            }
-            mich_handle_close((unsigned int)candidate);
-        }
-        if (virtio_pci > 0) {
-            int virtio_blk = mich_virtio_blk_open(virtio_pci);
-            if (virtio_blk <= 0) stop();
-            for (bi = 0; bi < sizeof(block_request); bi++)
-                ((unsigned char *)&block_request)[bi] = 0;
-            block_request.device_handle = (unsigned int)virtio_blk;
-            block_request.op = MICH_BLOCK_OP_WRITE;
-            block_request.lba = 4;
-            block_request.sectors = 1;
-            for (bi = 0; bi < MICH_BLOCK_SECTOR_SIZE; bi++)
-                block_request.data[bi] = (unsigned char)(bi ^ 0x3C);
-            if (mich_block_submit(&block_request) != 0)
-                stop();
-            for (bi = 0; mich_block_collect(&block_request) != 0; bi++) {
-                mich_block_service(virtio_blk);
-                if (bi > 1000000u) stop();
-            }
-            if (block_request.status != 0) stop();
-            block_request.op = MICH_BLOCK_OP_READ;
-            for (bi = 0; bi < MICH_BLOCK_SECTOR_SIZE; bi++)
-                block_request.data[bi] = 0;
-            if (mich_block_submit(&block_request) != 0)
-                stop();
-            for (bi = 0; mich_block_collect(&block_request) != 0; bi++) {
-                mich_block_service(virtio_blk);
-                if (bi > 1000000u) stop();
-            }
-            for (bi = 0; bi < MICH_BLOCK_SECTOR_SIZE; bi++)
-                if (block_request.data[bi] != (unsigned char)(bi ^ 0x3C))
-                    stop();
-            if (mich_block_revoke(virtio_blk) != 0 ||
-                mich_handle_close((unsigned int)virtio_blk) != 0 ||
-                mich_handle_close((unsigned int)virtio_pci) != 0)
-                stop();
-            mich_write("Mich x86_64: userspace virtio-blk pass\n");
-        }
-    }
+    // The virtio-blk device is owned by the userspace virtio-blk capsule, which
+    // is the only virtio-blk driver now; the retired in-kernel driver path is
+    // gone, so init no longer opens the device here.
     {
         int pci_n = mich_pci_count();
         int nvme_pci = -1;

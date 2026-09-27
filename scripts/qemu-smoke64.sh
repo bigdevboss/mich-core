@@ -410,6 +410,30 @@ if [ "$profile" = "netbench" ]; then
     do
         grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
     done
+elif [ "$profile" = "virtio-blk" ]; then
+    # This boots the production kernel, which carries no in-kernel virtio-blk
+    # driver and no test64 battery; the capsule is the driver. The full init
+    # battery assumes it is the only userspace task, so a resident capsule makes
+    # its later stages nondeterministic; that battery is covered by the disk-test
+    # profile. Here we gate on boot-essential markers plus the capsule bringing
+    # the real device up and reaching its serve state.
+    for marker in \
+        "Mich Core 0.1.0 x86_64: long mode alive" \
+        "Mich x86_64: GDT and TSS alive" \
+        "Mich x86_64: IDT alive" \
+        "Mich x86_64: panic subsystem ready" \
+        "Mich x86_64: E820 PMM alive" \
+        "Mich x86_64: ACPI tables pass" \
+        "Mich x86_64: PCI enumeration pass" \
+        "Mich x86_64: LAPIC controller pass" \
+        "Mich x86_64: IOAPIC routing pass" \
+        "Mich x86_64: APIC timer pass" \
+        "Mich x86_64: preemptive scheduler pass" \
+        "Mich virtio-blk: bootstrap pass" \
+        "Mich virtio-blk: serve pass"
+    do
+        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+    done
 else
 for marker in \
     "Mich Core 0.1.0 x86_64: long mode alive" \
@@ -707,7 +731,6 @@ for marker in \
     "Mich x86_64: userspace immutable bootfs pass" \
     "Mich x86_64: userspace block device pass" \
     "Mich x86_64: userspace deferred block io pass" \
-    "Mich x86_64: userspace virtio-blk pass" \
     "Mich x86_64: userspace PCI handles pass" \
     "Mich x86_64: userspace BAR mapping pass" \
     "Mich x86_64: read-only resource mapping pass" \
@@ -739,7 +762,7 @@ fi
 # markers can never appear there. Asking for them made those profiles fail on
 # something the image was never built to do.
 case "$profile" in
-    hardware|msi|msi-restart|msi-circuit|msi-recovery|dns|tls|tls-real|netbench)
+    hardware|msi|msi-restart|msi-circuit|msi-recovery|dns|tls|tls-real|netbench|virtio-blk)
         ;;
     *)
         for marker in \
@@ -764,8 +787,9 @@ case "$profile" in
 esac
 # The netbench profile skips the driver-live-recovery lab, so none of its
 # bootstrap markers exist there; every other profile runs the lab and must show
-# the full crash-restart-fallback sequence in order.
-if [ "$profile" != "netbench" ]; then
+# the full crash-restart-fallback sequence in order. The virtio-blk profile boots
+# the production kernel, which has no recovery lab, so it is excluded too.
+if [ "$profile" != "netbench" ] && [ "$profile" != "virtio-blk" ]; then
 live_primary="Mich test64: driver live primary bootstrap pass"
     live_fallback="Mich test64: driver live fallback bootstrap pass"
     live_isolation="Mich test64: driver live recovery isolation pass"
@@ -1220,10 +1244,12 @@ if [ "$profile" = "amd-iommu" ]; then
     done
 fi
 if [ "$profile" = "virtio-blk" ]; then
-    grep -Fq "Mich virtio-blk: bootstrap pass" "$log" || {
-        cat "$log"
-        exit 1
-    }
+    for marker in \
+        "Mich virtio-blk: bootstrap pass" \
+        "Mich virtio-blk: serve pass"
+    do
+        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+    done
 fi
 bad="$(grep -Ei "FAIL|failure|bad boot protocol|exception vector" "$log" || true)"
 if [ "$profile" = "iommu" ]; then

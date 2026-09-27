@@ -532,7 +532,7 @@ $(USER64_OBJ_DIR)/posixdemo.o:src/user64/posixdemo/main.c src/user64/include/err
 $(POSIXDEMO64_ELF): $(POSIXDEMO64_OBJS) src/user64/linker.ld | $(USER64_DIR)
 	$(LD) -m elf_x86_64 -T src/user64/linker.ld -o $@ $(POSIXDEMO64_OBJS)
 
-$(VIRTIO_BLK64_OBJ): src/user64/virtio_blk/main.c src/user64/virtio_blk/capsule.h src/user64/include/mich/syscall.h src/user64/include/mich/driver.h src/user64/include/mich/virtio.h src/user64/include/mich/block.h | $(USER64_OBJ_DIR)
+$(VIRTIO_BLK64_OBJ): src/user64/virtio_blk/main.c src/user64/virtio_blk/capsule.h src/user64/include/mich/syscall.h src/user64/include/mich/driver.h src/user64/include/mich/virtio.h src/user64/include/mich/ring.h src/user64/include/mich/memory.h src/user64/include/mich/event.h src/user64/include/mich/block.h | $(USER64_OBJ_DIR)
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
 $(VIRTIO_NET64_OBJ): src/user64/virtio_net/main.c src/user64/virtio_net/capsule.h src/user64/include/mich/syscall.h src/user64/include/mich/event.h src/user64/include/mich/driver.h src/user64/include/mich/virtio.h src/user64/include/mich/net.h src/user64/include/mich/net_interface.h src/user64/include/mich/timer.h src/user64/include/mich/wait.h src/user64/include/mich/vfs.h src/user64/include/mich/firmware.h | $(USER64_OBJ_DIR)
