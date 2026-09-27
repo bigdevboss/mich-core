@@ -517,6 +517,54 @@ static int manager64_register_virtio_net(int external_probe, int restart_test,
         ? 0 : -1;
 }
 
+// Registers the userspace virtio-blk capsule (docs/driver-vynos.md, M1). The
+// caller registers this only when a "virtio-blk" boot module is present, so an
+// ordinary image that still drives virtio-blk in-kernel keeps the device
+// unclaimed by a capsule. Matches on vendor and device id and leaves the class
+// triplet wildcarded, because 0x1042/0x1001 already identify virtio-blk
+// uniquely and QEMU's reported storage class varies by machine.
+static int manager64_register_virtio_blk(u32 image_id) {
+    struct driver_user_manifest manifest;
+    u8 *bytes = (u8 *)&manifest;
+    for (usize_t index = 0; index < sizeof(manifest); index++) bytes[index] = 0;
+    manifest.abi_version = DRIVER_USER_ABI_VERSION;
+    manifest.size = sizeof(manifest);
+    const char name[] = "virtio-blk";
+    for (u32 index = 0; name[index]; index++) manifest.name[index] = name[index];
+    manifest.restart_policy = DRIVER_RESTART_ON_FAILURE;
+    manifest.max_restarts = 4;
+    manifest.backoff_ticks = 10;
+    manifest.priority = 1;
+    manifest.image_id = image_id;
+    manifest.reset_policy = DRIVER_RESET_IF_SUPPORTED;
+    manifest.firmware_count = 0;
+    // Handed to the capsule as its entry argument; it fails closed unless this
+    // matches VIRTIO_BLK_MAGIC ("VBLK") so a misrouted image cannot drive the
+    // device.
+    manifest.argument = 0x56424C4BULL;
+    manifest.match_count = 2;
+    for (u32 index = 0; index < manifest.match_count; index++) {
+        manifest.matches[index].vendor_id = 0x1AF4;
+        manifest.matches[index].device_id = index ? 0x1001 : 0x1042;
+        manifest.matches[index].class_code = 0xFF;
+        manifest.matches[index].subclass = 0xFF;
+        manifest.matches[index].programming_interface = 0xFF;
+    }
+    // One request virtqueue means two MSI-X vectors: the config-change vector
+    // and the queue vector.
+    manifest.request_count = 4;
+    manifest.requests[0].kind = DRIVER_RESOURCE_PCI;
+    manifest.requests[0].rights = KRIGHT_READ | KRIGHT_CONTROL;
+    manifest.requests[1].kind = DRIVER_RESOURCE_MSIX_TABLE;
+    manifest.requests[1].rights = KRIGHT_READ | KRIGHT_CONTROL;
+    manifest.requests[2].kind = DRIVER_RESOURCE_MSIX_IRQ;
+    manifest.requests[2].rights = KRIGHT_WAIT | KRIGHT_CONTROL;
+    manifest.requests[2].amount = 2;
+    manifest.requests[3].kind = DRIVER_RESOURCE_BRIDGE;
+    manifest.requests[3].rights = KRIGHT_READ | KRIGHT_WAIT;
+    return driver_manager_register(&manifest) > 0 ? 0 : -1;
+}
+
 static int manager64_set_pci_inventory(void) {
     struct kernel_object *devices[DRIVER_MANAGER_DEVICE_MAX];
     u32 count = pci64_count();
@@ -1685,7 +1733,8 @@ static int devfs64_init(void) {
     return 0;
 }
 
-#ifdef MICH_TEST_BUILD
+// Not test-only: the production kernel matches the "virtio-blk" boot module by
+// name to decide whether to register the userspace capsule manifest.
 static int module_name_is(const struct bd_module *module, const char *name) {
     if (module->cmdline < 0x1000 || module->cmdline >= 0x100000) return 0;
     const char *text = (const char *)(uptr_t)module->cmdline;
@@ -1694,7 +1743,6 @@ static int module_name_is(const struct bd_module *module, const char *name) {
         if (text[index] != name[index]) return 0;
     return !text[index];
 }
-#endif
 
 static int bootfs64_init(const struct bd_module *modules, u32 count) {
     if (!modules || !count || count > VFS_BOOTFS_ENTRY_MAX) return -1;
@@ -1979,6 +2027,15 @@ void kernel64_main(u32 magic, struct bd_info *info) {
             virtio_net_restart_test, virtio_net_circuit_test,
             virtio_net_recovery_test))
         KERNEL_PANIC("virtio-net manifest");
+    // Register the virtio-blk capsule only for an image that ships it, so every
+    // other boot leaves the device to the in-kernel driver and block tests. The
+    // module index is the capsule's spawn image (docs/driver-vynos.md, M1).
+    for (u32 index = 0; index < info->mods_count; index++) {
+        if (!module_name_is(&modules[index], "virtio-blk")) continue;
+        if (manager64_register_virtio_blk(index))
+            KERNEL_PANIC("virtio-blk manifest");
+        break;
+    }
 #ifdef MICH_TEST_BUILD
     // A netbench boot measures loopback socket cycles and must run on a
     // quiescent kernel. The driver-live-recovery lab deliberately crashes and
