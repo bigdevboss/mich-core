@@ -52,6 +52,18 @@ static volatile unsigned char *dma_ptr(unsigned int offset) {
     return (volatile unsigned char *)(NVME_QUEUES_ADDRESS + offset);
 }
 
+// The driver-manager grants the DMA region once and reuses it across every
+// restart of this capsule without re-zeroing it, so a fresh instance inherits
+// the previous one's CQEs. Their phase bits still read 1, which satisfies the
+// completion poll before the controller posts anything real, so admin_sync and
+// drive_device would accept a stale entry with the wrong command id. Clear the
+// queues to restore the phase-0 baseline the NVMe phase protocol assumes.
+static void zero_queues(void) {
+    volatile unsigned char *base = dma_ptr(0);
+    for (unsigned int index = 0; index < NVME_QUEUES_PAGES * 4096u; index++)
+        base[index] = 0;
+}
+
 static unsigned int reg_read32(unsigned int offset) {
     volatile unsigned int *word =
         (volatile unsigned int *)(NVME_REGS_ADDRESS + offset);
@@ -167,6 +179,9 @@ static int bring_up(struct nvme_capsule *capsule) {
         reg_write32(NVME_REG_CC, reg_read32(NVME_REG_CC) & ~NVME_CC_ENABLE);
         if (wait_csts(NVME_CSTS_READY, 0)) return -1;
     }
+    // Only safe once the controller is disabled above: a still-enabled prior
+    // instance could DMA a completion into the region mid-clear.
+    zero_queues();
     unsigned long long asq = capsule->dma_physical + NVME_ADMIN_SQ_OFF;
     unsigned long long acq = capsule->dma_physical + NVME_ADMIN_CQ_OFF;
     reg_write32(NVME_REG_AQA,
