@@ -611,6 +611,18 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                 return (u64)-1;
             return (u64)resource->physical[arg1 / 4096] + (arg1 % 4096);
         }
+        if (object->type == KOBJECT_PACKET_POOL) {
+            // A capsule that drives its virtio-net device from userspace posts
+            // pool buffers straight into the device's descriptor ring, so it
+            // needs their bus address exactly as a DMA region reports one. The
+            // pool's backing carries one page per buffer, cached at creation.
+            const struct page_resource *resource =
+                page_resource_get(packet_pool_backing(object));
+            if (!resource || resource->revoked ||
+                arg1 >= (u64)resource->pages * 4096)
+                return (u64)-1;
+            return (u64)resource->physical[arg1 / 4096] + (arg1 % 4096);
+        }
         return (u64)-1;
     }
     if (number == 58) {
