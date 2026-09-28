@@ -331,7 +331,27 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         int pid = spawn64(task_pool[current_task_slot].id, 0,
                           "spawn64", arg0);
         fpu64_load(&task_contexts[current_task_slot]);
+        // A child is schedulable the instant it exists, so a parent that must
+        // configure it first (delegating capabilities here) otherwise races the
+        // child running to completion with the wrong rights. Held suspended it
+        // cannot be picked until the resume below. Safe on the single CPU this
+        // runs on: the syscall executes with interrupts masked, so nothing
+        // preempts between creation and this state change.
+        if (pid > 0 && (arg1 & SPAWN_FLAG_SUSPENDED))
+            task_pool[PID_SLOT((u32)pid)].state = TASK_SUSPENDED;
         return (u64)(i64)pid;
+    }
+    if (number == 216) {
+        struct task *owner = &task_pool[current_task_slot];
+        u32 slot = PID_SLOT((u32)arg0);
+        if (slot == 0 || slot >= (u32)task_pool_count) return (u64)-1;
+        struct task *target = &task_pool[slot];
+        if (target->state != TASK_SUSPENDED || target->id != (int)arg0 ||
+            (target->parent_id != owner->id &&
+             !(owner->capabilities & CAP_TASK_ADMIN)))
+            return (u64)-1;
+        target->state = TASK_RUNNING;
+        return 0;
     }
     if (number == 33)
         return (u64)(i64)handle_close(&task_pool[current_task_slot],

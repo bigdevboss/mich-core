@@ -46,4 +46,11 @@ int mich_fork(void);
 int mich_exec(const char *path, unsigned long argument);
 int mich_spawn(unsigned long argument);
 
+// Spawn the child held off the scheduler so the parent can delegate its
+// capabilities before it runs, then start it with mich_task_resume. Avoids the
+// window where a plain mich_spawn child races ahead with the wrong rights.
+#define MICH_SPAWN_SUSPENDED 1u
+int mich_spawn_suspended(unsigned long argument);
+int mich_task_resume(int pid);
+
 #endif

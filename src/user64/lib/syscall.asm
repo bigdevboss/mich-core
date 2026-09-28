@@ -24,6 +24,8 @@ global mich_yield
 global mich_fork
 global mich_exec
 global mich_spawn
+global mich_spawn_suspended
+global mich_task_resume
 global mich_handle_close
 global mich_event_create
 global mich_event_wait
@@ -328,6 +330,8 @@ global mich_pci_set_command
 %define SYS_NET_INTERFACE_DRIVER_COMPLETE_TX_BATCH 173
 %define SYS_WALL_CLOCK 214
 %define SYS_RESOURCE_PHYSICAL 215
+%define SYS_TASK_RESUME 216
+%define SPAWN_FLAG_SUSPENDED 1
 %define SYS_TICKS 174
 %define SYS_PCI_CONFIG_READ8 175
 %define SYS_PCI_CONFIG_READ16 176
@@ -458,7 +462,19 @@ mich_exec:
     ret
 
 mich_spawn:
+    xor esi, esi
     mov eax, SYS_SPAWN
+    syscall
+    ret
+
+mich_spawn_suspended:
+    mov esi, SPAWN_FLAG_SUSPENDED
+    mov eax, SYS_SPAWN
+    syscall
+    ret
+
+mich_task_resume:
+    mov eax, SYS_TASK_RESUME
     syscall
     ret
 
