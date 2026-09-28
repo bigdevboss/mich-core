@@ -20,8 +20,6 @@
 #include "acpi64.h"
 #include "rtc64.h"
 #include "pci64.h"
-#include "virtio_pci.h"
-#include "virtio_abi.h"
 #include "platform64.h"
 #include "driver.h"
 #include "driver_supervisor.h"
@@ -576,11 +574,6 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         }
         if (object->type == KOBJECT_RING) {
             const struct ring_resource *resource = ring_resource_get(object);
-            return resource ? (u64)resource->pages * 4096 : (u64)-1;
-        }
-        if (object->type == KOBJECT_VIRTQUEUE) {
-            struct kernel_object *dma = virtqueue_dma_object(object);
-            const struct dma_resource *resource = dma_resource_get(dma);
             return resource ? (u64)resource->pages * 4096 : (u64)-1;
         }
         return (u64)-1;
@@ -1207,172 +1200,6 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             return (u64)-1;
         return (u64)(i64)net_interface_revoke(interface);
     }
-    if (number == 106) {
-        struct kernel_object *pci = handle_get(
-            &task_pool[current_task_slot], (u32)arg0,
-            KRIGHT_CONTROL, KOBJECT_PCI);
-        struct kernel_object *device = pci ? virtio_pci_create(pci) : 0;
-        if (!device) return (u64)-1;
-        u32 handle = handle_open(
-            &task_pool[current_task_slot], device,
-            KRIGHT_READ | KRIGHT_CONTROL | KRIGHT_TRANSFER);
-        object_release(device);
-        return handle ? handle : (u64)-1;
-    }
-    if (number == 107) {
-        struct task *task = &task_pool[current_task_slot];
-        struct kernel_object *device = handle_get(
-            task, (u32)arg0, KRIGHT_CONTROL, KOBJECT_VIRTIO_DEVICE);
-        struct virtio_feature_request request;
-        if (!device || vm64_user_access(task->page_dir, arg1,
-                                        sizeof(request), 1) ||
-            vm64_copy_from(task->page_dir, &request, arg1,
-                           sizeof(request)) ||
-            virtio_pci_negotiate(device, request.wanted, request.required))
-            return (u64)-1;
-        struct virtio_device_info *info = virtio_pci_get(device);
-        request.device_features = info->device_features;
-        request.driver_features = info->driver_features;
-        return (u64)(i64)vm64_copy_to(task->page_dir, arg1, &request,
-                                      sizeof(request));
-    }
-    if (number == 108) {
-        struct task *task = &task_pool[current_task_slot];
-        struct virtqueue_create_request request;
-        if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
-            vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)))
-            return (u64)-1;
-        struct kernel_object *device = handle_get(
-            task, request.device_handle, KRIGHT_CONTROL, KOBJECT_VIRTIO_DEVICE);
-        struct kernel_object *queue = device ? virtqueue_create(
-            device, request.queue_index, request.queue_size) : 0;
-        struct virtqueue_info *info = virtqueue_get(queue);
-        if (!queue || !info) {
-            if (queue) object_release(queue);
-            return (u64)-1;
-        }
-        u32 handle = handle_open(
-            task, queue, KRIGHT_READ | KRIGHT_MAP |
-            KRIGHT_CONTROL | KRIGHT_TRANSFER);
-        request.queue_handle = handle;
-        request.queue_size = info->queue_size;
-        request.descriptor_offset = info->descriptor_offset;
-        request.available_offset = info->available_offset;
-        request.used_offset = info->used_offset;
-        request.total_bytes = info->total_bytes;
-        object_release(queue);
-        if (!handle || vm64_copy_to(task->page_dir, arg0, &request,
-                                    sizeof(request))) {
-            if (handle) handle_close(task, handle);
-            return (u64)-1;
-        }
-        return 0;
-    }
-    if (number == 109) {
-        struct task *task = &task_pool[current_task_slot];
-        struct kernel_object *queue = handle_get(
-            task, (u32)arg0, KRIGHT_MAP, KOBJECT_VIRTQUEUE);
-        struct kernel_object *dma = virtqueue_dma_object(queue);
-        const struct dma_resource *memory = dma_resource_get(dma);
-        if (!queue || !memory) return (u64)-1;
-        return (u64)(i64)vm64_map_object(
-            task_contexts[current_task_slot].vm_space, arg1, dma,
-            memory->physical, (usize_t)memory->pages * 4096,
-            0, VM64_CACHE_WB);
-    }
-    if (number == 110) {
-        struct kernel_object *queue = handle_get(
-            &task_pool[current_task_slot], (u32)arg0,
-            KRIGHT_CONTROL, KOBJECT_VIRTQUEUE);
-        return queue ? (u64)(i64)virtqueue_notify(queue) : (u64)-1;
-    }
-    if (number == 111) {
-        struct kernel_object *device = handle_get(
-            &task_pool[current_task_slot], (u32)arg0,
-            KRIGHT_CONTROL, KOBJECT_VIRTIO_DEVICE);
-        return device ? (u64)(i64)virtio_pci_set_driver_ok(device) : (u64)-1;
-    }
-    if (number == 112) {
-        struct task *task = &task_pool[current_task_slot];
-        struct kernel_object *device = handle_get(
-            task, (u32)arg0, KRIGHT_READ, KOBJECT_VIRTIO_DEVICE);
-        struct virtio_config_request request;
-        if (!device || vm64_user_access(task->page_dir, arg1,
-                                        sizeof(request), 1) ||
-            vm64_copy_from(task->page_dir, &request, arg1,
-                           sizeof(request)) || request.reserved ||
-            !request.length || request.length > VIRTIO_CONFIG_DATA_MAX ||
-            virtio_pci_read_config(device, request.offset, request.data,
-                                   request.length, &request.generation))
-            return (u64)-1;
-        return (u64)(i64)vm64_copy_to(task->page_dir, arg1, &request,
-                                      sizeof(request));
-    }
-    if (number == 113) {
-        struct task *task = &task_pool[current_task_slot];
-        struct virtqueue_chain_request request;
-        if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
-            vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)) ||
-            request.reserved)
-            return (u64)-1;
-        struct kernel_object *queue = handle_get(
-            task, request.queue_handle, KRIGHT_CONTROL, KOBJECT_VIRTQUEUE);
-        if (!queue || virtqueue_chain_allocate(
-                queue, request.descriptor_count, &request.token))
-            return (u64)-1;
-        if (vm64_copy_to(task->page_dir, arg0, &request, sizeof(request))) {
-            virtqueue_chain_release(queue, request.token);
-            return (u64)-1;
-        }
-        return 0;
-    }
-    if (number == 114) {
-        struct task *task = &task_pool[current_task_slot];
-        struct driver_domain *domain = driver_domain_for_pid(task->id);
-        struct virtqueue_packet_request request;
-        if (!domain || vm64_copy_from(task->page_dir, &request, arg0,
-                                     sizeof(request)) || request.writable > 1)
-            return (u64)-1;
-        struct kernel_object *queue = handle_get(
-            task, request.queue_handle, KRIGHT_CONTROL, KOBJECT_VIRTQUEUE);
-        struct kernel_object *interface = handle_get(
-            task, request.interface_handle, KRIGHT_CONTROL,
-            KOBJECT_NET_INTERFACE);
-        struct kernel_object *pool = interface ?
-            net_interface_pool(interface, domain) : 0;
-        return queue && pool ? (u64)(i64)virtqueue_descriptor_set_packet(
-            queue, request.token, request.ordinal, pool, request.buffer_id,
-            request.offset, request.length, request.writable) : (u64)-1;
-    }
-    if (number == 115 || number == 117) {
-        struct task *task = &task_pool[current_task_slot];
-        struct virtqueue_chain_request request;
-        if (vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)) ||
-            request.reserved)
-            return (u64)-1;
-        struct kernel_object *queue = handle_get(
-            task, request.queue_handle, KRIGHT_CONTROL, KOBJECT_VIRTQUEUE);
-        if (!queue) return (u64)-1;
-        return number == 115 ? (u64)(i64)virtqueue_publish(
-            queue, request.token) : (u64)(i64)virtqueue_chain_release(
-            queue, request.token);
-    }
-    if (number == 116) {
-        struct task *task = &task_pool[current_task_slot];
-        struct virtqueue_completion_result result;
-        if (vm64_user_access(task->page_dir, arg0, sizeof(result), 1) ||
-            vm64_copy_from(task->page_dir, &result, arg0, sizeof(result)))
-            return (u64)-1;
-        struct kernel_object *queue = handle_get(
-            task, result.queue_handle, KRIGHT_CONTROL, KOBJECT_VIRTQUEUE);
-        struct virtqueue_completion completion;
-        int collected = queue ? virtqueue_collect(queue, &completion) : -1;
-        if (collected <= 0) return (u64)(i64)collected;
-        result.token = completion.token;
-        result.length = completion.length;
-        return vm64_copy_to(task->page_dir, arg0, &result, sizeof(result)) ?
-            (u64)-1 : 1;
-    }
     if (number == 118) {
         struct task *task = &task_pool[current_task_slot];
         struct driver_domain *domain = driver_domain_for_pid(task->id);
@@ -1537,39 +1364,6 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             (u64)(i64)net_interface_send_udp_probe(
                 interface, domain, (u32)arg1) :
             (u64)(i64)net_interface_poll_udp_probe(interface, domain);
-    }
-    if (number == 128) {
-        struct task *task = &task_pool[current_task_slot];
-        struct kernel_object *queue = handle_get(
-            task, (u32)arg0, KRIGHT_CONTROL, KOBJECT_VIRTQUEUE);
-        struct kernel_object *irq = handle_get(
-            task, (u32)arg1, KRIGHT_CONTROL, KOBJECT_IRQ);
-        return queue && irq ?
-            (u64)(i64)virtqueue_set_msix(queue, irq) : (u64)-1;
-    }
-    if (number == 129) {
-        struct task *task = &task_pool[current_task_slot];
-        struct virtqueue_completion_batch batch;
-        if (vm64_user_access(task->page_dir, arg0, sizeof(batch), 1) ||
-            vm64_copy_from(task->page_dir, &batch, arg0, sizeof(batch)) ||
-            batch.reserved || !batch.maximum ||
-            batch.maximum > VIRTQUEUE_COMPLETION_BATCH_MAX)
-            return (u64)-1;
-        struct kernel_object *queue = handle_get(
-            task, batch.queue_handle, KRIGHT_CONTROL, KOBJECT_VIRTQUEUE);
-        struct virtqueue_completion completions[
-            VIRTQUEUE_COMPLETION_BATCH_MAX];
-        int count = queue ? virtqueue_collect_batch(
-            queue, completions, batch.maximum) : -1;
-        if (count < 0) return (u64)-1;
-        batch.count = (u32)count;
-        for (u32 index = 0; index < batch.count; index++) {
-            batch.items[index].token = completions[index].token;
-            batch.items[index].length = completions[index].length;
-            batch.items[index].reserved = 0;
-        }
-        return (u64)(i64)vm64_copy_to(
-            task->page_dir, arg0, &batch, sizeof(batch));
     }
     if (number == 130 || number == 131 || number == 133 || number == 134) {
         struct task *task = &task_pool[current_task_slot];
@@ -2212,21 +2006,6 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         }
         object_release(object);
         return 0;
-    }
-    if (number == 187) {
-        struct task *task = &task_pool[current_task_slot];
-        struct driver_domain *domain = driver_domain_for_pid(task->id);
-        struct virtqueue_region_request request;
-        if (!domain || vm64_copy_from(task->page_dir, &request, arg0,
-                                     sizeof(request)) || request.writable > 1)
-            return (u64)-1;
-        struct kernel_object *queue = handle_get(
-            task, request.queue_handle, KRIGHT_CONTROL, KOBJECT_VIRTQUEUE);
-        struct kernel_object *pool = handle_get(
-            task, request.pool_handle, KRIGHT_CONTROL, KOBJECT_SHARED_MEMORY);
-        return queue && pool ? (u64)(i64)virtqueue_descriptor_set_region(
-            queue, request.token, request.ordinal, pool, request.offset,
-            request.length, request.writable) : (u64)-1;
     }
     if (number == 214) {
         // UTC only. The CMOS clock carries no zone and the callers that need
