@@ -434,7 +434,11 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         return number == 43 ? (u64)(i64)irq_resource_unbind(irq)
                             : (u64)(i64)irq_resource_set_mask(irq, arg1 != 0);
     }
-    if (number >= 46 && number <= 53 &&
+    // 46/47/49/52 mint a resource handle from a raw index or allocate fresh
+    // DMA, so they stay behind CAP_RESOURCE_ADMIN. 48/50/51/53 act on a handle
+    // the manifest already granted and are authorised by that handle's rights,
+    // letting an unprivileged capsule drive only the device it was bound to.
+    if ((number == 46 || number == 47 || number == 49 || number == 52) &&
         !(task_pool[current_task_slot].capabilities & CAP_RESOURCE_ADMIN))
         return (u64)-1;
     if (number == 46) return pci64_count();
@@ -449,7 +453,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
     if (number == 48) {
         struct kernel_object *pci =
             handle_get(&task_pool[current_task_slot], (u32)arg0,
-                       KRIGHT_READ, KOBJECT_PCI);
+                       KRIGHT_CONTROL, KOBJECT_PCI);
         struct kernel_object *mmio =
             pci ? pci64_bar_create(pci, (u32)arg1) : 0;
         if (!mmio) return (u64)-1;
