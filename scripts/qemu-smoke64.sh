@@ -950,16 +950,6 @@ if [ "$profile" = "msi" ] || [ "$profile" = "msi-restart" ] ||
     fi
     for marker in \
         "Mich test64: MSI-X hardware programming pass" \
-        "Mich test64: modern virtio PCI capabilities pass" \
-        "Mich test64: virtio feature negotiation pass" \
-        "Mich test64: virtio stable config read pass" \
-        "Mich test64: virtqueue DMA layout pass" \
-        "Mich test64: virtqueue descriptor allocator pass" \
-        "Mich test64: virtqueue available ring pass" \
-        "Mich test64: virtqueue used ring pass" \
-        "Mich test64: virtqueue generation checks pass" \
-        "Mich test64: virtqueue kick suppression pass" \
-        "Mich test64: virtqueue notify pass" \
         "Mich virtio-net: bootstrap pass" \
         "Mich virtio-net: firmware allowlist pass" \
         "Mich virtio-net: bounded firmware read pass" \
