@@ -100,7 +100,7 @@
 #define BOOT_MODULE_PANIC_TEST (1u << 31)
 #define IOMMU_FAULT_BATCH 8
 /* The primary capsule's sole test ud2; its source location is intentionally fixed. */
-#define VIRTIO_NET_RECOVERY_TEST_RIP 0x1000035a0ULL
+#define VIRTIO_NET_RECOVERY_TEST_RIP 0x1000035e0ULL
 
 static const struct driver_manager_recovery_config
     virtio_net_recovery_catalog[] = {
