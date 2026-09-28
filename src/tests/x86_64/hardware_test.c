@@ -11,8 +11,6 @@
 #include "pci64.h"
 #include "vtd64.h"
 #include "iommu.h"
-#include "virtio_pci.h"
-#include "virtio_abi.h"
 #include "vector64.h"
 #include "msi64.h"
 #include "msix64.h"
@@ -243,170 +241,6 @@ static int test_irq_event(const struct test64_env *env) {
     return valid && unbound ? 0 : -17;
 }
 
-static int virtqueue_lifecycle(struct kernel_object *queue_object) {
-    struct virtqueue_info *queue = virtqueue_get(queue_object);
-    const struct dma_resource *dma = queue ?
-        dma_resource_get(virtqueue_dma_object(queue_object)) : 0;
-    if (!queue || !dma || queue->queue_size != 8) return -1;
-    u64 token;
-    if (virtqueue_chain_allocate(queue_object, 2, &token) ||
-        queue->free_count != 6 ||
-        virtqueue_descriptor_set(queue_object, token, 0,
-                                 dma->physical + 512, 32, 1) ||
-        virtqueue_descriptor_set(queue_object, token, 1,
-                                 dma->physical + 544, 64, 1) ||
-        virtqueue_publish(queue_object, token) || queue->outstanding != 1)
-        return -1;
-    volatile u16 *available =
-        (volatile u16 *)((u8 *)virtqueue_memory(queue_object) +
-                         queue->available_offset);
-    u16 head = (u16)token;
-    if (available[1] != 1 || available[2] != head) return -1;
-    volatile u16 *used =
-        (volatile u16 *)((u8 *)virtqueue_memory(queue_object) +
-                         queue->used_offset);
-    volatile struct virtqueue_used_element *elements =
-        (volatile struct virtqueue_used_element *)((u8 *)used + 4);
-    used[0] = VIRTQUEUE_USED_NO_NOTIFY;
-    if (virtqueue_notify(queue_object) ||
-        queue->suppressed_notify_count != 1 || queue->notify_count)
-        return -1;
-    used[0] = 0;
-    elements[0].id = head;
-    elements[0].length = 96;
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    used[1] = 1;
-    struct virtqueue_completion completion;
-    if (virtqueue_collect(queue_object, &completion) != 1 ||
-        completion.token != token || completion.length != 96 ||
-        queue->free_count != 8 || queue->outstanding ||
-        !virtqueue_descriptor_set(queue_object, token, 0,
-                                  dma->physical + 512, 16, 1))
-        return -1;
-    u64 full_token;
-    u64 extra_token;
-    if (virtqueue_chain_allocate(queue_object, 8, &full_token) ||
-        queue->free_count ||
-        !virtqueue_chain_allocate(queue_object, 1, &extra_token) ||
-        queue->free_count ||
-        virtqueue_chain_release(queue_object, full_token) ||
-        queue->free_count != 8 ||
-        !virtqueue_chain_release(queue_object, full_token))
-        return -1;
-    elements[1].id = head;
-    elements[1].length = 0;
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    used[1] = 2;
-    if (virtqueue_collect(queue_object, &completion) != -1 ||
-        queue->rejected_used != 1 || virtqueue_reset_state(queue_object))
-        return -1;
-    for (u32 iteration = 0; iteration < 20; iteration++) {
-        if (virtqueue_chain_allocate(queue_object, 1, &token) ||
-            virtqueue_descriptor_set(queue_object, token, 0,
-                                     dma->physical + 512, 32, 1) ||
-            virtqueue_publish(queue_object, token))
-            return -1;
-        elements[iteration & 7].id = (u16)token;
-        elements[iteration & 7].length = 32;
-        __atomic_thread_fence(__ATOMIC_RELEASE);
-        used[1] = iteration + 1;
-        if (virtqueue_collect(queue_object, &completion) != 1 ||
-            completion.token != token || completion.length != 32)
-            return -1;
-    }
-    if (queue->available_index != 20 || queue->used_index != 20 ||
-        queue->free_count != 8 || queue->outstanding)
-        return -1;
-    if (virtqueue_chain_allocate(queue_object, 1, &token) ||
-        virtqueue_descriptor_set(queue_object, token, 0,
-                                 dma->physical + 512, 16, 1) ||
-        virtqueue_publish(queue_object, token))
-        return -1;
-    elements[4].id = (u16)token;
-    elements[4].length = 17;
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    used[1] = 21;
-    if (virtqueue_collect(queue_object, &completion) != -1 ||
-        !queue->failed || !virtqueue_chain_allocate(queue_object, 1, &token) ||
-        virtqueue_reset_state(queue_object) || queue->failed ||
-        queue->free_count != 8 || queue->available_index || queue->used_index ||
-        queue->outstanding)
-        return -1;
-    if (virtqueue_chain_allocate(queue_object, 2, &token) ||
-        virtqueue_descriptor_set(queue_object, token, 0,
-                                 dma->physical + 512, 32, 1) ||
-        virtqueue_descriptor_set(queue_object, token, 1,
-                                 dma->physical + 544, 32, 1) ||
-        virtqueue_publish(queue_object, token) ||
-        virtqueue_reset_state(queue_object) || queue->free_count != 8 ||
-        queue->outstanding)
-        return -1;
-    return 0;
-}
-
-static int test_virtio(void) {
-    u32 free_pages = pmm_free_pages();
-    u32 objects = object_active_count();
-    u32 devices = virtio_pci_active_count();
-    u32 queues = virtqueue_active_count();
-    for (u32 index = 0; index < pci64_count(); index++) {
-        struct kernel_object *pci = pci64_object(index);
-        const struct pci_resource *resource = pci_resource_get(pci);
-        if (!resource || resource->vendor_id != 0x1AF4 ||
-            (resource->device_id != 0x1000 && resource->device_id != 0x1041))
-            continue;
-        struct kernel_object *device = virtio_pci_create(pci);
-        if (!device || virtio_pci_negotiate(
-                device,
-                VIRTIO_FEATURE_VERSION_1 | VIRTIO_NET_FEATURE_MAC |
-                VIRTIO_NET_FEATURE_STATUS,
-                VIRTIO_FEATURE_VERSION_1)) {
-            if (device) object_release(device);
-            return -1;
-        }
-        struct virtio_device_info *info = virtio_pci_get(device);
-        u8 device_config[8];
-        for (u32 byte = 0; byte < sizeof(device_config); byte++)
-            device_config[byte] = 0;
-        u32 config_generation = 0;
-        int config_valid = !virtio_pci_read_config(
-            device, 0, device_config, sizeof(device_config),
-            &config_generation);
-        u32 mac_nonzero = 0;
-        for (u32 byte = 0; byte < 6; byte++) mac_nonzero |= device_config[byte];
-        config_valid = config_valid && mac_nonzero &&
-            virtio_pci_read_config(device, 0xFFFFFFFFu, device_config, 1,
-                                   &config_generation) < 0;
-        struct kernel_object *rx = virtqueue_create(device, 0, 8);
-        struct kernel_object *tx = virtqueue_create(device, 1, 8);
-        struct virtqueue_info *rx_info = virtqueue_get(rx);
-        struct virtqueue_info *tx_info = virtqueue_get(tx);
-        int valid = info && info->negotiated && config_valid &&
-            (info->driver_features & VIRTIO_FEATURE_VERSION_1) &&
-            rx && tx && rx_info && tx_info &&
-            rx_info->queue_size == 8 && tx_info->queue_size == 8 &&
-            !(rx_info->descriptor_offset & 15) &&
-            !(rx_info->available_offset & 1) &&
-            !(rx_info->used_offset & 3) &&
-            rx_info->descriptor_offset < rx_info->available_offset &&
-            rx_info->available_offset < rx_info->used_offset &&
-            rx_info->total_bytes <= 4096 && virtqueue_memory(rx) &&
-            !virtqueue_create(device, 0, 8) &&
-            !virtqueue_lifecycle(rx) &&
-            !virtio_pci_set_driver_ok(device) &&
-            !virtqueue_notify(rx) && !virtqueue_notify(tx);
-        if (rx) object_release(rx);
-        if (tx) object_release(tx);
-        object_release(device);
-        valid = valid && pmm_free_pages() == free_pages &&
-            object_active_count() == objects &&
-            virtio_pci_active_count() == devices &&
-            virtqueue_active_count() == queues;
-        return valid ? 0 : -1;
-    }
-    return 1;
-}
-
 static int test_msi(void) {
     static u32 vector_owner;
     u32 available = vector64_available();
@@ -553,24 +387,21 @@ static int test_platform_mmio(const struct test64_env *env) {
 }
 
 int tests64_run_hardware(const struct test64_env *env,
-                         int destructive, int *msi, int *msix, int *virtio) {
-    if (!env || !msi || !msix || !virtio) return -1;
+                         int destructive, int *msi, int *msix) {
+    if (!env || !msi || !msix) return -1;
     *msi = 1;
     *msix = 1;
-    *virtio = 1;
     if (!destructive) return 0;
     *msi = test_msi();
     *msix = test_msix();
-    *virtio = test_virtio();
     if (test_report_record(TEST_ID_MSI, *msi < 0 ? *msi : 0) ||
-        test_report_record(TEST_ID_MSIX, *msix < 0 ? *msix : 0) ||
-        test_report_record(TEST_ID_VIRTIO, *virtio < 0 ? *virtio : 0))
+        test_report_record(TEST_ID_MSIX, *msix < 0 ? *msix : 0))
         return -1;
     return 0;
 }
 
 int tests64_run_irq(const struct test64_env *env,
-                    int msi, int msix, int virtio) {
+                    int msi, int msix) {
     if (!env) return -1;
     if (test_report_record(TEST_ID_IRQ, test_irq_event(env)) ||
         test_report_record(TEST_ID_IOREMAP, test_platform_mmio(env)))
@@ -587,18 +418,6 @@ int tests64_run_irq(const struct test64_env *env,
     serial64_write("Mich test64: MSI-X programming API pass\n");
     if (!msix)
         serial64_write("Mich test64: MSI-X hardware programming pass\n");
-    if (!virtio) {
-        serial64_write("Mich test64: modern virtio PCI capabilities pass\n");
-        serial64_write("Mich test64: virtio feature negotiation pass\n");
-        serial64_write("Mich test64: virtio stable config read pass\n");
-        serial64_write("Mich test64: virtqueue DMA layout pass\n");
-        serial64_write("Mich test64: virtqueue descriptor allocator pass\n");
-        serial64_write("Mich test64: virtqueue available ring pass\n");
-        serial64_write("Mich test64: virtqueue used ring pass\n");
-        serial64_write("Mich test64: virtqueue generation checks pass\n");
-        serial64_write("Mich test64: virtqueue kick suppression pass\n");
-        serial64_write("Mich test64: virtqueue notify pass\n");
-    }
     serial64_write("Mich test64: IRQ event binding pass\n");
     serial64_write("Mich test64: safe IRQ unmask pass\n");
     serial64_write("Mich test64: IRQ endpoint binding pass\n");

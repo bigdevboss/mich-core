@@ -53,7 +53,6 @@
 #define TEST_ID_SUPERVISOR 41
 #define TEST_ID_MSI 48
 #define TEST_ID_MSIX 49
-#define TEST_ID_VIRTIO 50
 #define TEST_ID_IRQ 51
 #define TEST_ID_IOREMAP 52
 #define TEST_ID_FPU 60

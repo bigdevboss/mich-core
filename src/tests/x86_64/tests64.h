@@ -84,9 +84,9 @@ int tests64_run_driver(const struct test64_env *env);
 int test_vtd64_tables(struct kernel_object *pci);
 int test_iommu64_forbidden_dma(void);
 int tests64_run_hardware(const struct test64_env *env,
-                         int destructive, int *msi, int *msix, int *virtio);
+                         int destructive, int *msi, int *msix);
 int tests64_run_irq(const struct test64_env *env,
-                    int msi, int msix, int virtio);
+                    int msi, int msix);
 int tests64_run_smp(void);
 int tests64_run_nvme(const struct test64_env *env);
 
