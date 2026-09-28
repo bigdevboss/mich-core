@@ -461,18 +461,20 @@ int main(u64 role, u64 module_flags) {
     mich_write("Mich x86_64: PID generation pass\n");
     mich_write("Mich x86_64: resource reuse pass\n");
     int grant_free = mich_memfree();
-    int delegated = mich_spawn(4);
+    int delegated = mich_spawn_suspended(4);
     if (delegated <= 0) stop();
     if (mich_cap_grant(delegated, MICH_CAP_SERVICE_REGISTER) != 0) stop();
+    if (mich_task_resume(delegated) != 0) stop();
     if (mich_wait(delegated) != 44) stop();
     if (mich_service_lookup(MICH_SERVICE_TEST) >= 0) stop();
     if (mich_memfree() != grant_free) stop();
     mich_write("Mich x86_64: capability grant pass\n");
     mich_write("Mich x86_64: service cleanup pass\n");
     int lifecycle_free = mich_memfree();
-    int orphan_parent = mich_spawn(11);
+    int orphan_parent = mich_spawn_suspended(11);
     if (orphan_parent <= 0 ||
-        mich_cap_grant(orphan_parent, MICH_CAP_TASK_ADMIN) != 0)
+        mich_cap_grant(orphan_parent, MICH_CAP_TASK_ADMIN) != 0 ||
+        mich_task_resume(orphan_parent) != 0)
         stop();
     if (mich_wait(orphan_parent) != 11) stop();
     if (mich_wait(-1) != 12) stop();
@@ -480,9 +482,10 @@ int main(u64 role, u64 module_flags) {
     if (attacker <= 0 || mich_wait(attacker) != 13) stop();
     int bad_return = mich_spawn(14);
     if (bad_return <= 0 || mich_wait(bad_return) != 141) stop();
-    int waiting_parent = mich_spawn(15);
+    int waiting_parent = mich_spawn_suspended(15);
     if (waiting_parent <= 0 ||
-        mich_cap_grant(waiting_parent, MICH_CAP_TASK_ADMIN) != 0)
+        mich_cap_grant(waiting_parent, MICH_CAP_TASK_ADMIN) != 0 ||
+        mich_task_resume(waiting_parent) != 0)
         stop();
     struct mich_message kill_message;
     if (mich_recv_from((unsigned int)waiting_parent, &kill_message) != 0 ||
