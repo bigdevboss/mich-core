@@ -186,7 +186,12 @@ static int setup_transport(struct virtio_blk_capsule *capsule) {
     request.completion_ring_handle = capsule->completion_ring_handle;
     request.pool_handle = capsule->pool_handle;
     request.sector_size = MICH_BLOCK_SECTOR_SIZE;
-    request.sector_count = (unsigned int)capsule->capacity_sectors;
+    // The block layer caps a device at BLOCK_SECTOR_MAX sectors, far below any
+    // real volume; expose at most that so registration does not reject a large
+    // backing disk, matching the nvme capsule.
+    request.sector_count = capsule->capacity_sectors > BLOCK_SECTOR_MAX
+                               ? BLOCK_SECTOR_MAX
+                               : (unsigned int)capsule->capacity_sectors;
     request.flags = capsule->read_only ? MICH_BLOCK_FLAG_READ_ONLY : 0u;
     request.name[0] = 'v';
     request.name[1] = 'b';
