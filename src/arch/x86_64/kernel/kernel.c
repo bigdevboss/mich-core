@@ -99,8 +99,10 @@
 #define BOOT_MODULE_HARDWARE_TEST (1u << 30)
 #define BOOT_MODULE_PANIC_TEST (1u << 31)
 #define IOMMU_FAULT_BATCH 8
-/* The primary capsule's sole test ud2; its source location is intentionally fixed. */
-#define VIRTIO_NET_RECOVERY_TEST_RIP 0x1000035e0ULL
+// The primary capsule's sole test ud2. Its link address depends on the capsule
+// toolchain, so the build extracts it from the compiled capsule rather than
+// hardcode a literal that silently rots across compilers.
+#include "virtio_net_recovery_rip.h"
 
 static const struct driver_manager_recovery_config
     virtio_net_recovery_catalog[] = {
