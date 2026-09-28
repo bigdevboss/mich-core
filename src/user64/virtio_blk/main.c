@@ -1,6 +1,6 @@
 #include <mich/syscall.h>
 #include <mich/driver.h>
-#include <mich/virtio.h>
+#include <mich/hardware.h>
 #include <mich/ring.h>
 #include <mich/memory.h>
 #include <mich/event.h>
@@ -8,19 +8,12 @@
 
 #include "capsule.h"
 
-// Userspace virtio-blk capsule: brings the device up, registers a shared-memory
-// transport with the kernel block layer, and serves requests off the request
-// ring by driving the virtqueue. Data moves without a copy: the kernel fills the
-// shared pool, the device DMAs that pool in place, and the kernel drains it. The
-// capsule is the only virtio-blk driver; the kernel keeps no in-kernel one.
-
-static int transition(struct virtio_blk_capsule *capsule,
-                      unsigned int expected, unsigned int next) {
-    if (!capsule || capsule->state != expected || next != expected + 1)
-        return -1;
-    capsule->state = next;
-    return 0;
-}
+// Userspace virtio-blk capsule: brings the device up through the userspace virtio
+// transport (libvirtio) over raw hardware handles, registers a shared-memory
+// transport with the kernel block layer, and serves requests off the request ring
+// by driving the virtqueue directly. Data moves without a copy: the device DMAs
+// the shared pool in place. The capsule is the only virtio-blk driver; the kernel
+// keeps none.
 
 static void write_le32(volatile unsigned char *data, unsigned int value) {
     data[0] = (unsigned char)value;
@@ -46,75 +39,54 @@ static int bootstrap(struct virtio_blk_capsule *capsule) {
         struct mich_driver_resource_info *resource = &info.resources[index];
         if (resource->kind == MICH_DRIVER_RESOURCE_PCI && !resource->index)
             capsule->pci_handle = resource->handle;
-        if (resource->kind == MICH_DRIVER_RESOURCE_MSIX_IRQ &&
-            resource->index == 0)
-            capsule->config_irq_handle = resource->handle;
-        if (resource->kind == MICH_DRIVER_RESOURCE_MSIX_IRQ &&
-            resource->index == 1)
-            capsule->queue_irq_handle = resource->handle;
+        if (resource->kind == MICH_DRIVER_RESOURCE_DMA) {
+            capsule->dma_handle = resource->handle;
+            // Bus address the device DMAs the ring through: equals the raw
+            // physical without an IOMMU, or the bound IOVA with one.
+            capsule->dma_physical = resource->address;
+        }
         if (resource->kind == MICH_DRIVER_RESOURCE_BRIDGE)
             capsule->bridge_handle = resource->handle;
     }
-    // Require the manifest's grants up front so an incomplete grant fails at
-    // bring-up, not at first I/O.
-    if (!capsule->pci_handle || !capsule->bridge_handle ||
-        !capsule->queue_irq_handle)
+    if (!capsule->pci_handle || !capsule->dma_handle || !capsule->bridge_handle)
         return -1;
-    capsule->restart_count = info.restart_count;
-    capsule->device_handle = mich_virtio_open(capsule->pci_handle);
-    if ((int)capsule->device_handle <= 0) return -1;
-    return transition(capsule, VIRTIO_BLK_STATE_CREATED,
-                      VIRTIO_BLK_STATE_BOOTSTRAPPED);
+    return 0;
 }
 
-static int negotiate(struct virtio_blk_capsule *capsule) {
-    struct mich_virtio_feature_request request;
-    request.wanted = MICH_VIRTIO_FEATURE_VERSION_1 |
-                     VIRTIO_BLK_FEATURE_RO |
-                     VIRTIO_BLK_FEATURE_BLK_SIZE;
-    request.required = MICH_VIRTIO_FEATURE_VERSION_1;
-    request.device_features = 0;
-    request.driver_features = 0;
-    if (mich_virtio_negotiate(capsule->device_handle, &request) ||
-        (request.driver_features & request.required) != request.required)
+static int bring_up(struct virtio_blk_capsule *capsule) {
+    if (virtio_device_setup(&capsule->device, capsule->pci_handle,
+                            VIRTIO_BLK_BAR_WINDOW))
         return -1;
-    capsule->negotiated_features = request.driver_features;
+    unsigned long long wanted = VIRTIO_FEATURE_VERSION_1 |
+                                VIRTIO_BLK_FEATURE_RO | VIRTIO_BLK_FEATURE_BLK_SIZE;
+    if (virtio_negotiate(&capsule->device, wanted, VIRTIO_FEATURE_VERSION_1))
+        return -1;
+    capsule->negotiated_features = capsule->device.driver_features;
     capsule->read_only =
-        (request.driver_features & VIRTIO_BLK_FEATURE_RO) ? 1u : 0u;
-    return transition(capsule, VIRTIO_BLK_STATE_BOOTSTRAPPED,
-                      VIRTIO_BLK_STATE_FEATURES);
-}
+        (capsule->device.driver_features & VIRTIO_BLK_FEATURE_RO) ? 1u : 0u;
 
-static int read_config(struct virtio_blk_capsule *capsule) {
-    struct mich_virtio_config_request request;
-    request.offset = 0;
-    // Capacity is the first 8 bytes; the logical block size sits at offset 20
-    // and is only present when BLK_SIZE was negotiated (virtio spec 5.2.4).
-    request.length =
-        (capsule->negotiated_features & VIRTIO_BLK_FEATURE_BLK_SIZE) ? 24 : 8;
-    request.generation = 0;
-    request.reserved = 0;
-    for (unsigned int index = 0; index < MICH_VIRTIO_CONFIG_DATA_MAX; index++)
-        request.data[index] = 0;
-    if (mich_virtio_read_config(capsule->device_handle, &request)) return -1;
+    // Capacity is the first 8 bytes; the logical block size sits at offset 20 and
+    // is only present when BLK_SIZE was negotiated (virtio spec 5.2.4).
+    unsigned char config[24];
+    for (unsigned int index = 0; index < sizeof(config); index++)
+        config[index] = 0;
+    unsigned int length =
+        (capsule->negotiated_features & VIRTIO_BLK_FEATURE_BLK_SIZE) ? 24u : 8u;
+    if (virtio_read_config(&capsule->device, 0, config, length)) return -1;
     unsigned long long capacity = 0;
-    for (unsigned int index = 0; index < 8; index++)
-        capacity |= (unsigned long long)request.data[index] << (index * 8);
+    for (unsigned int index = 0; index < 8u; index++)
+        capacity |= (unsigned long long)config[index] << (index * 8u);
     if (!capacity) return -1;
     capsule->capacity_sectors = capacity;
     if (capsule->negotiated_features & VIRTIO_BLK_FEATURE_BLK_SIZE) {
-        unsigned int block_size = (unsigned int)request.data[20] |
-                                  ((unsigned int)request.data[21] << 8) |
-                                  ((unsigned int)request.data[22] << 16) |
-                                  ((unsigned int)request.data[23] << 24);
+        unsigned int block_size = (unsigned int)config[20] |
+                                  ((unsigned int)config[21] << 8) |
+                                  ((unsigned int)config[22] << 16) |
+                                  ((unsigned int)config[23] << 24);
         // The block layer and ABI are fixed at 512-byte sectors.
         if (block_size != MICH_BLOCK_SECTOR_SIZE) return -1;
-        capsule->block_size = block_size;
-    } else {
-        capsule->block_size = MICH_BLOCK_SECTOR_SIZE;
     }
-    return transition(capsule, VIRTIO_BLK_STATE_FEATURES,
-                      VIRTIO_BLK_STATE_CONFIG);
+    return 0;
 }
 
 static int setup_transport(struct virtio_blk_capsule *capsule) {
@@ -154,24 +126,16 @@ static int setup_transport(struct virtio_blk_capsule *capsule) {
     return 0;
 }
 
-static int start_device(struct virtio_blk_capsule *capsule) {
-    struct mich_virtqueue_create_request request;
-    request.device_handle = capsule->device_handle;
-    request.queue_index = 0;
-    request.queue_size = 128;
-    request.queue_handle = 0;
-    request.descriptor_offset = 0;
-    request.available_offset = 0;
-    request.used_offset = 0;
-    request.total_bytes = 0;
-    if (mich_virtqueue_create(&request) || !request.queue_handle ||
-        mich_virtqueue_map(request.queue_handle, VIRTIO_BLK_QUEUE_ADDRESS))
+static int start_queue(struct virtio_blk_capsule *capsule) {
+    if (mich_dma_map(capsule->dma_handle, VIRTIO_BLK_VRING_ADDRESS) ||
+        virtqueue_setup(&capsule->device, &capsule->queue, 0,
+                        VIRTIO_BLK_QUEUE_SIZE, VIRTIO_BLK_VRING_ADDRESS,
+                        capsule->dma_physical,
+                        (unsigned long long)VIRTIO_BLK_VRING_PAGES * 4096u))
         return -1;
-    capsule->queue_handle = request.queue_handle;
-    capsule->queue_size = request.queue_size;
-    // Completions are polled in drive_device, so the queue MSI-X vector is left
-    // unconfigured: the device posts to the used ring either way.
-    return mich_virtio_driver_ok(capsule->device_handle);
+    // Completions are polled in drive_device, so no queue MSI-X vector is set: the
+    // device posts to the used ring either way.
+    return virtio_driver_ok(&capsule->device);
 }
 
 static volatile unsigned char *ring_descriptor(unsigned long long base,
@@ -185,7 +149,7 @@ static volatile unsigned char *ring_descriptor(unsigned long long base,
 // Build the three-descriptor virtio-blk chain (header, data, status), submit it
 // and poll for completion. The header and status live in the scratch pool; the
 // data descriptor points straight at the shared pool slot the kernel filled, so
-// nothing is copied on this path.
+// nothing is copied on this path. A single 512-byte sector never crosses a page.
 static int drive_device(struct virtio_blk_capsule *capsule, unsigned int op,
                         unsigned int lba, unsigned int sectors,
                         unsigned int pool_offset, unsigned int slot) {
@@ -203,48 +167,38 @@ static int drive_device(struct virtio_blk_capsule *capsule, unsigned int op,
     // Poison the status so a device that never wrote it is not read as success.
     scratch[status_off] = 0xFF;
 
-    struct mich_virtqueue_chain_request chain;
-    chain.queue_handle = capsule->queue_handle;
-    chain.descriptor_count = 3;
-    chain.reserved = 0;
-    chain.token = 0;
-    if (mich_virtqueue_chain_allocate(&chain)) return -1;
+    unsigned long long header_phys =
+        mich_resource_physical(capsule->scratch_handle, header_off);
+    unsigned long long status_phys =
+        mich_resource_physical(capsule->scratch_handle, status_off);
+    unsigned long long data_phys =
+        mich_resource_physical(capsule->pool_handle, pool_offset);
+    if (header_phys == (unsigned long long)-1 ||
+        status_phys == (unsigned long long)-1 ||
+        data_phys == (unsigned long long)-1)
+        return -1;
 
-    struct mich_virtqueue_region_request region;
-    region.queue_handle = capsule->queue_handle;
-    region.token = chain.token;
-    region.pool_handle = capsule->scratch_handle;
-    region.offset = header_off;
-    region.length = VIRTIO_BLK_HEADER_SIZE;
-    region.ordinal = 0;
-    region.writable = 0;
-    int failed = mich_virtqueue_set_region(&region);
-    region.pool_handle = capsule->pool_handle;
-    region.offset = pool_offset;
-    region.length = sectors * MICH_BLOCK_SECTOR_SIZE;
-    region.ordinal = 1;
-    region.writable = (unsigned short)read;
-    failed |= mich_virtqueue_set_region(&region);
-    region.pool_handle = capsule->scratch_handle;
-    region.offset = status_off;
-    region.length = 1;
-    region.ordinal = 2;
-    region.writable = 1;
-    failed |= mich_virtqueue_set_region(&region);
-    if (failed || mich_virtqueue_publish(&chain) ||
-        mich_virtqueue_notify(capsule->queue_handle)) {
-        mich_virtqueue_chain_release(&chain);
+    unsigned long long token;
+    if (virtqueue_chain_alloc(&capsule->queue, 3, &token)) return -1;
+    int failed = virtqueue_descriptor_set(&capsule->queue, token, 0, header_phys,
+                                          VIRTIO_BLK_HEADER_SIZE, 0);
+    failed |= virtqueue_descriptor_set(&capsule->queue, token, 1, data_phys,
+                                       sectors * MICH_BLOCK_SECTOR_SIZE,
+                                       (int)read);
+    failed |= virtqueue_descriptor_set(&capsule->queue, token, 2, status_phys,
+                                       1, 1);
+    if (failed || virtqueue_chain_publish(&capsule->queue, token) ||
+        virtqueue_kick(&capsule->queue)) {
+        virtqueue_chain_release(&capsule->queue, token);
         return -1;
     }
 
-    struct mich_virtqueue_completion_result result;
-    result.queue_handle = capsule->queue_handle;
     for (unsigned int attempt = 0; attempt < 2000000u; attempt++) {
-        result.length = 0;
-        result.token = 0;
-        int collected = mich_virtqueue_collect(&result);
+        unsigned long long done_token = 0;
+        unsigned int length = 0;
+        int collected = virtqueue_collect(&capsule->queue, &done_token, &length);
         if (collected < 0) return -1;
-        if (collected == 1 && result.token == chain.token)
+        if (collected == 1 && done_token == token)
             return scratch[status_off] == VIRTIO_BLK_S_OK ? 0 : -1;
         if (!collected) mich_yield();
     }
@@ -286,7 +240,8 @@ static int serve_request(struct virtio_blk_capsule *capsule) {
 // Exercise the whole path end to end: as its own client the capsule submits a
 // write and a read-back through the kernel block layer, serving each in between,
 // and checks the bytes survive the round trip. This proves the ring transport,
-// the region descriptors and the data-pool zero-copy before real clients arrive.
+// the descriptor chain and the data-pool zero-copy against a real device before
+// clients arrive.
 static int self_test(struct virtio_blk_capsule *capsule) {
     if (capsule->read_only || capsule->capacity_sectors <= 5) return 0;
     struct mich_block_io_request io;
@@ -327,10 +282,9 @@ static int self_test(struct virtio_blk_capsule *capsule) {
     return 0;
 }
 
-// Steady state: drain every request the kernel has queued, then park. No
-// kernel-to-capsule submit doorbell exists yet, so the capsule blocks on an
-// event nothing signals and idles at zero CPU while it stays registered as the
-// live virtio-blk driver. A wakeup doorbell is future work.
+// Steady state: drain every queued request, then park on an event nothing signals
+// and idle at zero CPU while registered as the live virtio-blk driver. A
+// kernel-to-capsule wakeup doorbell is future work.
 static void serve_loop(struct virtio_blk_capsule *capsule) {
     int idle = mich_event_create(MICH_EVENT_MANUAL_RESET, 0);
     if (idle <= 0) return;
@@ -351,13 +305,12 @@ int main(unsigned long long argument) {
         bytes[index] = 0;
     if ((unsigned int)argument != VIRTIO_BLK_MAGIC || bootstrap(&capsule))
         return 1;
-    if (negotiate(&capsule)) return 2;
-    if (read_config(&capsule)) return 3;
+    if (bring_up(&capsule)) return 2;
     mich_write("Mich virtio-blk: bootstrap pass\n");
-    if (setup_transport(&capsule)) return 4;
-    if (start_device(&capsule)) return 5;
-    if (self_test(&capsule)) return 6;
+    if (setup_transport(&capsule)) return 3;
+    if (start_queue(&capsule)) return 4;
+    if (self_test(&capsule)) return 5;
     mich_write("Mich virtio-blk: serve pass\n");
     serve_loop(&capsule);
-    return 7;
+    return 6;
 }

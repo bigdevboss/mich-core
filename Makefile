@@ -33,7 +33,7 @@ TEST64 = src/tests/x86_64
 GCC_INCLUDE = $(shell $(CC) -print-file-name=include)
 AESFLAGS = -maes -mpclmul -mssse3
 CFLAGS64 = -m64 -mno-red-zone -msse2 -mno-mmx -nostdlib -nostdinc -fno-builtin -fno-stack-protector -nostartfiles -nodefaultlibs -ffreestanding -fno-pie -fno-pic -fno-asynchronous-unwind-tables -MMD -MP -Wall -Wextra -O2 -Isrc -I$(GCC_INCLUDE) $(ARCH64_INCLUDES) $(PORTABLE_INCLUDES) -I$(TEST64)
-USER64_CFLAGS = $(CFLAGS64) -mcmodel=large -Isrc/user64/include
+USER64_CFLAGS = $(CFLAGS64) -mcmodel=large -Isrc/user64/include -Isrc/user64/lib
 LDFLAGS64 = -m elf_x86_64 -T $(ARCH64_BOOT)/linker.ld
 
 # The netbench capsule grows to real bulk and packet-rate sizes and dials the
@@ -76,6 +76,7 @@ POSIXAPP64_ELF = $(USER64_DIR)/posixapp64.elf
 POSIXAPP64_OBJS = $(USER64_OBJ_DIR)/crt0_posix.o $(USER64_OBJ_DIR)/syscall.o $(USER64_OBJ_DIR)/posix.o $(USER64_OBJ_DIR)/process.o $(USER64_OBJ_DIR)/string.o $(USER64_OBJ_DIR)/stdio.o $(USER64_OBJ_DIR)/stdlib.o $(USER64_OBJ_DIR)/posixapp.o
 POSIXDEMO64_ELF = $(USER64_DIR)/posixdemo64.elf
 POSIXDEMO64_OBJS = $(USER64_OBJ_DIR)/crt0_posix.o $(USER64_OBJ_DIR)/syscall.o $(USER64_OBJ_DIR)/posix.o $(USER64_OBJ_DIR)/process.o $(USER64_OBJ_DIR)/string.o $(USER64_OBJ_DIR)/stdio.o $(USER64_OBJ_DIR)/stdlib.o $(USER64_OBJ_DIR)/posixdemo.o
+VIRTIO_LIB64_OBJ = $(USER64_OBJ_DIR)/virtio_lib.o
 VIRTIO_BLK64_OBJ = $(USER64_OBJ_DIR)/virtio_blk.o
 NVME64_OBJ = $(USER64_OBJ_DIR)/nvme_capsule.o
 VIRTIO_NET64_OBJ = $(USER64_OBJ_DIR)/virtio_net.o
@@ -535,7 +536,10 @@ $(USER64_OBJ_DIR)/posixdemo.o:src/user64/posixdemo/main.c src/user64/include/err
 $(POSIXDEMO64_ELF): $(POSIXDEMO64_OBJS) src/user64/linker.ld | $(USER64_DIR)
 	$(LD) -m elf_x86_64 -T src/user64/linker.ld -o $@ $(POSIXDEMO64_OBJS)
 
-$(VIRTIO_BLK64_OBJ): src/user64/virtio_blk/main.c src/user64/virtio_blk/capsule.h src/user64/include/mich/syscall.h src/user64/include/mich/driver.h src/user64/include/mich/virtio.h src/user64/include/mich/ring.h src/user64/include/mich/memory.h src/user64/include/mich/event.h src/user64/include/mich/block.h | $(USER64_OBJ_DIR)
+$(VIRTIO_LIB64_OBJ): src/user64/lib/virtio/virtio.c src/user64/lib/virtio/virtio.h src/user64/include/mich/hardware.h src/user64/include/mich/syscall.h | $(USER64_OBJ_DIR)
+	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
+
+$(VIRTIO_BLK64_OBJ): src/user64/virtio_blk/main.c src/user64/virtio_blk/capsule.h src/user64/lib/virtio/virtio.h src/user64/include/mich/syscall.h src/user64/include/mich/driver.h src/user64/include/mich/hardware.h src/user64/include/mich/ring.h src/user64/include/mich/memory.h src/user64/include/mich/event.h src/user64/include/mich/block.h | $(USER64_OBJ_DIR)
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
 $(NVME64_OBJ): src/user64/nvme/main.c src/user64/nvme/capsule.h src/user64/include/mich/syscall.h src/user64/include/mich/driver.h src/user64/include/mich/hardware.h src/user64/include/mich/ring.h src/user64/include/mich/memory.h src/user64/include/mich/event.h src/user64/include/mich/block.h | $(USER64_OBJ_DIR)
@@ -631,8 +635,8 @@ $(TLSPROBE_REAL64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(T
 	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(TLSPROBE_REAL64_OBJ) $(TLS_HANDSHAKE64_OBJ) $(TLS_RECORD64_OBJ) $(TLS_KEYS64_OBJ) $(X509_CHAIN64_OBJ) $(X509_64_OBJ) $(DER64_OBJ) $(X25519_64_OBJ) $(P256_64_OBJ) $(RSA64_OBJ) $(GCM64_OBJ) $(AES64_OBJ) $(SHA256_64_OBJ) $(CRYPTO64_OBJ) $(USER64_OBJ_DIR)/posix.o
 
 
-$(VIRTIO_BLK64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_BLK64_OBJ) src/user64/linker.ld | $(USER64_DIR)
-	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_BLK64_OBJ)
+$(VIRTIO_BLK64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_LIB64_OBJ) $(VIRTIO_BLK64_OBJ) src/user64/linker.ld | $(USER64_DIR)
+	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_LIB64_OBJ) $(VIRTIO_BLK64_OBJ)
 
 # Builds the block-driver capsule on its own, without a boot image.
 user64-virtio-blk: $(VIRTIO_BLK64_ELF)

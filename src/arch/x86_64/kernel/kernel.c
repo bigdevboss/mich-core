@@ -540,18 +540,19 @@ static int manager64_register_virtio_blk(u32 image_id) {
         manifest.matches[index].subclass = 0xFF;
         manifest.matches[index].programming_interface = 0xFF;
     }
-    // One request virtqueue means two MSI-X vectors: the config-change vector
-    // and the queue vector.
-    manifest.request_count = 4;
+    // The capsule opens the transport BARs at runtime through PCI CONTROL and
+    // polls the used ring, so no BAR mapping or MSI-X vectors are granted.
+    manifest.request_count = 3;
     manifest.requests[0].kind = DRIVER_RESOURCE_PCI;
     manifest.requests[0].rights = KRIGHT_READ | KRIGHT_CONTROL;
-    manifest.requests[1].kind = DRIVER_RESOURCE_MSIX_TABLE;
-    manifest.requests[1].rights = KRIGHT_READ | KRIGHT_CONTROL;
-    manifest.requests[2].kind = DRIVER_RESOURCE_MSIX_IRQ;
-    manifest.requests[2].rights = KRIGHT_WAIT | KRIGHT_CONTROL;
-    manifest.requests[2].amount = 2;
-    manifest.requests[3].kind = DRIVER_RESOURCE_BRIDGE;
-    manifest.requests[3].rights = KRIGHT_READ | KRIGHT_WAIT;
+    manifest.requests[1].kind = DRIVER_RESOURCE_DMA;
+    // 2 pages hold the split ring for queue-size 128 with room to grow to 256
+    // (VIRTIO_BLK_VRING_PAGES in capsule.h).
+    manifest.requests[1].amount = 2;
+    manifest.requests[1].limit = 0xFFFFFFFFULL;
+    manifest.requests[1].rights = KRIGHT_READ | KRIGHT_WRITE | KRIGHT_MAP;
+    manifest.requests[2].kind = DRIVER_RESOURCE_BRIDGE;
+    manifest.requests[2].rights = KRIGHT_READ | KRIGHT_WAIT;
     return driver_manager_register(&manifest) > 0 ? 0 : -1;
 }
 
