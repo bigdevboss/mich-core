@@ -101,7 +101,7 @@
 #define BOOT_MODULE_PANIC_TEST (1u << 31)
 #define IOMMU_FAULT_BATCH 8
 /* The primary capsule's sole test ud2; its source location is intentionally fixed. */
-#define VIRTIO_NET_RECOVERY_TEST_RIP 0x100002756ULL
+#define VIRTIO_NET_RECOVERY_TEST_RIP 0x100003620ULL
 
 static const struct driver_manager_recovery_config
     virtio_net_recovery_catalog[] = {
@@ -494,7 +494,10 @@ static int manager64_register_virtio_net(int external_probe, int restart_test,
         manifest.matches[index].subclass = 0;
         manifest.matches[index].programming_interface = 0xFF;
     }
-    manifest.request_count = 4;
+    // The capsule drives the transport in userspace over libvirtio: it opens the
+    // BARs at runtime through PCI CONTROL and DMAs the split rings through a
+    // granted region, while MSI-X stays for interrupt-driven RX/TX wakeups.
+    manifest.request_count = 5;
     manifest.requests[0].kind = DRIVER_RESOURCE_PCI;
     manifest.requests[0].rights = KRIGHT_READ | KRIGHT_CONTROL;
     manifest.requests[1].kind = DRIVER_RESOURCE_MSIX_TABLE;
@@ -504,6 +507,11 @@ static int manager64_register_virtio_net(int external_probe, int restart_test,
     manifest.requests[2].amount = 3;
     manifest.requests[3].kind = DRIVER_RESOURCE_BRIDGE;
     manifest.requests[3].rights = KRIGHT_READ | KRIGHT_WAIT;
+    manifest.requests[4].kind = DRIVER_RESOURCE_DMA;
+    // Two 2-page split rings (RX then TX) back to back (VIRTIO_NET_VRING_PAGES).
+    manifest.requests[4].amount = 4;
+    manifest.requests[4].limit = 0xFFFFFFFFULL;
+    manifest.requests[4].rights = KRIGHT_READ | KRIGHT_WRITE | KRIGHT_MAP;
     if (!recovery_test) return driver_manager_register(&manifest) > 0 ? 0 : -1;
 
     const struct driver_manager_recovery_config *recovery =

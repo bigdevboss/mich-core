@@ -25,6 +25,7 @@
 #define VIRTIO_COMMON_CONFIG_GENERATION 21u
 #define VIRTIO_COMMON_QUEUE_SELECT 22u
 #define VIRTIO_COMMON_QUEUE_SIZE 24u
+#define VIRTIO_COMMON_QUEUE_MSIX 26u
 #define VIRTIO_COMMON_QUEUE_ENABLE 28u
 #define VIRTIO_COMMON_QUEUE_NOTIFY_OFF 30u
 #define VIRTIO_COMMON_QUEUE_DESC 32u
@@ -493,6 +494,20 @@ int virtqueue_collect(struct virtqueue *queue, unsigned long long *token,
     *length = element.length;
     release_chain(queue, head);
     return 1;
+}
+
+int virtqueue_set_msix_vector(struct virtio_device *device,
+                             unsigned int queue_index, unsigned int entry) {
+    // Point the queue at an MSI-X table entry (virtio spec 4.1.4.3 queue_msix).
+    // The kernel programs and unmasks that table slot when the capsule binds the
+    // granted IRQ, so this only selects it; the readback confirms the device
+    // kept the vector rather than rejecting it back to NO_VECTOR.
+    volatile unsigned char *common = device->common.address;
+    write16(common, VIRTIO_COMMON_QUEUE_SELECT, (unsigned short)queue_index);
+    write16(common, VIRTIO_COMMON_QUEUE_MSIX, (unsigned short)entry);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    return read16(common, VIRTIO_COMMON_QUEUE_MSIX) == (unsigned short)entry ?
+        0 : -1;
 }
 
 int virtqueue_kick(struct virtqueue *queue) {

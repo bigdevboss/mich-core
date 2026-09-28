@@ -116,4 +116,10 @@ int virtqueue_collect(struct virtqueue *queue, unsigned long long *token,
 
 int virtqueue_kick(struct virtqueue *queue);
 
+// Route a queue's used-ring notifications to an MSI-X table entry the manifest
+// granted, so a capsule that keeps interrupt-driven wakeups can do so without an
+// in-kernel virtio transport.
+int virtqueue_set_msix_vector(struct virtio_device *device,
+                             unsigned int queue_index, unsigned int entry);
+
 #endif

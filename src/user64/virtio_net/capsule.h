@@ -1,6 +1,8 @@
 #ifndef VIRTIO_NET_CAPSULE_H
 #define VIRTIO_NET_CAPSULE_H
 
+#include <virtio/virtio.h>
+
 #define VIRTIO_NET_STATE_CREATED 0
 #define VIRTIO_NET_STATE_BOOTSTRAPPED 1
 #define VIRTIO_NET_STATE_FEATURES 2
@@ -9,9 +11,27 @@
 #define VIRTIO_NET_STATE_READY 5
 #define VIRTIO_NET_STATE_RUNNING 6
 
-#define VIRTIO_NET_RX_ADDRESS 0x110000000ULL
-#define VIRTIO_NET_TX_ADDRESS 0x110010000ULL
-#define VIRTIO_NET_POOL_ADDRESS 0x110020000ULL
+// Fixed guest virtual addresses in the driver mapping window. The transport maps
+// device BARs into slots at the base (six 0x100000 strides up to 0x110600000), so
+// the ring DMA and the packet pool sit above that, none overlapping.
+#define VIRTIO_NET_BAR_WINDOW 0x110000000ULL
+#define VIRTIO_NET_VRING_ADDRESS 0x110800000ULL
+#define VIRTIO_NET_POOL_ADDRESS 0x110900000ULL
+
+// The split ring for queue-size 128 fits in one page; two pages per queue leave
+// room to grow to 256, and RX then TX sit back to back in one DMA grant.
+#define VIRTIO_NET_QUEUE_SIZE 128u
+#define VIRTIO_NET_VRING_PAGES 2u
+
+// MSI-X table entries the manifest grants (config 0, RX 1, TX 2); the capsule
+// points each queue at its entry now that no in-kernel transport does.
+#define VIRTIO_NET_RX_MSIX_ENTRY 1u
+#define VIRTIO_NET_TX_MSIX_ENTRY 2u
+
+// virtio spec 5.1.3 feature bits this capsule acts on.
+#define VIRTIO_NET_FEATURE_MAC (1ULL << 5)
+#define VIRTIO_NET_FEATURE_STATUS (1ULL << 16)
+
 #define VIRTIO_NET_HEADER_SIZE 12
 #define VIRTIO_NET_RX_POSTED 16
 #define VIRTIO_NET_TX_OUTSTANDING 16
@@ -32,11 +52,11 @@
 struct virtio_net_capsule {
     unsigned int state;
     unsigned int pci_handle;
-    unsigned int device_handle;
-    unsigned int rx_handle;
-    unsigned int tx_handle;
-    unsigned int rx_size;
-    unsigned int tx_size;
+    unsigned int dma_handle;
+    unsigned long long dma_physical;
+    struct virtio_device device;
+    struct virtqueue rx_queue;
+    struct virtqueue tx_queue;
     unsigned int vnic_handle;
     unsigned int pool_handle;
     unsigned int interface_handle;
