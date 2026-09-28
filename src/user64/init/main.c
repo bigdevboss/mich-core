@@ -15,7 +15,6 @@
 #include <mich/wait.h>
 #include <mich/net.h>
 #include <mich/socket.h>
-#include <mich/virtio.h>
 #include <mich/vfs.h>
 #include <mich/firmware.h>
 #include <mich/block.h>

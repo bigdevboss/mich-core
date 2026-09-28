@@ -28,8 +28,7 @@
 #include "vtd64.h"
 #include "amd_iommu64.h"
 #include "pci64.h"
-#include "virtio_pci.h"
-#include "virtio_abi.h"
+
 #include "platform64.h"
 #include "driver.h"
 #include "driver_supervisor.h"
@@ -101,7 +100,7 @@
 #define BOOT_MODULE_PANIC_TEST (1u << 31)
 #define IOMMU_FAULT_BATCH 8
 /* The primary capsule's sole test ud2; its source location is intentionally fixed. */
-#define VIRTIO_NET_RECOVERY_TEST_RIP 0x100003620ULL
+#define VIRTIO_NET_RECOVERY_TEST_RIP 0x1000035a0ULL
 
 static const struct driver_manager_recovery_config
     virtio_net_recovery_catalog[] = {
@@ -715,7 +714,7 @@ static int driver_live_recovery_prepare(void) {
     manifest.argument = DRIVER_LIVE_RECOVERY_PRIMARY_ARGUMENT;
     manifest.match_count = 1;
     manifest.matches[0].vendor_id = 0x1AF4;
-    manifest.matches[0].device_id = VIRTIO_PCI_DEVICE_BLK;
+    manifest.matches[0].device_id = 0x1042;
     manifest.matches[0].class_code = 0xFF;
     manifest.matches[0].subclass = 0xFF;
     manifest.matches[0].programming_interface = 0xFF;
@@ -745,7 +744,7 @@ static int driver_live_recovery_arm(void) {
         struct kernel_object *candidate = pci64_object(index);
         const struct pci_resource *pci = pci_resource_get(candidate);
         if (pci && pci->vendor_id == 0x1AF4 &&
-            pci->device_id == VIRTIO_PCI_DEVICE_BLK) {
+            pci->device_id == 0x1042) {
             device = candidate;
             break;
         }
@@ -1908,7 +1907,6 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     endpoint_init();
     bridge_init();
     vector64_init();
-    virtio_pci_init();
     ipc64_init();
     if (acpi64_init()) KERNEL_PANIC("ACPI discovery");
     // After ACPI because the century register index lives in the FADT, and
@@ -2032,12 +2030,10 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     if (tests64_run_smp()) KERNEL_PANIC("independent SMP tests");
     int msi_test;
     int msix_test;
-    int virtio_test;
     int destructive = (init_module->flags & BOOT_MODULE_HARDWARE_TEST) != 0;
     if (destructive)
         serial64_write("Mich x86_64: hardware destructive test profile\n");
-    if (tests64_run_hardware(
-            &test_env, destructive, &msi_test, &msix_test, &virtio_test))
+    if (tests64_run_hardware(&test_env, destructive, &msi_test, &msix_test))
         KERNEL_PANIC("independent hardware tests");
 #endif
     int virtio_net_restart_test =
@@ -2099,7 +2095,7 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     if (!bench_boot && !(init_module->flags & BOOT_MODULE_UNIT_TEST) &&
         driver_live_recovery_arm())
         KERNEL_PANIC("driver live recovery arm");
-    if (tests64_run_irq(&test_env, msi_test, msix_test, virtio_test))
+    if (tests64_run_irq(&test_env, msi_test, msix_test))
         KERNEL_PANIC("independent IRQ tests");
     if (!bench_boot && !(init_module->flags & BOOT_MODULE_UNIT_TEST)) {
         // Keep the lifecycle probe out of the init1/init2 handshake. A bench

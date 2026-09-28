@@ -99,19 +99,6 @@ global mich_net_interface_create
 global mich_net_interface_set_link
 global mich_net_interface_get_info
 global mich_net_interface_revoke
-global mich_virtio_open
-global mich_virtio_negotiate
-global mich_virtqueue_create
-global mich_virtqueue_map
-global mich_virtqueue_notify
-global mich_virtio_driver_ok
-global mich_virtio_read_config
-global mich_virtqueue_chain_allocate
-global mich_virtqueue_set_packet
-global mich_virtqueue_set_region
-global mich_virtqueue_publish
-global mich_virtqueue_collect
-global mich_virtqueue_chain_release
 global mich_net_interface_driver_acquire_rx
 global mich_net_interface_driver_receive
 global mich_net_interface_driver_dequeue_tx
@@ -126,8 +113,6 @@ global mich_net_interface_send_echo
 global mich_net_interface_echo_replies
 global mich_net_interface_send_udp_probe
 global mich_net_interface_poll_udp_probe
-global mich_virtqueue_set_msix
-global mich_virtqueue_collect_batch
 global mich_net_interface_ipv6_start
 global mich_net_interface_ipv6_complete_dad
 global mich_net_interface_ipv6_get_info
@@ -276,19 +261,6 @@ global mich_pci_set_command
 %define SYS_NET_INTERFACE_SET_LINK 103
 %define SYS_NET_INTERFACE_GET_INFO 104
 %define SYS_NET_INTERFACE_REVOKE 105
-%define SYS_VIRTIO_OPEN 106
-%define SYS_VIRTIO_NEGOTIATE 107
-%define SYS_VIRTQUEUE_CREATE 108
-%define SYS_VIRTQUEUE_MAP 109
-%define SYS_VIRTQUEUE_NOTIFY 110
-%define SYS_VIRTIO_DRIVER_OK 111
-%define SYS_VIRTIO_READ_CONFIG 112
-%define SYS_VIRTQUEUE_CHAIN_ALLOCATE 113
-%define SYS_VIRTQUEUE_SET_PACKET 114
-%define SYS_VIRTQUEUE_SET_REGION 187
-%define SYS_VIRTQUEUE_PUBLISH 115
-%define SYS_VIRTQUEUE_COLLECT 116
-%define SYS_VIRTQUEUE_CHAIN_RELEASE 117
 %define SYS_NET_INTERFACE_DRIVER_ACQUIRE_RX 118
 %define SYS_NET_INTERFACE_DRIVER_RECEIVE 119
 %define SYS_NET_INTERFACE_DRIVER_DEQUEUE_TX 120
@@ -299,8 +271,6 @@ global mich_pci_set_command
 %define SYS_NET_INTERFACE_ECHO_REPLIES 125
 %define SYS_NET_INTERFACE_SEND_UDP_PROBE 126
 %define SYS_NET_INTERFACE_POLL_UDP_PROBE 127
-%define SYS_VIRTQUEUE_SET_MSIX 128
-%define SYS_VIRTQUEUE_COLLECT_BATCH 129
 %define SYS_NET_INTERFACE_IPV6_START 130
 %define SYS_NET_INTERFACE_IPV6_COMPLETE_DAD 131
 %define SYS_NET_INTERFACE_IPV6_GET_INFO 132
@@ -867,71 +837,6 @@ mich_net_interface_revoke:
     syscall
     ret
 
-mich_virtio_open:
-    mov eax, SYS_VIRTIO_OPEN
-    syscall
-    ret
-
-mich_virtio_negotiate:
-    mov eax, SYS_VIRTIO_NEGOTIATE
-    syscall
-    ret
-
-mich_virtqueue_create:
-    mov eax, SYS_VIRTQUEUE_CREATE
-    syscall
-    ret
-
-mich_virtqueue_map:
-    mov eax, SYS_VIRTQUEUE_MAP
-    syscall
-    ret
-
-mich_virtqueue_notify:
-    mov eax, SYS_VIRTQUEUE_NOTIFY
-    syscall
-    ret
-
-mich_virtio_driver_ok:
-    mov eax, SYS_VIRTIO_DRIVER_OK
-    syscall
-    ret
-
-mich_virtio_read_config:
-    mov eax, SYS_VIRTIO_READ_CONFIG
-    syscall
-    ret
-
-mich_virtqueue_chain_allocate:
-    mov eax, SYS_VIRTQUEUE_CHAIN_ALLOCATE
-    syscall
-    ret
-
-mich_virtqueue_set_packet:
-    mov eax, SYS_VIRTQUEUE_SET_PACKET
-    syscall
-    ret
-
-mich_virtqueue_set_region:
-    mov eax, SYS_VIRTQUEUE_SET_REGION
-    syscall
-    ret
-
-mich_virtqueue_publish:
-    mov eax, SYS_VIRTQUEUE_PUBLISH
-    syscall
-    ret
-
-mich_virtqueue_collect:
-    mov eax, SYS_VIRTQUEUE_COLLECT
-    syscall
-    ret
-
-mich_virtqueue_chain_release:
-    mov eax, SYS_VIRTQUEUE_CHAIN_RELEASE
-    syscall
-    ret
-
 mich_net_interface_driver_acquire_rx:
     mov eax, SYS_NET_INTERFACE_DRIVER_ACQUIRE_RX
     syscall
@@ -999,16 +904,6 @@ mich_net_interface_send_udp_probe:
 
 mich_net_interface_poll_udp_probe:
     mov eax, SYS_NET_INTERFACE_POLL_UDP_PROBE
-    syscall
-    ret
-
-mich_virtqueue_set_msix:
-    mov eax, SYS_VIRTQUEUE_SET_MSIX
-    syscall
-    ret
-
-mich_virtqueue_collect_batch:
-    mov eax, SYS_VIRTQUEUE_COLLECT_BATCH
     syscall
     ret
 
