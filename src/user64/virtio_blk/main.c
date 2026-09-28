@@ -53,6 +53,36 @@ static int bootstrap(struct virtio_blk_capsule *capsule) {
     return 0;
 }
 
+static void report_hex(const char *label, unsigned long long value) {
+    char buffer[80];
+    unsigned int pos = 0;
+    for (unsigned int index = 0; label[index] && pos < 60u; index++)
+        buffer[pos++] = label[index];
+    buffer[pos++] = '0';
+    buffer[pos++] = 'x';
+    for (int shift = 60; shift >= 0; shift -= 4) {
+        unsigned int nibble = (unsigned int)((value >> shift) & 0xFu);
+        buffer[pos++] =
+            nibble < 10u ? (char)('0' + nibble) : (char)('a' + nibble - 10u);
+    }
+    buffer[pos++] = '\n';
+    buffer[pos] = 0;
+    mich_write(buffer);
+}
+
+// Dump the raw BAR the transport could not open, so a mapping refusal shows the
+// device geometry (I/O vs memory, 64-bit, assigned address) that caused it.
+static void report_bar(struct virtio_blk_capsule *capsule) {
+    unsigned int bar = capsule->device.setup_bar;
+    if (bar >= 6u) return;
+    long low = mich_pci_config_read32(capsule->pci_handle, 0x10u + bar * 4u);
+    long high = bar < 5u ?
+        mich_pci_config_read32(capsule->pci_handle, 0x10u + bar * 4u + 4u) : 0;
+    report_hex("Mich virtio-blk: bar index ", bar);
+    report_hex("Mich virtio-blk: bar low ", (unsigned long long)(unsigned long)low);
+    report_hex("Mich virtio-blk: bar high ", (unsigned long long)(unsigned long)high);
+}
+
 // Name the transport bring-up fault so a failed bind reports the exact step
 // instead of vanishing silently before the first pass line.
 static const char *setup_reason(unsigned int error) {
@@ -82,6 +112,10 @@ static int bring_up(struct virtio_blk_capsule *capsule) {
     if (virtio_device_setup(&capsule->device, capsule->pci_handle,
                             VIRTIO_BLK_BAR_WINDOW)) {
         mich_write(setup_reason(capsule->device.setup_error));
+        if (capsule->device.setup_error == VIRTIO_SETUP_BAR_OPEN ||
+            capsule->device.setup_error == VIRTIO_SETUP_BAR_TOO_LARGE ||
+            capsule->device.setup_error == VIRTIO_SETUP_BAR_MAP)
+            report_bar(capsule);
         return -1;
     }
     unsigned long long wanted = VIRTIO_FEATURE_VERSION_1 |

@@ -45,6 +45,7 @@ struct virtio_device {
     unsigned int notify_multiplier;
     unsigned long long driver_features;
     unsigned int setup_error;
+    unsigned int setup_bar;
 };
 
 // The chain bookkeeping is indexed by descriptor slot, so the arrays are sized to

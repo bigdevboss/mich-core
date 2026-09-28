@@ -89,6 +89,7 @@ static int map_region(struct virtio_device *device, unsigned int bar,
         device->setup_error = VIRTIO_SETUP_BAD_CAPABILITY;
         return -1;
     }
+    device->setup_bar = bar;
     unsigned long long window =
         device->bar_window_base + (unsigned long long)bar * VIRTIO_BAR_STRIDE;
     if (!(device->mapped_bars & (1ULL << bar))) {
