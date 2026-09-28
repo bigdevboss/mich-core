@@ -176,7 +176,6 @@ global mich_block_collect
 global mich_block_revoke
 global mich_block_service
 global mich_block_interface_create
-global mich_virtio_blk_open
 global mich_wall_clock
 global mich_ticks
 global mich_pci_config_read8
@@ -351,7 +350,6 @@ global mich_pci_set_command
 %define SYS_BLOCK_COLLECT 182
 %define SYS_BLOCK_REVOKE 183
 %define SYS_BLOCK_SERVICE 184
-%define SYS_VIRTIO_BLK_OPEN 185
 %define SYS_BLOCK_INTERFACE_CREATE 186
 %define SYS_DRIVER_STOP_ACK 169
 %define SYS_NET_INTERFACE_DRIVER_ACQUIRE_RX_BATCH 170
@@ -1251,11 +1249,6 @@ mich_block_service:
 
 mich_block_interface_create:
     mov eax, SYS_BLOCK_INTERFACE_CREATE
-    syscall
-    ret
-
-mich_virtio_blk_open:
-    mov eax, SYS_VIRTIO_BLK_OPEN
     syscall
     ret
 

@@ -47,7 +47,6 @@ int test_tls_records64(void);
 int test_tls_handshake64(void);
 int test_blockfs64(void);
 int test_blockfs_pages64(void);
-int test_virtio_blk64(void);
 int test_nvme64(const struct test64_env *env);
 int test_object64(struct task *owner, struct task *target);
 int test_resource64(void);
