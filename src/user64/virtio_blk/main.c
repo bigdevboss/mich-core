@@ -53,14 +53,43 @@ static int bootstrap(struct virtio_blk_capsule *capsule) {
     return 0;
 }
 
+// Name the transport bring-up fault so a failed bind reports the exact step
+// instead of vanishing silently before the first pass line.
+static const char *setup_reason(unsigned int error) {
+    switch (error) {
+    case VIRTIO_SETUP_NO_CAPABILITIES:
+        return "Mich virtio-blk: no PCI capability list\n";
+    case VIRTIO_SETUP_BAD_CAPABILITY:
+        return "Mich virtio-blk: malformed virtio capability\n";
+    case VIRTIO_SETUP_BAR_OPEN:
+        return "Mich virtio-blk: BAR open denied\n";
+    case VIRTIO_SETUP_BAR_TOO_LARGE:
+        return "Mich virtio-blk: BAR exceeds window stride\n";
+    case VIRTIO_SETUP_BAR_MAP:
+        return "Mich virtio-blk: BAR mmio map failed\n";
+    case VIRTIO_SETUP_REGION_RANGE:
+        return "Mich virtio-blk: capability region out of range\n";
+    case VIRTIO_SETUP_MISSING_REGION:
+        return "Mich virtio-blk: required virtio region missing\n";
+    case VIRTIO_SETUP_COMMAND:
+        return "Mich virtio-blk: enabling bus master failed\n";
+    default:
+        return "Mich virtio-blk: transport setup failed\n";
+    }
+}
+
 static int bring_up(struct virtio_blk_capsule *capsule) {
     if (virtio_device_setup(&capsule->device, capsule->pci_handle,
-                            VIRTIO_BLK_BAR_WINDOW))
+                            VIRTIO_BLK_BAR_WINDOW)) {
+        mich_write(setup_reason(capsule->device.setup_error));
         return -1;
+    }
     unsigned long long wanted = VIRTIO_FEATURE_VERSION_1 |
                                 VIRTIO_BLK_FEATURE_RO | VIRTIO_BLK_FEATURE_BLK_SIZE;
-    if (virtio_negotiate(&capsule->device, wanted, VIRTIO_FEATURE_VERSION_1))
+    if (virtio_negotiate(&capsule->device, wanted, VIRTIO_FEATURE_VERSION_1)) {
+        mich_write("Mich virtio-blk: feature negotiation failed\n");
         return -1;
+    }
     capsule->negotiated_features = capsule->device.driver_features;
     capsule->read_only =
         (capsule->device.driver_features & VIRTIO_BLK_FEATURE_RO) ? 1u : 0u;
@@ -72,11 +101,17 @@ static int bring_up(struct virtio_blk_capsule *capsule) {
         config[index] = 0;
     unsigned int length =
         (capsule->negotiated_features & VIRTIO_BLK_FEATURE_BLK_SIZE) ? 24u : 8u;
-    if (virtio_read_config(&capsule->device, 0, config, length)) return -1;
+    if (virtio_read_config(&capsule->device, 0, config, length)) {
+        mich_write("Mich virtio-blk: device config read failed\n");
+        return -1;
+    }
     unsigned long long capacity = 0;
     for (unsigned int index = 0; index < 8u; index++)
         capacity |= (unsigned long long)config[index] << (index * 8u);
-    if (!capacity) return -1;
+    if (!capacity) {
+        mich_write("Mich virtio-blk: device reported zero capacity\n");
+        return -1;
+    }
     capsule->capacity_sectors = capacity;
     if (capsule->negotiated_features & VIRTIO_BLK_FEATURE_BLK_SIZE) {
         unsigned int block_size = (unsigned int)config[20] |
@@ -84,7 +119,10 @@ static int bring_up(struct virtio_blk_capsule *capsule) {
                                   ((unsigned int)config[22] << 16) |
                                   ((unsigned int)config[23] << 24);
         // The block layer and ABI are fixed at 512-byte sectors.
-        if (block_size != MICH_BLOCK_SECTOR_SIZE) return -1;
+        if (block_size != MICH_BLOCK_SECTOR_SIZE) {
+            mich_write("Mich virtio-blk: unsupported logical block size\n");
+            return -1;
+        }
     }
     return 0;
 }
@@ -303,13 +341,29 @@ int main(unsigned long long argument) {
     unsigned char *bytes = (unsigned char *)&capsule;
     for (unsigned int index = 0; index < sizeof(capsule); index++)
         bytes[index] = 0;
-    if ((unsigned int)argument != VIRTIO_BLK_MAGIC || bootstrap(&capsule))
+    mich_write("Mich virtio-blk: capsule entry\n");
+    if ((unsigned int)argument != VIRTIO_BLK_MAGIC) {
+        mich_write("Mich virtio-blk: bad manifest argument\n");
         return 1;
+    }
+    if (bootstrap(&capsule)) {
+        mich_write("Mich virtio-blk: resource bootstrap failed\n");
+        return 1;
+    }
     if (bring_up(&capsule)) return 2;
     mich_write("Mich virtio-blk: bootstrap pass\n");
-    if (setup_transport(&capsule)) return 3;
-    if (start_queue(&capsule)) return 4;
-    if (self_test(&capsule)) return 5;
+    if (setup_transport(&capsule)) {
+        mich_write("Mich virtio-blk: block transport setup failed\n");
+        return 3;
+    }
+    if (start_queue(&capsule)) {
+        mich_write("Mich virtio-blk: virtqueue setup failed\n");
+        return 4;
+    }
+    if (self_test(&capsule)) {
+        mich_write("Mich virtio-blk: self-test round-trip failed\n");
+        return 5;
+    }
     mich_write("Mich virtio-blk: serve pass\n");
     serve_loop(&capsule);
     return 6;

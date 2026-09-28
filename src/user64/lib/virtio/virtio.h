@@ -17,6 +17,18 @@
 #define VIRTQUEUE_DESC_NEXT 1u
 #define VIRTQUEUE_DESC_WRITE 2u
 
+// virtio_device_setup records the failing step here before it returns nonzero, so
+// a capsule can report the precise bring-up fault instead of a bare failure.
+#define VIRTIO_SETUP_OK 0u
+#define VIRTIO_SETUP_NO_CAPABILITIES 1u
+#define VIRTIO_SETUP_BAD_CAPABILITY 2u
+#define VIRTIO_SETUP_BAR_OPEN 3u
+#define VIRTIO_SETUP_BAR_TOO_LARGE 4u
+#define VIRTIO_SETUP_BAR_MAP 5u
+#define VIRTIO_SETUP_REGION_RANGE 6u
+#define VIRTIO_SETUP_MISSING_REGION 7u
+#define VIRTIO_SETUP_COMMAND 8u
+
 struct virtio_region {
     volatile unsigned char *address;
     unsigned int length;
@@ -32,6 +44,7 @@ struct virtio_device {
     struct virtio_region device;
     unsigned int notify_multiplier;
     unsigned long long driver_features;
+    unsigned int setup_error;
 };
 
 // The chain bookkeeping is indexed by descriptor slot, so the arrays are sized to

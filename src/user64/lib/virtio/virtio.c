@@ -85,23 +85,36 @@ static volatile struct vring_desc *descriptors(struct virtqueue *queue) {
 static int map_region(struct virtio_device *device, unsigned int bar,
                       unsigned int offset, unsigned int length,
                       long long *bar_length, struct virtio_region *region) {
-    if (bar >= 6u || !length) return -1;
+    if (bar >= 6u || !length) {
+        device->setup_error = VIRTIO_SETUP_BAD_CAPABILITY;
+        return -1;
+    }
     unsigned long long window =
         device->bar_window_base + (unsigned long long)bar * VIRTIO_BAR_STRIDE;
     if (!(device->mapped_bars & (1ULL << bar))) {
         int handle = mich_pci_bar_open(device->pci_handle, bar);
-        if (handle <= 0) return -1;
+        if (handle <= 0) {
+            device->setup_error = VIRTIO_SETUP_BAR_OPEN;
+            return -1;
+        }
         long long resource_length = mich_resource_length((unsigned int)handle);
         if (resource_length <= 0 ||
-            (unsigned long long)resource_length > VIRTIO_BAR_STRIDE ||
-            mich_mmio_map((unsigned int)handle, window))
+            (unsigned long long)resource_length > VIRTIO_BAR_STRIDE) {
+            device->setup_error = VIRTIO_SETUP_BAR_TOO_LARGE;
             return -1;
+        }
+        if (mich_mmio_map((unsigned int)handle, window)) {
+            device->setup_error = VIRTIO_SETUP_BAR_MAP;
+            return -1;
+        }
         bar_length[bar] = resource_length;
         device->mapped_bars |= (1ULL << bar);
     }
     if (bar_length[bar] < 0 || offset > (unsigned long long)bar_length[bar] ||
-        length > (unsigned long long)bar_length[bar] - offset)
+        length > (unsigned long long)bar_length[bar] - offset) {
+        device->setup_error = VIRTIO_SETUP_REGION_RANGE;
         return -1;
+    }
     region->address = (volatile unsigned char *)(window + offset);
     region->length = length;
     return 0;
@@ -117,8 +130,10 @@ int virtio_device_setup(struct virtio_device *device, unsigned int pci_handle,
 
     long status = mich_pci_config_read16(pci_handle, 0x06);
     long pointer = mich_pci_config_read8(pci_handle, 0x34);
-    if (status < 0 || !((unsigned long)status & 0x10) || pointer < 0)
+    if (status < 0 || !((unsigned long)status & 0x10) || pointer < 0) {
+        device->setup_error = VIRTIO_SETUP_NO_CAPABILITIES;
         return -1;
+    }
 
     long long bar_length[6];
     for (unsigned int index = 0; index < 6u; index++) bar_length[index] = -1;
@@ -128,54 +143,77 @@ int virtio_device_setup(struct virtio_device *device, unsigned int pci_handle,
     unsigned int cursor = (unsigned int)pointer & 0xFFu;
     for (unsigned int depth = 0; cursor && depth < 48u; depth++) {
         if (cursor < 0x40u || cursor > 0xFCu || (cursor & 3u) ||
-            (seen[cursor / 8u] & (unsigned char)(1u << (cursor % 8u))))
+            (seen[cursor / 8u] & (unsigned char)(1u << (cursor % 8u)))) {
+            device->setup_error = VIRTIO_SETUP_BAD_CAPABILITY;
             return -1;
+        }
         seen[cursor / 8u] |= (unsigned char)(1u << (cursor % 8u));
         long id = mich_pci_config_read8(pci_handle, cursor);
         long next = mich_pci_config_read8(pci_handle, cursor + 1u);
-        if (id < 0 || next < 0) return -1;
+        if (id < 0 || next < 0) {
+            device->setup_error = VIRTIO_SETUP_BAD_CAPABILITY;
+            return -1;
+        }
         if (id == VIRTIO_CAP_VENDOR) {
-            if (cursor > 0xECu) return -1;
+            if (cursor > 0xECu) {
+                device->setup_error = VIRTIO_SETUP_BAD_CAPABILITY;
+                return -1;
+            }
             long cap_length = mich_pci_config_read8(pci_handle, cursor + 2u);
             long cfg_type = mich_pci_config_read8(pci_handle, cursor + 3u);
             long bar = mich_pci_config_read8(pci_handle, cursor + 4u);
             long offset = mich_pci_config_read32(pci_handle, cursor + 8u);
             long length = mich_pci_config_read32(pci_handle, cursor + 12u);
             if (cap_length < 16 || cursor + (unsigned int)cap_length > 256u ||
-                cfg_type < 0 || bar < 0 || offset < 0 || length < 0)
+                cfg_type < 0 || bar < 0 || offset < 0 || length < 0) {
+                device->setup_error = VIRTIO_SETUP_BAD_CAPABILITY;
                 return -1;
+            }
             struct virtio_region *region = 0;
             if (cfg_type == VIRTIO_CAP_COMMON) region = &device->common;
             if (cfg_type == VIRTIO_CAP_NOTIFY) region = &device->notify;
             if (cfg_type == VIRTIO_CAP_ISR) region = &device->isr;
             if (cfg_type == VIRTIO_CAP_DEVICE) region = &device->device;
             if (region) {
-                if (region->address ||
-                    map_region(device, (unsigned int)bar, (unsigned int)offset,
+                if (region->address) {
+                    device->setup_error = VIRTIO_SETUP_BAD_CAPABILITY;
+                    return -1;
+                }
+                if (map_region(device, (unsigned int)bar, (unsigned int)offset,
                                (unsigned int)length, bar_length, region))
                     return -1;
                 if (cfg_type == VIRTIO_CAP_NOTIFY) {
                     long multiplier =
                         mich_pci_config_read32(pci_handle, cursor + 16u);
-                    if (cap_length < 20 || multiplier < 0) return -1;
+                    if (cap_length < 20 || multiplier < 0) {
+                        device->setup_error = VIRTIO_SETUP_BAD_CAPABILITY;
+                        return -1;
+                    }
                     device->notify_multiplier = (unsigned int)multiplier;
                 }
             }
         }
-        if (next & 3) return -1;
+        if (next & 3) {
+            device->setup_error = VIRTIO_SETUP_BAD_CAPABILITY;
+            return -1;
+        }
         cursor = (unsigned int)next;
     }
     if (!device->common.address || device->common.length < 56u ||
         !device->notify.address || device->notify.length < 2u ||
-        !device->isr.address || device->isr.length < 1u)
+        !device->isr.address || device->isr.length < 1u) {
+        device->setup_error = VIRTIO_SETUP_MISSING_REGION;
         return -1;
+    }
 
     // Enable memory space and bus mastering so the device can reach the ring and
     // buffer physical addresses the capsule programs.
     long command = mich_pci_config_read16(pci_handle, 4);
     if (command < 0 ||
-        mich_pci_set_command(pci_handle, 4, (unsigned int)command | 6u))
+        mich_pci_set_command(pci_handle, 4, (unsigned int)command | 6u)) {
+        device->setup_error = VIRTIO_SETUP_COMMAND;
         return -1;
+    }
     return 0;
 }
 
