@@ -1,6 +1,7 @@
 #include <mich/syscall.h>
 #include <mich/driver.h>
-#include <mich/virtio.h>
+#include <virtio/virtio.h>
+#include <mich/hardware.h>
 #include <mich/net.h>
 #include <mich/net_interface.h>
 #include <mich/bridge.h>
@@ -9,10 +10,15 @@
 #define SAFE_VIRTIO_HEADER_SIZE 12
 #define SAFE_RX_POSTED 16
 #define SAFE_TX_OUTSTANDING 16
-#define SAFE_QUEUE_SIZE 256
-#define SAFE_RX_ADDRESS 0x110000000ULL
-#define SAFE_TX_ADDRESS 0x110010000ULL
-#define SAFE_POOL_ADDRESS 0x110020000ULL
+#define SAFE_QUEUE_SIZE 128u
+#define SAFE_VRING_PAGES 2u
+#define SAFE_BAR_WINDOW 0x110000000ULL
+#define SAFE_VRING_ADDRESS 0x110800000ULL
+#define SAFE_POOL_ADDRESS 0x110900000ULL
+#define SAFE_RX_MSIX_ENTRY 1u
+#define SAFE_TX_MSIX_ENTRY 2u
+#define SAFE_FEATURE_MAC (1ULL << 5)
+#define SAFE_FEATURE_STATUS (1ULL << 16)
 #define SAFE_QEMU_ADDRESS 0x0A00020Fu
 #define SAFE_QEMU_NETMASK 0xFFFFFF00u
 #define SAFE_QEMU_GATEWAY 0x0A000202u
@@ -20,15 +26,16 @@
 
 struct virtio_net_safe {
     unsigned int pci_handle;
-    unsigned int device_handle;
-    unsigned int rx_handle;
-    unsigned int tx_handle;
+    unsigned int dma_handle;
+    unsigned long long dma_physical;
+    struct virtio_device device;
+    struct virtqueue rx_queue;
+    struct virtqueue tx_queue;
     unsigned int rx_irq_handle;
     unsigned int tx_irq_handle;
     unsigned int bridge_handle;
     unsigned int interface_handle;
-    unsigned int rx_size;
-    unsigned int tx_size;
+    unsigned int pool_handle;
     unsigned int tcp_started;
     unsigned long long negotiated_features;
     unsigned short link_status;
@@ -56,90 +63,56 @@ static int safe_bootstrap(struct virtio_net_safe *safe) {
         if (resource->kind == MICH_DRIVER_RESOURCE_MSIX_IRQ &&
             resource->index == 2)
             safe->tx_irq_handle = resource->handle;
+        if (resource->kind == MICH_DRIVER_RESOURCE_DMA) {
+            safe->dma_handle = resource->handle;
+            safe->dma_physical = resource->address;
+        }
         if (resource->kind == MICH_DRIVER_RESOURCE_BRIDGE)
             safe->bridge_handle = resource->handle;
     }
-    if (!safe->pci_handle || !safe->bridge_handle || !safe->rx_irq_handle ||
-        !safe->tx_irq_handle)
-        return -1;
-    safe->device_handle = mich_virtio_open(safe->pci_handle);
-    return (int)safe->device_handle > 0 ? 0 : -1;
+    return safe->pci_handle && safe->bridge_handle && safe->dma_handle &&
+        safe->rx_irq_handle && safe->tx_irq_handle ? 0 : -1;
 }
 
 static int safe_negotiate(struct virtio_net_safe *safe) {
-    struct mich_virtio_feature_request request;
-    request.wanted = MICH_VIRTIO_FEATURE_VERSION_1 |
-                     MICH_VIRTIO_NET_FEATURE_MAC |
-                     MICH_VIRTIO_NET_FEATURE_STATUS;
-    request.required = MICH_VIRTIO_FEATURE_VERSION_1 |
-                       MICH_VIRTIO_NET_FEATURE_MAC;
-    request.device_features = 0;
-    request.driver_features = 0;
-    if (mich_virtio_negotiate(safe->device_handle, &request) ||
-        (request.driver_features & request.required) != request.required)
+    if (virtio_device_setup(&safe->device, safe->pci_handle, SAFE_BAR_WINDOW))
         return -1;
-    safe->negotiated_features = request.driver_features;
+    unsigned long long wanted = VIRTIO_FEATURE_VERSION_1 |
+                                SAFE_FEATURE_MAC | SAFE_FEATURE_STATUS;
+    unsigned long long required = VIRTIO_FEATURE_VERSION_1 | SAFE_FEATURE_MAC;
+    if (virtio_negotiate(&safe->device, wanted, required)) return -1;
+    safe->negotiated_features = safe->device.driver_features;
     return 0;
 }
 
 static int safe_read_config(struct virtio_net_safe *safe) {
-    struct mich_virtio_config_request request;
-    request.offset = 0;
-    request.length = safe->negotiated_features &
-                     MICH_VIRTIO_NET_FEATURE_STATUS ? 8 : 6;
-    request.generation = 0;
-    request.reserved = 0;
-    for (unsigned int index = 0; index < MICH_VIRTIO_CONFIG_DATA_MAX; index++)
-        request.data[index] = 0;
-    if (mich_virtio_read_config(safe->device_handle, &request)) return -1;
+    unsigned int length =
+        safe->negotiated_features & SAFE_FEATURE_STATUS ? 8 : 6;
+    unsigned char data[8];
+    for (unsigned int index = 0; index < sizeof(data); index++) data[index] = 0;
+    if (virtio_read_config(&safe->device, 0, data, length)) return -1;
     unsigned int nonzero = 0;
     for (unsigned int index = 0; index < 6; index++) {
-        safe->mac[index] = request.data[index];
-        nonzero |= request.data[index];
+        safe->mac[index] = data[index];
+        nonzero |= data[index];
     }
     if (!nonzero) return -1;
-    safe->link_status = safe->negotiated_features &
-        MICH_VIRTIO_NET_FEATURE_STATUS ?
-        (unsigned short)request.data[6] |
-        ((unsigned short)request.data[7] << 8) : 1;
-    return 0;
-}
-
-static int safe_create_queue(struct virtio_net_safe *safe,
-                             unsigned short index, unsigned long long address,
-                             unsigned int *handle, unsigned int *size) {
-    struct mich_virtqueue_create_request request;
-    request.device_handle = safe->device_handle;
-    request.queue_index = index;
-    request.queue_size = SAFE_QUEUE_SIZE;
-    request.queue_handle = 0;
-    request.descriptor_offset = 0;
-    request.available_offset = 0;
-    request.used_offset = 0;
-    request.total_bytes = 0;
-    if (mich_virtqueue_create(&request) || !request.queue_handle ||
-        !request.queue_size || request.queue_size > SAFE_QUEUE_SIZE ||
-        (request.queue_size & (request.queue_size - 1)) ||
-        (request.descriptor_offset & 15) || (request.available_offset & 1) ||
-        (request.used_offset & 3) ||
-        request.descriptor_offset >= request.available_offset ||
-        request.available_offset >= request.used_offset ||
-        request.total_bytes <= request.used_offset ||
-        mich_virtqueue_map(request.queue_handle, address))
-        return -1;
-    *handle = request.queue_handle;
-    *size = request.queue_size;
+    safe->link_status = safe->negotiated_features & SAFE_FEATURE_STATUS ?
+        (unsigned short)data[6] | ((unsigned short)data[7] << 8) : 1;
     return 0;
 }
 
 static int safe_setup_queues(struct virtio_net_safe *safe) {
-    if (safe_create_queue(safe, 0, SAFE_RX_ADDRESS,
-                          &safe->rx_handle, &safe->rx_size) ||
-        safe_create_queue(safe, 1, SAFE_TX_ADDRESS,
-                          &safe->tx_handle, &safe->tx_size))
+    unsigned long long stride = (unsigned long long)SAFE_VRING_PAGES * 4096u;
+    if (mich_dma_map(safe->dma_handle, SAFE_VRING_ADDRESS) ||
+        virtqueue_setup(&safe->device, &safe->rx_queue, 0, SAFE_QUEUE_SIZE,
+                        SAFE_VRING_ADDRESS, safe->dma_physical, stride) ||
+        virtqueue_setup(&safe->device, &safe->tx_queue, 1, SAFE_QUEUE_SIZE,
+                        SAFE_VRING_ADDRESS + stride, safe->dma_physical + stride,
+                        stride))
         return -1;
-    return mich_virtqueue_set_msix(safe->rx_handle, safe->rx_irq_handle) ||
-           mich_virtqueue_set_msix(safe->tx_handle, safe->tx_irq_handle) ||
+    return virtqueue_set_msix_vector(&safe->device, 0, SAFE_RX_MSIX_ENTRY) ||
+           virtqueue_set_msix_vector(&safe->device, 1, SAFE_TX_MSIX_ENTRY) ||
            mich_irq_bind(safe->rx_irq_handle, safe->bridge_handle) ||
            mich_irq_bind(safe->tx_irq_handle, safe->bridge_handle) ||
            mich_irq_set_mask(safe->rx_irq_handle, 0) ||
@@ -157,6 +130,7 @@ static int safe_setup_interface(struct virtio_net_safe *safe) {
     if (mich_vnic_create(&vnic) ||
         mich_packet_pool_map(vnic.pool_handle, SAFE_POOL_ADDRESS))
         return -1;
+    safe->pool_handle = vnic.pool_handle;
     struct mich_net_interface_create_request request;
     request.pool_handle = vnic.pool_handle;
     request.rx_ring_handle = vnic.rx_ring_handle;
@@ -184,36 +158,39 @@ static int safe_setup_interface(struct virtio_net_safe *safe) {
     return 0;
 }
 
+// Guest-physical of a byte inside a pool buffer: buffer_id low 32 bits hold
+// slot+1 (net_buffer.c) and each buffer is one page, so the kernel resolves the
+// bus address the device DMAs the frame through. Zero on an out-of-range offset.
+static unsigned long long safe_pool_physical(struct virtio_net_safe *safe,
+                                             unsigned long long buffer_id,
+                                             unsigned int byte_offset) {
+    unsigned int pool_slot = (unsigned int)buffer_id - 1;
+    unsigned long long physical = mich_resource_physical(
+        safe->pool_handle,
+        (unsigned long long)pool_slot * NET_PACKET_DATA_MAX + byte_offset);
+    return physical == (unsigned long long)-1 ? 0 : physical;
+}
+
 static int safe_post_rx_buffer(struct virtio_net_safe *safe,
                                unsigned int slot) {
     unsigned long long buffer_id =
         mich_net_interface_driver_acquire_rx(safe->interface_handle);
     if (!buffer_id) return -1;
-    struct mich_virtqueue_chain_request chain;
-    chain.queue_handle = safe->rx_handle;
-    chain.descriptor_count = 1;
-    chain.reserved = 0;
-    chain.token = 0;
-    if (mich_virtqueue_chain_allocate(&chain)) {
+    unsigned int offset = NET_PACKET_HEADROOM - SAFE_VIRTIO_HEADER_SIZE;
+    unsigned long long physical = safe_pool_physical(safe, buffer_id, offset);
+    unsigned long long token;
+    if (!physical || virtqueue_chain_alloc(&safe->rx_queue, 1, &token)) {
         mich_net_interface_driver_release_rx(safe->interface_handle, buffer_id);
         return -1;
     }
-    struct mich_virtqueue_packet_request packet;
-    packet.queue_handle = safe->rx_handle;
-    packet.interface_handle = safe->interface_handle;
-    packet.token = chain.token;
-    packet.buffer_id = buffer_id;
-    packet.offset = NET_PACKET_HEADROOM - SAFE_VIRTIO_HEADER_SIZE;
-    packet.length = NET_PACKET_DATA_MAX - packet.offset;
-    packet.ordinal = 0;
-    packet.writable = 1;
-    if (mich_virtqueue_set_packet(&packet) ||
-        mich_virtqueue_publish(&chain)) {
-        mich_virtqueue_chain_release(&chain);
+    if (virtqueue_descriptor_set(&safe->rx_queue, token, 0, physical,
+                                 NET_PACKET_DATA_MAX - offset, 1) ||
+        virtqueue_chain_publish(&safe->rx_queue, token)) {
+        virtqueue_chain_release(&safe->rx_queue, token);
         mich_net_interface_driver_release_rx(safe->interface_handle, buffer_id);
         return -1;
     }
-    safe->rx_tokens[slot] = chain.token;
+    safe->rx_tokens[slot] = token;
     safe->rx_buffers[slot] = buffer_id;
     return 0;
 }
@@ -242,51 +219,41 @@ static int safe_track_tx(struct virtio_net_safe *safe,
     volatile unsigned char *data =
         (volatile unsigned char *)SAFE_POOL_ADDRESS +
         (unsigned long long)pool_slot * NET_PACKET_DATA_MAX;
+    unsigned int offset = descriptor->offset - SAFE_VIRTIO_HEADER_SIZE;
     for (unsigned int index = 0; index < SAFE_VIRTIO_HEADER_SIZE; index++)
-        data[descriptor->offset - SAFE_VIRTIO_HEADER_SIZE + index] = 0;
-    struct mich_virtqueue_chain_request chain;
-    chain.queue_handle = safe->tx_handle;
-    chain.descriptor_count = 1;
-    chain.reserved = 0;
-    chain.token = 0;
-    if (mich_virtqueue_chain_allocate(&chain)) {
+        data[offset + index] = 0;
+    unsigned long long physical =
+        safe_pool_physical(safe, descriptor->buffer_id, offset);
+    unsigned long long token;
+    if (!physical || virtqueue_chain_alloc(&safe->tx_queue, 1, &token)) {
         mich_net_interface_driver_complete_tx(safe->interface_handle,
                                               descriptor->buffer_id);
         return -1;
     }
-    struct mich_virtqueue_packet_request packet;
-    packet.queue_handle = safe->tx_handle;
-    packet.interface_handle = safe->interface_handle;
-    packet.token = chain.token;
-    packet.buffer_id = descriptor->buffer_id;
-    packet.offset = descriptor->offset - SAFE_VIRTIO_HEADER_SIZE;
-    packet.length = descriptor->length + SAFE_VIRTIO_HEADER_SIZE;
-    packet.ordinal = 0;
-    packet.writable = 0;
-    if (mich_virtqueue_set_packet(&packet) ||
-        mich_virtqueue_publish(&chain)) {
-        mich_virtqueue_chain_release(&chain);
+    if (virtqueue_descriptor_set(&safe->tx_queue, token, 0, physical,
+                                 descriptor->length + SAFE_VIRTIO_HEADER_SIZE,
+                                 0) ||
+        virtqueue_chain_publish(&safe->tx_queue, token)) {
+        virtqueue_chain_release(&safe->tx_queue, token);
         mich_net_interface_driver_complete_tx(safe->interface_handle,
                                               descriptor->buffer_id);
         return -1;
     }
-    safe->tx_tokens[slot] = chain.token;
+    safe->tx_tokens[slot] = token;
     safe->tx_buffers[slot] = descriptor->buffer_id;
     return 0;
 }
 
 static int safe_reap_tx(struct virtio_net_safe *safe) {
     for (unsigned int count = 0; count < SAFE_TX_OUTSTANDING; count++) {
-        struct mich_virtqueue_completion_result result;
-        result.queue_handle = safe->tx_handle;
-        result.length = 0;
-        result.token = 0;
-        int collected = mich_virtqueue_collect(&result);
+        unsigned long long token;
+        unsigned int length;
+        int collected = virtqueue_collect(&safe->tx_queue, &token, &length);
         if (collected < 0) return -1;
         if (!collected) return 0;
         unsigned int slot = SAFE_TX_OUTSTANDING;
         for (unsigned int index = 0; index < SAFE_TX_OUTSTANDING; index++)
-            if (safe->tx_tokens[index] == result.token) {
+            if (safe->tx_tokens[index] == token) {
                 slot = index;
                 break;
             }
@@ -310,7 +277,7 @@ static int safe_drain_tx(struct virtio_net_safe *safe) {
         if (safe_track_tx(safe, &descriptor)) return -1;
         queued++;
     }
-    return !queued || !mich_virtqueue_notify(safe->tx_handle) ? 0 : -1;
+    return !queued || !virtqueue_kick(&safe->tx_queue) ? 0 : -1;
 }
 
 static int safe_rx_valid(const struct virtio_net_safe *safe,
@@ -331,26 +298,24 @@ static int safe_rx_valid(const struct virtio_net_safe *safe,
 static int safe_receive(struct virtio_net_safe *safe) {
     unsigned int received = 0;
     for (unsigned int count = 0; count < SAFE_RX_POSTED; count++) {
-        struct mich_virtqueue_completion_result result;
-        result.queue_handle = safe->rx_handle;
-        result.length = 0;
-        result.token = 0;
-        int collected = mich_virtqueue_collect(&result);
+        unsigned long long token;
+        unsigned int length;
+        int collected = virtqueue_collect(&safe->rx_queue, &token, &length);
         if (collected < 0) return -1;
         if (!collected) break;
         unsigned int slot = SAFE_RX_POSTED;
         for (unsigned int index = 0; index < SAFE_RX_POSTED; index++)
-            if (safe->rx_tokens[index] == result.token) {
+            if (safe->rx_tokens[index] == token) {
                 slot = index;
                 break;
             }
         if (slot == SAFE_RX_POSTED) return -1;
         unsigned long long buffer_id = safe->rx_buffers[slot];
-        if (safe_rx_valid(safe, slot, result.length)) {
+        if (safe_rx_valid(safe, slot, length)) {
             struct mich_net_interface_buffer_request request;
             request.buffer_id = buffer_id;
             request.offset = NET_PACKET_HEADROOM;
-            request.length = result.length - SAFE_VIRTIO_HEADER_SIZE;
+            request.length = length - SAFE_VIRTIO_HEADER_SIZE;
             if (mich_net_interface_driver_receive(
                     safe->interface_handle, &request))
                 mich_net_interface_driver_release_rx(safe->interface_handle,
@@ -364,7 +329,7 @@ static int safe_receive(struct virtio_net_safe *safe) {
         if (safe_post_rx_buffer(safe, slot)) return -1;
         received++;
     }
-    return received && mich_virtqueue_notify(safe->rx_handle) ? -1 : 0;
+    return received && virtqueue_kick(&safe->rx_queue) ? -1 : 0;
 }
 
 static int safe_configure_ipv4(struct virtio_net_safe *safe) {
@@ -428,8 +393,8 @@ int main(unsigned long long argument) {
     mich_write("Mich virtio-net safe: device ready pass\n");
     if (safe_setup_queues(&safe) || safe_setup_interface(&safe)) return 4;
     mich_write("Mich virtio-net safe: eth0 registered pass\n");
-    if (safe_post_rx(&safe) || mich_virtio_driver_ok(safe.device_handle) ||
-        mich_virtqueue_notify(safe.rx_handle))
+    if (safe_post_rx(&safe) || virtio_driver_ok(&safe.device) ||
+        virtqueue_kick(&safe.rx_queue))
         return 5;
     mich_write("Mich virtio-net safe: virtio ready pass\n");
     if (safe_configure_ipv4(&safe)) return 6;
