@@ -159,6 +159,18 @@ finally:
         ;;
 esac
 log="$(mktemp)"
+# Fail loudly naming the exact marker that was missing. The old inline check
+# dumped the whole serial log with no hint which expectation broke, so a missing
+# line meant reading hundreds of lines to guess what the gate wanted.
+require_marker() {
+    if ! grep -Fq "$1" "$log"; then
+        echo "SMOKE FAIL: expected marker not found in serial log:" >&2
+        echo "  $1" >&2
+        echo "--- full serial log follows ---" >&2
+        cat "$log" >&2
+        exit 1
+    fi
+}
 # QEMU 11.x full-buffers a stdio serial that is redirected to a file and drops
 # the buffer when timeout(1) delivers SIGTERM, so a fast KVM guest that finishes
 # early and idles to the deadline leaves an empty log. -serial file: writes the
@@ -409,7 +421,7 @@ if [ "$profile" = "netbench" ]; then
         "Mich virtio-net: userspace capsule running" \
         "Mich test64: netbench baseline report pass"
     do
-        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+        require_marker "$marker"
     done
 elif [ "$profile" = "virtio-blk" ]; then
     # This boots the production kernel, which carries no in-kernel virtio-blk
@@ -433,7 +445,7 @@ elif [ "$profile" = "virtio-blk" ]; then
         "Mich virtio-blk: bootstrap pass" \
         "Mich virtio-blk: serve pass"
     do
-        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+        require_marker "$marker"
     done
 elif [ "$profile" = "nvme" ]; then
     # Same reduced gate as virtio-blk: the production kernel carries no in-kernel
@@ -455,7 +467,7 @@ elif [ "$profile" = "nvme" ]; then
         "Mich nvme: bootstrap pass" \
         "Mich nvme: serve pass"
     do
-        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+        require_marker "$marker"
     done
 else
 for marker in \
@@ -777,7 +789,7 @@ for marker in \
     "Mich x86_64: capability state pass" \
     "Mich x86_64: preemptive scheduler pass"
 do
-    grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+    require_marker "$marker"
 done
 fi
 # The hardware and msi profiles spawn init without the POSIX modules, so these
@@ -803,7 +815,7 @@ case "$profile" in
             "Mich x86_64: POSIX entropy pass" \
             "Mich x86_64: POSIX static application pass"
         do
-            grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+            require_marker "$marker"
         done
         ;;
 esac
@@ -863,7 +875,7 @@ if [ "$profile" = "smp" ]; then
         "Mich x86_64: SMP AP scheduler pass" \
         "Mich x86_64: SMP dual-core userspace pass"
     do
-        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+        require_marker "$marker"
     done
 fi
 if [ "$profile" = "dns" ]; then
@@ -874,7 +886,7 @@ if [ "$profile" = "dns" ]; then
         "Mich dnsprobe: refused name rejected pass" \
         "Mich dnsprobe: transport pass"
     do
-        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+        require_marker "$marker"
     done
 fi
 if [ "$profile" = "netbench" ]; then
@@ -882,7 +894,7 @@ if [ "$profile" = "netbench" ]; then
         "Mich netbench: loopback report pass" \
         "Mich netbench: wire report pass"
     do
-        grep -Fq "$marker" "$log" || { cat "$log"; cat "$netbench_peer_log"; exit 1; }
+        grep -Fq "$marker" "$log" || { echo "SMOKE FAIL: expected marker not found: $marker" >&2; cat "$log"; cat "$netbench_peer_log"; exit 1; }
     done
     # Surface the measured numbers the guest printed for both passes.
     grep -F "Mich netbench: loopback-udp" "$log" || true
@@ -901,7 +913,7 @@ if [ "$profile" = "tls" ]; then
         "Mich tlsprobe: HTTP response received" \
         "Mich tlsprobe: https pass"
     do
-        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+        require_marker "$marker"
     done
 fi
 if [ "$profile" = "tls-real" ]; then
@@ -916,7 +928,7 @@ if [ "$profile" = "tls-real" ]; then
         "Mich tlsprobe: HTTP response received" \
         "Mich tlsprobe: https pass"
     do
-        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+        require_marker "$marker"
     done
     # Surface the real status line the guest printed off the wire.
     grep -F "Mich tlsprobe: HTTP/1." "$log" || true
@@ -1002,7 +1014,7 @@ if [ "$profile" = "msi" ] || [ "$profile" = "msi-restart" ] ||
         "Mich virtio-net: packet cycle counters active" \
         "Mich virtio-net: userspace capsule running"
     do
-        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+        require_marker "$marker"
     done
 fi
 if [ "$profile" = "msi-restart" ]; then
@@ -1251,7 +1263,7 @@ if [ "$profile" = "iommu" ]; then
         "Mich test64: Intel VT-d fault decode pass" \
         "Mich test64: Intel VT-d forbidden DMA blocked"
     do
-        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+        require_marker "$marker"
     done
 fi
 if [ "$profile" = "amd-iommu" ]; then
@@ -1263,7 +1275,7 @@ if [ "$profile" = "amd-iommu" ]; then
         "Mich test64: AMD-Vi DTE and domain pass" \
         "Mich test64: AMD-Vi page invalidation pass"
     do
-        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+        require_marker "$marker"
     done
 fi
 if [ "$profile" = "virtio-blk" ]; then
@@ -1271,7 +1283,7 @@ if [ "$profile" = "virtio-blk" ]; then
         "Mich virtio-blk: bootstrap pass" \
         "Mich virtio-blk: serve pass"
     do
-        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+        require_marker "$marker"
     done
 fi
 if [ "$profile" = "nvme" ]; then
@@ -1279,7 +1291,7 @@ if [ "$profile" = "nvme" ]; then
         "Mich nvme: bootstrap pass" \
         "Mich nvme: serve pass"
     do
-        grep -Fq "$marker" "$log" || { cat "$log"; exit 1; }
+        require_marker "$marker"
     done
 fi
 bad="$(grep -Ei "FAIL|failure|bad boot protocol|exception vector" "$log" || true)"
