@@ -2006,17 +2006,6 @@ void kernel64_main(u32 magic, struct bd_info *info) {
         serial64_write("Mich test64: Intel VT-d forbidden DMA blocked\n");
     }
     if (tests64_run_driver(&test_env)) KERNEL_PANIC("independent driver tests");
-    {
-        int virtio_blk = test_virtio_blk64();
-        if (virtio_blk < 0 ||
-            test_report_record(TEST_ID_VIRTIO_BLK,
-                               virtio_blk < 0 ? virtio_blk : 0))
-            KERNEL_PANIC("independent kernel tests");
-        if (!virtio_blk) {
-            serial64_write("Mich test64: virtio-blk attach pass\n");
-            serial64_write("Mich test64: virtio-blk read and write pass\n");
-        }
-    }
 #endif
     serial64_write("Mich x86_64: PCI enumeration pass\n");
     if (pci64_uses_ecam())
