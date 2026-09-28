@@ -1,7 +1,6 @@
 #include <mich/syscall.h>
 #include <mich/event.h>
 #include <mich/driver.h>
-#include <mich/virtio.h>
 #include <mich/net.h>
 #include <mich/net_interface.h>
 #include <mich/hardware.h>
@@ -185,107 +184,82 @@ static int bootstrap(struct virtio_net_capsule *capsule) {
         if (resource->kind == MICH_DRIVER_RESOURCE_MSIX_IRQ &&
             resource->index == 2)
             capsule->tx_irq_handle = resource->handle;
+        if (resource->kind == MICH_DRIVER_RESOURCE_DMA) {
+            capsule->dma_handle = resource->handle;
+            // Bus address the device DMAs the rings through: the raw physical
+            // without an IOMMU, or the bound IOVA with one.
+            capsule->dma_physical = resource->address;
+        }
         if (resource->kind == MICH_DRIVER_RESOURCE_BRIDGE)
             capsule->bridge_handle = resource->handle;
     }
     if (!capsule->pci_handle || !capsule->bridge_handle ||
-        !capsule->rx_irq_handle || !capsule->tx_irq_handle)
+        !capsule->dma_handle || !capsule->rx_irq_handle ||
+        !capsule->tx_irq_handle)
         return -1;
     capsule->restart_count = info.restart_count;
-    capsule->device_handle = mich_virtio_open(capsule->pci_handle);
-    if ((int)capsule->device_handle <= 0) return -1;
     return transition(capsule, VIRTIO_NET_STATE_CREATED,
                       VIRTIO_NET_STATE_BOOTSTRAPPED);
 }
 
 static int negotiate(struct virtio_net_capsule *capsule) {
-    struct mich_virtio_feature_request request;
-    request.wanted = MICH_VIRTIO_FEATURE_VERSION_1 |
-                     MICH_VIRTIO_NET_FEATURE_MAC |
-                     MICH_VIRTIO_NET_FEATURE_STATUS;
-    request.required = MICH_VIRTIO_FEATURE_VERSION_1 |
-                       MICH_VIRTIO_NET_FEATURE_MAC;
-    request.device_features = 0;
-    request.driver_features = 0;
-    if (mich_virtio_negotiate(capsule->device_handle, &request) ||
-        (request.driver_features & request.required) != request.required)
+    if (virtio_device_setup(&capsule->device, capsule->pci_handle,
+                            VIRTIO_NET_BAR_WINDOW))
         return -1;
-    capsule->negotiated_features = request.driver_features;
+    unsigned long long wanted = VIRTIO_FEATURE_VERSION_1 |
+                                VIRTIO_NET_FEATURE_MAC |
+                                VIRTIO_NET_FEATURE_STATUS;
+    unsigned long long required = VIRTIO_FEATURE_VERSION_1 |
+                                  VIRTIO_NET_FEATURE_MAC;
+    if (virtio_negotiate(&capsule->device, wanted, required))
+        return -1;
+    capsule->negotiated_features = capsule->device.driver_features;
     return transition(capsule, VIRTIO_NET_STATE_BOOTSTRAPPED,
                       VIRTIO_NET_STATE_FEATURES);
 }
 
 static int read_config(struct virtio_net_capsule *capsule) {
-    struct mich_virtio_config_request request;
-    request.offset = 0;
-    request.length = capsule->negotiated_features &
-                     MICH_VIRTIO_NET_FEATURE_STATUS ? 8 : 6;
-    request.generation = 0;
-    request.reserved = 0;
-    for (unsigned int index = 0; index < MICH_VIRTIO_CONFIG_DATA_MAX; index++)
-        request.data[index] = 0;
-    if (mich_virtio_read_config(capsule->device_handle, &request)) return -1;
+    unsigned int length =
+        capsule->negotiated_features & VIRTIO_NET_FEATURE_STATUS ? 8 : 6;
+    unsigned char data[8];
+    for (unsigned int index = 0; index < sizeof(data); index++) data[index] = 0;
+    if (virtio_read_config(&capsule->device, 0, data, length)) return -1;
     unsigned int nonzero = 0;
     for (unsigned int index = 0; index < 6; index++) {
-        capsule->mac[index] = request.data[index];
-        nonzero |= request.data[index];
+        capsule->mac[index] = data[index];
+        nonzero |= data[index];
     }
     if (!nonzero) return -1;
-    capsule->link_status = capsule->negotiated_features &
-        MICH_VIRTIO_NET_FEATURE_STATUS ?
-        (unsigned short)request.data[6] |
-        ((unsigned short)request.data[7] << 8) : 1;
-    capsule->config_generation = request.generation;
+    capsule->link_status =
+        capsule->negotiated_features & VIRTIO_NET_FEATURE_STATUS ?
+        (unsigned short)data[6] | ((unsigned short)data[7] << 8) : 1;
     return transition(capsule, VIRTIO_NET_STATE_FEATURES,
                       VIRTIO_NET_STATE_CONFIG);
 }
 
-static int create_queue(struct virtio_net_capsule *capsule,
-                        unsigned short queue_index,
-                        unsigned long long address,
-                        unsigned int *handle, unsigned int *size) {
-    struct mich_virtqueue_create_request request;
-    request.device_handle = capsule->device_handle;
-    request.queue_index = queue_index;
-    request.queue_size = 256;
-    request.queue_handle = 0;
-    request.descriptor_offset = 0;
-    request.available_offset = 0;
-    request.used_offset = 0;
-    request.total_bytes = 0;
-    if (mich_virtqueue_create(&request)) return -1;
-    if (!request.queue_handle || !request.queue_size ||
-        request.queue_size > 256 ||
-        (request.queue_size & (request.queue_size - 1)) ||
-        (request.descriptor_offset & 15) || (request.available_offset & 1) ||
-        (request.used_offset & 3) ||
-        request.descriptor_offset >= request.available_offset ||
-        request.available_offset >= request.used_offset ||
-        request.total_bytes <= request.used_offset)
-        return -2;
-    if (mich_virtqueue_map(request.queue_handle, address)) return -3;
-    *handle = request.queue_handle;
-    *size = request.queue_size;
-    return 0;
-}
-
 static int create_queues(struct virtio_net_capsule *capsule) {
-    int result = create_queue(capsule, 0, VIRTIO_NET_RX_ADDRESS,
-                              &capsule->rx_handle, &capsule->rx_size);
-    if (result) return result;
-    mich_write("Mich virtio-net: RX queue created\n");
-    result = create_queue(capsule, 1, VIRTIO_NET_TX_ADDRESS,
-                          &capsule->tx_handle, &capsule->tx_size);
-    if (result) return result - 3;
+    unsigned long long stride =
+        (unsigned long long)VIRTIO_NET_VRING_PAGES * 4096u;
+    if (mich_dma_map(capsule->dma_handle, VIRTIO_NET_VRING_ADDRESS)) return -3;
+    // RX then TX sit back to back in the one contiguous DMA grant, so the TX
+    // ring's guest-physical is the RX ring's plus the per-queue stride.
+    if (virtqueue_setup(&capsule->device, &capsule->rx_queue, 0,
+                        VIRTIO_NET_QUEUE_SIZE, VIRTIO_NET_VRING_ADDRESS,
+                        capsule->dma_physical, stride))
+        return -2;
+    if (virtqueue_setup(&capsule->device, &capsule->tx_queue, 1,
+                        VIRTIO_NET_QUEUE_SIZE, VIRTIO_NET_VRING_ADDRESS + stride,
+                        capsule->dma_physical + stride, stride))
+        return -5;
     return transition(capsule, VIRTIO_NET_STATE_CONFIG,
                       VIRTIO_NET_STATE_QUEUES);
 }
 
 static int setup_interrupts(struct virtio_net_capsule *capsule) {
-    if (mich_virtqueue_set_msix(capsule->rx_handle,
-                                capsule->rx_irq_handle) ||
-        mich_virtqueue_set_msix(capsule->tx_handle,
-                                capsule->tx_irq_handle) ||
+    if (virtqueue_set_msix_vector(&capsule->device, 0,
+                                  VIRTIO_NET_RX_MSIX_ENTRY) ||
+        virtqueue_set_msix_vector(&capsule->device, 1,
+                                  VIRTIO_NET_TX_MSIX_ENTRY) ||
         mich_irq_bind(capsule->rx_irq_handle, capsule->bridge_handle) ||
         mich_irq_bind(capsule->tx_irq_handle, capsule->bridge_handle) ||
         mich_irq_set_mask(capsule->rx_irq_handle, 0) ||
@@ -334,38 +308,66 @@ static int setup_interface(struct virtio_net_capsule *capsule) {
     return 0;
 }
 
+// Guest-physical of a byte inside a pool buffer. buffer_id low 32 bits hold
+// slot+1 (net_buffer.c) and each buffer is one page, so the kernel resolves the
+// bus address the device DMAs the frame through. Zero on an out-of-range offset.
+static unsigned long long pool_buffer_physical(
+    struct virtio_net_capsule *capsule, unsigned long long buffer_id,
+    unsigned int byte_offset) {
+    unsigned int pool_slot = (unsigned int)buffer_id - 1;
+    unsigned long long physical = mich_resource_physical(
+        capsule->pool_handle,
+        (unsigned long long)pool_slot * NET_PACKET_DATA_MAX + byte_offset);
+    return physical == (unsigned long long)-1 ? 0 : physical;
+}
+
 static int post_rx_buffer_preallocated(struct virtio_net_capsule *capsule,
                                        unsigned int slot,
                                        unsigned long long buffer_id) {
-    struct mich_virtqueue_chain_request chain;
-    chain.queue_handle = capsule->rx_handle;
-    chain.descriptor_count = 1;
-    chain.reserved = 0;
-    chain.token = 0;
-    if (mich_virtqueue_chain_allocate(&chain)) {
+    unsigned int offset = NET_PACKET_HEADROOM - VIRTIO_NET_HEADER_SIZE;
+    unsigned long long physical =
+        pool_buffer_physical(capsule, buffer_id, offset);
+    unsigned long long token;
+    if (!physical || virtqueue_chain_alloc(&capsule->rx_queue, 1, &token)) {
         mich_net_interface_driver_release_rx(capsule->interface_handle,
                                              buffer_id);
         return -1;
     }
-    struct mich_virtqueue_packet_request packet;
-    packet.queue_handle = capsule->rx_handle;
-    packet.interface_handle = capsule->interface_handle;
-    packet.token = chain.token;
-    packet.buffer_id = buffer_id;
-    packet.offset = NET_PACKET_HEADROOM - VIRTIO_NET_HEADER_SIZE;
-    packet.length = NET_PACKET_DATA_MAX - packet.offset;
-    packet.ordinal = 0;
-    packet.writable = 1;
-    if (mich_virtqueue_set_packet(&packet) ||
-        mich_virtqueue_publish(&chain)) {
-        mich_virtqueue_chain_release(&chain);
+    if (virtqueue_descriptor_set(&capsule->rx_queue, token, 0, physical,
+                                 NET_PACKET_DATA_MAX - offset, 1) ||
+        virtqueue_chain_publish(&capsule->rx_queue, token)) {
+        virtqueue_chain_release(&capsule->rx_queue, token);
         mich_net_interface_driver_release_rx(capsule->interface_handle,
                                              buffer_id);
         return -1;
     }
-    capsule->rx_tokens[slot] = chain.token;
+    capsule->rx_tokens[slot] = token;
     capsule->rx_buffers[slot] = buffer_id;
     return 0;
+}
+
+struct virtqueue_completion_item {
+    unsigned long long token;
+    unsigned int length;
+};
+
+// Drain up to maximum retired chains off a queue's used ring into items, so the
+// batch datapath keeps its one-collect-then-process shape now that libvirtio
+// hands back a single completion per call.
+static unsigned int collect_completions(struct virtqueue *queue,
+                                        struct virtqueue_completion_item *items,
+                                        unsigned int maximum) {
+    if (maximum > VIRTIO_NET_BATCH_MAX) maximum = VIRTIO_NET_BATCH_MAX;
+    unsigned int count = 0;
+    while (count < maximum) {
+        unsigned long long token;
+        unsigned int length;
+        if (virtqueue_collect(queue, &token, &length) != 1) break;
+        items[count].token = token;
+        items[count].length = length;
+        count++;
+    }
+    return count;
 }
 
 static int post_rx_buffer(struct virtio_net_capsule *capsule,
@@ -478,34 +480,25 @@ static int submit_dhcp_frame(struct virtio_net_capsule *capsule,
                                              &descriptor) ||
         descriptor.buffer_id != buffer_id)
         return -1;
-    struct mich_virtqueue_chain_request chain;
-    chain.queue_handle = capsule->tx_handle;
-    chain.descriptor_count = 1;
-    chain.reserved = 0;
-    chain.token = 0;
-    if (mich_virtqueue_chain_allocate(&chain)) {
+    unsigned int offset = descriptor.offset - VIRTIO_NET_HEADER_SIZE;
+    unsigned long long physical =
+        pool_buffer_physical(capsule, buffer_id, offset);
+    unsigned long long token;
+    if (!physical || virtqueue_chain_alloc(&capsule->tx_queue, 1, &token)) {
         mich_net_interface_driver_complete_tx(capsule->interface_handle,
                                               buffer_id);
         return -1;
     }
-    struct mich_virtqueue_packet_request packet;
-    packet.queue_handle = capsule->tx_handle;
-    packet.interface_handle = capsule->interface_handle;
-    packet.token = chain.token;
-    packet.buffer_id = buffer_id;
-    packet.offset = descriptor.offset - VIRTIO_NET_HEADER_SIZE;
-    packet.length = descriptor.length + VIRTIO_NET_HEADER_SIZE;
-    packet.ordinal = 0;
-    packet.writable = 0;
-    if (mich_virtqueue_set_packet(&packet) ||
-        mich_virtqueue_publish(&chain)) {
-        mich_virtqueue_chain_release(&chain);
+    if (virtqueue_descriptor_set(&capsule->tx_queue, token, 0, physical,
+                                 descriptor.length + VIRTIO_NET_HEADER_SIZE, 0) ||
+        virtqueue_chain_publish(&capsule->tx_queue, token)) {
+        virtqueue_chain_release(&capsule->tx_queue, token);
         mich_net_interface_driver_complete_tx(capsule->interface_handle,
                                               buffer_id);
         return -1;
     }
-    if (mich_virtqueue_notify(capsule->tx_handle)) return -1;
-    *token_out = chain.token;
+    if (virtqueue_kick(&capsule->tx_queue)) return -1;
+    *token_out = token;
     *buffer_out = buffer_id;
     return 0;
 }
@@ -529,22 +522,21 @@ static int complete_tracked_tx(struct virtio_net_capsule *capsule,
 static int wait_test_completion(struct virtio_net_capsule *capsule,
                                 unsigned long long token,
                                 unsigned long long buffer_id) {
-    struct mich_virtqueue_completion_result result;
-    result.queue_handle = capsule->tx_handle;
-    result.length = 0;
-    result.token = 0;
     for (unsigned int attempt = 0; attempt < 10000; attempt++) {
-        int collected = mich_virtqueue_collect(&result);
+        unsigned long long collected_token;
+        unsigned int length;
+        int collected = virtqueue_collect(&capsule->tx_queue, &collected_token,
+                                          &length);
         if (collected < 0) return -1;
         if (collected == 1) {
-            if (result.token == token) {
+            if (collected_token == token) {
                 if (mich_net_interface_driver_complete_tx(
                         capsule->interface_handle, buffer_id))
                     return -1;
                 capsule->tx_packets++;
                 return 0;
             }
-            if (complete_tracked_tx(capsule, result.token)) return -1;
+            if (complete_tracked_tx(capsule, collected_token)) return -1;
         }
         mich_yield();
     }
@@ -638,35 +630,27 @@ static int queue_one_tx_descriptor(struct virtio_net_capsule *capsule,
     volatile unsigned char *data =
         (volatile unsigned char *)VIRTIO_NET_POOL_ADDRESS +
         (unsigned long long)pool_slot * NET_PACKET_DATA_MAX;
+    unsigned int offset = descriptor->offset - VIRTIO_NET_HEADER_SIZE;
     for (unsigned int index = 0; index < VIRTIO_NET_HEADER_SIZE; index++)
-        data[descriptor->offset - VIRTIO_NET_HEADER_SIZE + index] = 0;
-    struct mich_virtqueue_chain_request chain;
-    chain.queue_handle = capsule->tx_handle;
-    chain.descriptor_count = 1;
-    chain.reserved = 0;
-    chain.token = 0;
-    if (mich_virtqueue_chain_allocate(&chain)) {
+        data[offset + index] = 0;
+    unsigned long long physical =
+        pool_buffer_physical(capsule, descriptor->buffer_id, offset);
+    unsigned long long token;
+    if (!physical || virtqueue_chain_alloc(&capsule->tx_queue, 1, &token)) {
         mich_net_interface_driver_complete_tx(
             capsule->interface_handle, descriptor->buffer_id);
         return -1;
     }
-    struct mich_virtqueue_packet_request packet;
-    packet.queue_handle = capsule->tx_handle;
-    packet.interface_handle = capsule->interface_handle;
-    packet.token = chain.token;
-    packet.buffer_id = descriptor->buffer_id;
-    packet.offset = descriptor->offset - VIRTIO_NET_HEADER_SIZE;
-    packet.length = descriptor->length + VIRTIO_NET_HEADER_SIZE;
-    packet.ordinal = 0;
-    packet.writable = 0;
-    if (mich_virtqueue_set_packet(&packet) ||
-        mich_virtqueue_publish(&chain)) {
-        mich_virtqueue_chain_release(&chain);
+    if (virtqueue_descriptor_set(
+            &capsule->tx_queue, token, 0, physical,
+            descriptor->length + VIRTIO_NET_HEADER_SIZE, 0) ||
+        virtqueue_chain_publish(&capsule->tx_queue, token)) {
+        virtqueue_chain_release(&capsule->tx_queue, token);
         mich_net_interface_driver_complete_tx(
             capsule->interface_handle, descriptor->buffer_id);
         return -1;
     }
-    capsule->tx_tokens[tracking] = chain.token;
+    capsule->tx_tokens[tracking] = token;
     capsule->tx_buffers[tracking] = descriptor->buffer_id;
     capsule->tx_outstanding++;
     return 1;
@@ -689,7 +673,7 @@ static void process_tx_batch(struct virtio_net_capsule *capsule) {
         if (queue_one_tx_descriptor(capsule, &descriptors[index]) > 0)
             queued++;
     if (queued) {
-        mich_virtqueue_notify(capsule->tx_handle);
+        virtqueue_kick(&capsule->tx_queue);
         unsigned long long cycles = read_cycles() - start;
         capsule->tx_batch_cycles += cycles;
         if (!capsule->tx_batch_reported) {
@@ -702,19 +686,17 @@ static void process_tx_batch(struct virtio_net_capsule *capsule) {
 
 static unsigned int process_tx_completions(
     struct virtio_net_capsule *capsule) {
-    struct mich_virtqueue_completion_batch batch;
-    batch.queue_handle = capsule->tx_handle;
-    batch.maximum = capsule->itr_budget_tx;
-    batch.count = 0;
-    batch.reserved = 0;
+    struct virtqueue_completion_item items[VIRTIO_NET_BATCH_MAX];
     unsigned long long start = read_cycles();
-    if (mich_virtqueue_collect_batch(&batch) || !batch.count) return 0;
+    unsigned int count = collect_completions(&capsule->tx_queue, items,
+                                             capsule->itr_budget_tx);
+    if (!count) return 0;
     unsigned long long buffer_ids[VIRTIO_NET_BATCH_MAX];
     unsigned int mapped_slots[VIRTIO_NET_BATCH_MAX];
     unsigned int mapped = 0;
-    for (unsigned int index = 0; index < batch.count; index++) {
+    for (unsigned int index = 0; index < count; index++) {
         for (unsigned int slot = 0; slot < VIRTIO_NET_TX_OUTSTANDING; slot++) {
-            if (capsule->tx_tokens[slot] != batch.items[index].token)
+            if (capsule->tx_tokens[slot] != items[index].token)
                 continue;
             buffer_ids[mapped] = capsule->tx_buffers[slot];
             mapped_slots[mapped] = slot;
@@ -744,7 +726,7 @@ static unsigned int process_tx_completions(
         capsule->tx_packets++;
     }
     capsule->tx_batch_cycles += read_cycles() - start;
-    return batch.count;
+    return count;
 }
 
 static unsigned int read_be32(volatile unsigned char *data) {
@@ -946,13 +928,11 @@ static int process_rx_head(struct virtio_net_capsule *capsule,
 }
 
 static unsigned int process_rx_batch(struct virtio_net_capsule *capsule) {
-    struct mich_virtqueue_completion_batch batch;
-    batch.queue_handle = capsule->rx_handle;
-    batch.maximum = capsule->itr_budget_rx;
-    batch.count = 0;
-    batch.reserved = 0;
+    struct virtqueue_completion_item items[VIRTIO_NET_BATCH_MAX];
     unsigned long long start = read_cycles();
-    if (mich_virtqueue_collect_batch(&batch) || !batch.count) return 0;
+    unsigned int count = collect_completions(&capsule->rx_queue, items,
+                                             capsule->itr_budget_rx);
+    if (!count) return 0;
     unsigned int slots[VIRTIO_NET_BATCH_MAX];
     unsigned int valid[VIRTIO_NET_BATCH_MAX];
     int dhcp_messages[VIRTIO_NET_BATCH_MAX];
@@ -961,13 +941,13 @@ static unsigned int process_rx_batch(struct virtio_net_capsule *capsule) {
     unsigned int request_index[VIRTIO_NET_BATCH_MAX];
     unsigned int request_count = 0;
     unsigned int found_count = 0;
-    for (unsigned int index = 0; index < batch.count; index++) {
+    for (unsigned int index = 0; index < count; index++) {
         slots[index] = VIRTIO_NET_RX_POSTED;
         valid[index] = 0;
         dhcp_messages[index] = 0;
         request_index[index] = 0;
         dhcp_messages[index] = process_rx_head(
-            capsule, batch.items[index].token, batch.items[index].length,
+            capsule, items[index].token, items[index].length,
             &slots[index], &valid[index]);
         if (dhcp_messages[index] < 0)
             continue;
@@ -978,7 +958,7 @@ static unsigned int process_rx_batch(struct virtio_net_capsule *capsule) {
         requests[request_count].buffer_id = capsule->rx_buffers[slots[index]];
         requests[request_count].offset = NET_PACKET_HEADROOM;
         requests[request_count].length =
-            batch.items[index].length - VIRTIO_NET_HEADER_SIZE;
+            items[index].length - VIRTIO_NET_HEADER_SIZE;
         request_count++;
     }
     unsigned int processed = 0;
@@ -1008,7 +988,7 @@ static unsigned int process_rx_batch(struct virtio_net_capsule *capsule) {
         replacement_count += acquired;
     }
     unsigned int replacement_index = 0;
-    for (unsigned int index = 0; index < batch.count; index++) {
+    for (unsigned int index = 0; index < count; index++) {
         unsigned int slot = slots[index];
         if (slot >= VIRTIO_NET_RX_POSTED) continue;
         if (!valid[index] || request_index[index] >= processed ||
@@ -1038,7 +1018,7 @@ static unsigned int process_rx_batch(struct virtio_net_capsule *capsule) {
             }
         }
     }
-    mich_virtqueue_notify(capsule->rx_handle);
+    virtqueue_kick(&capsule->rx_queue);
     unsigned long long cycles = read_cycles() - start;
     capsule->rx_batch_cycles += cycles;
     if (!capsule->batch_reported) {
@@ -1046,9 +1026,9 @@ static unsigned int process_rx_batch(struct virtio_net_capsule *capsule) {
         mich_write("Mich virtio-net: batched RX/TX datapath pass\n");
         mich_write("Mich virtio-net: packet cycle counters active\n");
         write_cycle_metric(
-            "Mich virtio-net: RX cycles/packet=0x", cycles / batch.count);
+            "Mich virtio-net: RX cycles/packet=0x", cycles / count);
     }
-    return batch.count;
+    return count;
 }
 
 static void append_hex(char *text, unsigned int *length,
@@ -1270,8 +1250,8 @@ int main(unsigned long long argument) {
     mich_write("Mich virtio-net: RX buffers published\n");
     if (transition(&capsule, VIRTIO_NET_STATE_QUEUES,
                    VIRTIO_NET_STATE_READY) ||
-        mich_virtio_driver_ok(capsule.device_handle) ||
-        mich_virtqueue_notify(capsule.rx_handle))
+        virtio_driver_ok(&capsule.device) ||
+        virtqueue_kick(&capsule.rx_queue))
         return 7;
     mich_write("Mich virtio-net: DRIVER_OK pass\n");
     int timer = mich_timer_create();

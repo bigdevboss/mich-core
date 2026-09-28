@@ -543,7 +543,7 @@ $(VIRTIO_BLK64_OBJ): src/user64/virtio_blk/main.c src/user64/virtio_blk/capsule.
 $(NVME64_OBJ): src/user64/nvme/main.c src/user64/nvme/capsule.h src/user64/include/mich/syscall.h src/user64/include/mich/driver.h src/user64/include/mich/hardware.h src/user64/include/mich/ring.h src/user64/include/mich/memory.h src/user64/include/mich/event.h src/user64/include/mich/block.h | $(USER64_OBJ_DIR)
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
-$(VIRTIO_NET64_OBJ): src/user64/virtio_net/main.c src/user64/virtio_net/capsule.h src/user64/include/mich/syscall.h src/user64/include/mich/event.h src/user64/include/mich/driver.h src/user64/include/mich/virtio.h src/user64/include/mich/net.h src/user64/include/mich/net_interface.h src/user64/include/mich/timer.h src/user64/include/mich/wait.h src/user64/include/mich/vfs.h src/user64/include/mich/firmware.h | $(USER64_OBJ_DIR)
+$(VIRTIO_NET64_OBJ): src/user64/virtio_net/main.c src/user64/virtio_net/capsule.h src/user64/lib/virtio/virtio.h src/user64/include/mich/syscall.h src/user64/include/mich/event.h src/user64/include/mich/driver.h src/user64/include/mich/hardware.h src/user64/include/mich/net.h src/user64/include/mich/net_interface.h src/user64/include/mich/timer.h src/user64/include/mich/wait.h src/user64/include/mich/vfs.h src/user64/include/mich/firmware.h | $(USER64_OBJ_DIR)
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
 $(VIRTIO_NET_SAFE64_OBJ): src/user64/virtio_net/safe.c src/user64/include/mich/syscall.h src/user64/include/mich/driver.h src/user64/include/mich/virtio.h src/user64/include/mich/net.h src/user64/include/mich/net_interface.h src/user64/include/mich/bridge.h src/user64/include/mich/wait.h | $(USER64_OBJ_DIR)
@@ -644,8 +644,8 @@ $(NVME64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(NVME64_OBJ
 
 user64-nvme: $(NVME64_ELF)
 
-$(VIRTIO_NET64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_NET64_OBJ) $(VIRTIO_NET64_PROBES_OBJ) $(DNS64_OBJ) $(DNS_MESSAGE64_OBJ) src/user64/linker.ld | $(USER64_DIR)
-	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_NET64_OBJ) $(VIRTIO_NET64_PROBES_OBJ) $(DNS64_OBJ) $(DNS_MESSAGE64_OBJ)
+$(VIRTIO_NET64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_LIB64_OBJ) $(VIRTIO_NET64_OBJ) $(VIRTIO_NET64_PROBES_OBJ) $(DNS64_OBJ) $(DNS_MESSAGE64_OBJ) src/user64/linker.ld | $(USER64_DIR)
+	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_LIB64_OBJ) $(VIRTIO_NET64_OBJ) $(VIRTIO_NET64_PROBES_OBJ) $(DNS64_OBJ) $(DNS_MESSAGE64_OBJ)
 
 $(VIRTIO_NET64_SELECTOR_CHECK): $(VIRTIO_NET64_ELF) $(ARCH64_KERNEL)/kernel.c scripts/check-virtio-net-recovery-rip.sh | $(USER64_DIR)
 	OBJDUMP=$(OBJDUMP) sh scripts/check-virtio-net-recovery-rip.sh $(ARCH64_KERNEL)/kernel.c $(VIRTIO_NET64_ELF)
