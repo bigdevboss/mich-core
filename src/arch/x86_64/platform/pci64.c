@@ -337,10 +337,15 @@ struct kernel_object *pci64_bar_create(struct kernel_object *pci, u32 index) {
     if (!description || index >= 6) return 0;
     const struct pci_bar_resource *bar = &description->bars[index];
     if (!bar->address || !bar->length || (bar->flags & 1) ||
-        (bar->address & 0xFFF) || (bar->length & 0xFFF))
+        (bar->address & 0xFFF))
         return 0;
-    u32 cache = (bar->flags & 2) ? MMIO_CACHE_WC : MMIO_CACHE_UC;
-    return mmio_resource_create(bar->address, bar->length, cache);
+    // PCI BAR sizes are powers of two and can be smaller than a page; map the
+    // whole containing page so a sub-page device region stays reachable, the same
+    // span the in-kernel ioremap path covered. Device registers need uncached
+    // ordering, so the prefetchable hint is ignored and a BAR is never mapped
+    // write-combining.
+    u64 length = (bar->length + 0xFFFULL) & ~0xFFFULL;
+    return mmio_resource_create(bar->address, length, MMIO_CACHE_UC);
 }
 
 static const struct pci_resource *select_config(struct kernel_object *pci,
