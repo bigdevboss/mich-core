@@ -35,6 +35,19 @@ static unsigned int read_le32(volatile unsigned char *data) {
            ((unsigned int)data[2] << 16) | ((unsigned int)data[3] << 24);
 }
 
+// The controller posts a CQE with a DMA write that races this poll, so a
+// byte-wise read can straddle it: the phase byte reads new while the command-id
+// bytes are still stale, which looks complete but carries the wrong id. Read
+// status/phase/id (all in dword 3) until two reads agree, so they come from one
+// settled CQE. The in-kernel driver polls at boot without preemption and never
+// hits the window; a capsule shares the CPU and does.
+static unsigned int cqe_dw3(volatile unsigned char *cqe) {
+    for (;;) {
+        unsigned int value = read_le32(cqe + 12);
+        if (value == read_le32(cqe + 12)) return value;
+    }
+}
+
 static volatile unsigned char *dma_ptr(unsigned int offset) {
     return (volatile unsigned char *)(NVME_QUEUES_ADDRESS + offset);
 }
@@ -85,7 +98,7 @@ static int admin_sync(struct nvme_capsule *capsule, unsigned int opcode,
 
     volatile unsigned char *cq = dma_ptr(NVME_ADMIN_CQ_OFF);
     for (unsigned int spin = 0; spin < 50000000u; spin++) {
-        unsigned int dw3 = read_le32(cq + capsule->admin_cq_head * NVME_CQE_BYTES + 12);
+        unsigned int dw3 = cqe_dw3(cq + capsule->admin_cq_head * NVME_CQE_BYTES);
         if (((dw3 >> 16) & 1u) == capsule->admin_phase) continue;
         unsigned int status = (dw3 >> 17) & 0x7FFFu;
         capsule->admin_cq_head = (capsule->admin_cq_head + 1) % NVME_ADMIN_DEPTH;
@@ -267,7 +280,7 @@ static int drive_device(struct nvme_capsule *capsule, unsigned int op,
     // to other tasks and stretches a sub-millisecond I/O across their run.
     volatile unsigned char *cq = dma_ptr(NVME_IO_CQ_OFF);
     for (unsigned int attempt = 0; attempt < 50000000u; attempt++) {
-        unsigned int dw3 = read_le32(cq + capsule->io_cq_head * NVME_CQE_BYTES + 12);
+        unsigned int dw3 = cqe_dw3(cq + capsule->io_cq_head * NVME_CQE_BYTES);
         if (((dw3 >> 16) & 1u) == capsule->io_phase) continue;
         unsigned int cid = dw3 & 0xFFFFu;
         unsigned int status = (dw3 >> 17) & 0x7FFFu;
