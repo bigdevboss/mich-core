@@ -152,4 +152,17 @@ int adytumfs_inode_alloc(struct kernel_object *device,
 int adytumfs_inode_free(struct kernel_object *device,
                         struct adytumfs_superblock *super, u64 inode_num);
 
+// Map a logical file block to its physical block through the inode's extents.
+int adytumfs_inode_map(const struct adytumfs_inode *inode, u64 logical_block,
+                       u64 *physical_block);
+// Grow the file to new_blocks mapped blocks (allocating a run and appending or
+// coalescing an extent), or truncate it down (freeing and reclaiming the tail).
+// Direct extents only for now; indirect blocks come later.
+int adytumfs_inode_grow(struct kernel_object *device,
+                        struct adytumfs_superblock *super,
+                        struct adytumfs_inode *inode, u64 new_blocks);
+int adytumfs_inode_truncate(struct kernel_object *device,
+                            struct adytumfs_superblock *super,
+                            struct adytumfs_inode *inode, u64 new_blocks);
+
 #endif

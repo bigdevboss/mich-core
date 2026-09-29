@@ -84,6 +84,7 @@
 #define TEST_ID_ADYTUMFS_VOLUME 95
 #define TEST_ID_ADYTUMFS_ALLOC 96
 #define TEST_ID_ADYTUMFS_INODE 97
+#define TEST_ID_ADYTUMFS_EXTENT 98
 
 struct test_result64 {
     u32 id;
