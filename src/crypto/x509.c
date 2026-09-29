@@ -38,6 +38,12 @@ static const u8 oid_prime256v1[8] = {
 static const u8 oid_basic_constraints[3] = { 0x55, 0x1D, 0x13 };
 static const u8 oid_key_usage[3] = { 0x55, 0x1D, 0x0F };
 static const u8 oid_subject_alt_name[3] = { 0x55, 0x1D, 0x11 };
+static const u8 oid_extended_key_usage[3] = { 0x55, 0x1D, 0x25 };
+static const u8 oid_name_constraints[3] = { 0x55, 0x1D, 0x1E };
+static const u8 oid_server_auth[8] = {
+    0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01,
+};
+static const u8 oid_any_extended_key_usage[4] = { 0x55, 0x1D, 0x25, 0x00 };
 
 static int oid_is(const u8 *value, u32 length, const u8 *expected,
                   u32 expected_length) {
@@ -224,6 +230,37 @@ static int parse_key_usage(const u8 *value, u32 length,
     return 0;
 }
 
+static int parse_extended_key_usage(const u8 *value, u32 length,
+                                    struct x509_certificate *out) {
+    struct der_reader reader;
+    struct der_reader sequence;
+    if (der_init(&reader, value, length)) return -1;
+    if (der_read_nested(&reader, DER_TAG_SEQUENCE, &sequence)) return -1;
+    out->has_extended_key_usage = 1;
+    while (!der_at_end(&sequence)) {
+        const u8 *oid;
+        u32 oid_length;
+        if (der_read(&sequence, DER_TAG_OID, &oid, &oid_length)) return -1;
+        if (oid_is(oid, oid_length, oid_server_auth, sizeof(oid_server_auth)))
+            out->eku_server_auth = 1;
+        else if (oid_is(oid, oid_length, oid_any_extended_key_usage,
+                        sizeof(oid_any_extended_key_usage)))
+            out->eku_any = 1;
+    }
+    return 0;
+}
+
+static int capture_name_constraints(const u8 *value, u32 length,
+                                    struct x509_certificate *out) {
+    struct der_reader reader;
+    struct der_reader sequence;
+    if (der_init(&reader, value, length)) return -1;
+    if (der_read_nested(&reader, DER_TAG_SEQUENCE, &sequence)) return -1;
+    out->name_constraints = value;
+    out->name_constraints_length = length;
+    return 0;
+}
+
 static int parse_subject_alt_name(const u8 *value, u32 length,
                                   struct x509_certificate *out) {
     struct der_reader reader;
@@ -282,15 +319,16 @@ static int parse_extensions(struct der_reader *tbs,
         const u8 *oid;
         u32 oid_length;
         if (der_read(&extension, DER_TAG_OID, &oid, &oid_length)) return -1;
+        int critical = 0;
         u8 tag;
         if (!der_peek(&extension, &tag) && tag == DER_TAG_BOOLEAN) {
-            const u8 *critical;
-            u32 critical_length;
-            if (der_read(&extension, DER_TAG_BOOLEAN, &critical,
-                         &critical_length))
+            const u8 *flag;
+            u32 flag_length;
+            if (der_read(&extension, DER_TAG_BOOLEAN, &flag, &flag_length))
                 return -1;
-            if (critical_length != 1u) return -1;
-            if (critical[0] != 0x00u && critical[0] != 0xFFu) return -1;
+            if (flag_length != 1u) return -1;
+            if (flag[0] != 0x00u && flag[0] != 0xFFu) return -1;
+            critical = flag[0] == 0xFFu;
         }
         const u8 *body;
         u32 body_length;
@@ -305,6 +343,18 @@ static int parse_extensions(struct der_reader *tbs,
         } else if (oid_is(oid, oid_length, oid_subject_alt_name,
                           sizeof(oid_subject_alt_name))) {
             if (parse_subject_alt_name(body, body_length, out)) return -1;
+        } else if (oid_is(oid, oid_length, oid_extended_key_usage,
+                          sizeof(oid_extended_key_usage))) {
+            if (parse_extended_key_usage(body, body_length, out)) return -1;
+        } else if (oid_is(oid, oid_length, oid_name_constraints,
+                          sizeof(oid_name_constraints))) {
+            if (capture_name_constraints(body, body_length, out)) return -1;
+        } else if (critical) {
+            // RFC 5280 4.2: a certificate carrying an unrecognized critical
+            // extension must be rejected. Ignoring it is how a Name Constraints
+            // or Policy Constraints restriction is bypassed by a validator that
+            // does not implement the extension.
+            return -1;
         }
     }
     return 0;

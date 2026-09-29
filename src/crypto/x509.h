@@ -59,6 +59,16 @@ struct x509_certificate {
     int has_key_usage;
     u32 key_usage;
 
+    int has_extended_key_usage;
+    int eku_server_auth;
+    int eku_any;
+
+    // Name Constraints is kept as raw DER and walked while the chain is built,
+    // where the leaf names to test against are known. It is always critical, so
+    // reaching this field means the parser was required to recognize it.
+    const u8 *name_constraints;
+    u32 name_constraints_length;
+
     // The SAN extension is kept as raw DER and walked on demand. Google's
     // certificate carries 65 names, so any fixed array here would be either
     // wasteful or wrong, and the only question ever asked of this field is
