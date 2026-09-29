@@ -37,11 +37,11 @@ and block calls require the caller to be a registered driver domain.
 
 - The number space is not contiguous. Unlisted numbers are reserved.
 - Two ABIs share one dispatcher: the native Mich ABI (below) and a POSIX profile
-  (186-209) used by the static libc. **Number 186 is claimed by both** - the
-  native block capsule interface create (`SYS_BLOCK_INTERFACE_CREATE`) and POSIX
-  `open` (`POSIX_SYSCALL_OPEN`). The dispatcher matches the block handler first
-  and returns before the POSIX range is reached, so POSIX `open` at 186 is
-  currently shadowed. This overlap should be resolved before the ABI is frozen.
+  (186-209) used by the static libc. **Number 186 is shared** - the native block
+  capsule interface create (`SYS_BLOCK_INTERFACE_CREATE`) and POSIX `open`
+  (`POSIX_SYSCALL_OPEN`). The dispatcher disambiguates by caller: a driver domain
+  gets the block-capsule register, and any other task falls through to POSIX
+  `open`. A task is only ever one or the other, so both meanings coexist at 186.
 
 ---
 
@@ -329,7 +329,7 @@ and block calls require the caller to be a registered driver domain.
 | 182 | block_collect | Collect a completed block I/O request. |
 | 183 | block_revoke | Revoke a block device. |
 | 184 | block_service | Service a block device's queues. |
-| 186 | block_interface_create | Register a userspace block capsule transport. See the numbering note; overlaps POSIX `open`. |
+| 186 | block_interface_create | Register a userspace block capsule transport (driver domains only). Shared with POSIX `open`; see the numbering note. |
 | 212 | nvme_open | Bind an NVMe PCI device as a block device (needs `CAP_RESOURCE_ADMIN`). |
 
 ### Time
@@ -348,7 +348,7 @@ admitted to a POSIX profile. They are defined in `src/process/posix_abi.h`.
 
 | Num | Name | Description |
 |----|------|-------------|
-| 186 | open | Open a file. **Currently shadowed by `block_interface_create` (186); see the numbering note.** |
+| 186 | open | Open a file. Shared with `block_interface_create` (186), disambiguated by caller; see the numbering note. |
 | 187 | close | Close a file descriptor. |
 | 188 | read | Read from a file descriptor. |
 | 189 | write | Write to a file descriptor. |
