@@ -112,7 +112,7 @@ int tests64_run_network(const struct test64_env *env) {
     serial64_write("Mich test64: TCP page send pass\n");
     serial64_write("Mich test64: socket send file pass\n");
     serial64_write("Mich test64: socket receive file pass\n");
-    serial64_write("Mich test64: socket send blockfs file pass\n");
+    serial64_write("Mich test64: socket send adytumfs file pass\n");
     serial64_write("Mich test64: ICMP checksum pass\n");
     serial64_write("Mich test64: ICMP echo request and reply pass\n");
     serial64_write("Mich test64: ICMP rate limit pass\n");

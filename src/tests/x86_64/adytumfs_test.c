@@ -1,11 +1,11 @@
 #include "types.h"
 #include "object.h"
 #include "block.h"
-#include "blockfs.h"
+#include "adytumfs.h"
 #include "vfs.h"
 #include "resource.h"
 
-int test_blockfs64(void) {
+int test_adytumfs64(void) {
     u32 objects = object_active_count();
     u32 nodes = vfs_node_active_count();
     u32 files = vfs_file_active_count();
@@ -22,8 +22,8 @@ int test_blockfs64(void) {
         received[i] = 0;
     }
     u32 transferred = 0;
-    int valid = root && mnt && dev && !blockfs_format(dev) &&
-        !vfs_mount_blockfs(mnt, dev);
+    int valid = root && mnt && dev && !adytumfs_format(dev) &&
+        !vfs_mount_adytumfs(mnt, dev);
     struct kernel_object *disk = valid ? vfs_lookup(root, "disk") : 0;
     struct kernel_object *node = disk ?
         vfs_create_mode(disk, "hello", VFS_NODE_REGULAR, 0604) : 0;
@@ -39,7 +39,7 @@ int test_blockfs64(void) {
         !vfs_read(opened, 0, received, sizeof(received), &transferred) &&
         transferred == sizeof(received) &&
         !vfs_stat(opened, &info) &&
-        info.filesystem == VFS_FILESYSTEM_BLOCKFS &&
+        info.filesystem == VFS_FILESYSTEM_ADYTUMFS &&
         info.size == sizeof(payload) && info.mode == 0604 && !info.readonly;
     for (u32 i = 0; i < 16; i++)
         if (received[i] != payload[i]) valid = 0;
@@ -53,7 +53,7 @@ int test_blockfs64(void) {
     }
 
     int first_unmount = mnt && !vfs_unmount(mnt);
-    int remounted = first_unmount && !vfs_mount_blockfs(mnt, dev);
+    int remounted = first_unmount && !vfs_mount_adytumfs(mnt, dev);
     struct kernel_object *fresh_directory = remounted ?
         vfs_lookup(root, "disk") : 0;
     struct kernel_object *fresh = fresh_directory ?
@@ -77,7 +77,7 @@ int test_blockfs64(void) {
         !vfs_unlink(fresh_directory, "hello") &&
         !vfs_unlink(fresh_folder, "nested") &&
         !vfs_unlink(fresh_directory, "folder") && !vfs_unmount(mnt);
-    int final_remount = second_unmount && !vfs_mount_blockfs(mnt, dev);
+    int final_remount = second_unmount && !vfs_mount_adytumfs(mnt, dev);
     struct kernel_object *final_directory = final_remount ?
         vfs_lookup(root, "disk") : 0;
     struct kernel_object *missing = final_directory ?
@@ -109,7 +109,7 @@ int test_blockfs64(void) {
     return valid ? 0 : -1;
 }
 
-int test_blockfs_pages64(void) {
+int test_adytumfs_pages64(void) {
     u32 objects = object_active_count();
     u32 nodes = vfs_node_active_count();
     u32 files = vfs_file_active_count();
@@ -119,8 +119,8 @@ int test_blockfs_pages64(void) {
     struct kernel_object *mnt = root ?
         vfs_create(root, "pages", VFS_NODE_DIRECTORY) : 0;
     struct kernel_object *dev = block_create(320, 0);
-    int valid = root && mnt && dev && !blockfs_format(dev) &&
-        !vfs_mount_blockfs(mnt, dev);
+    int valid = root && mnt && dev && !adytumfs_format(dev) &&
+        !vfs_mount_adytumfs(mnt, dev);
     struct kernel_object *disk = valid ? vfs_lookup(root, "pages") : 0;
     struct kernel_object *node = disk ?
         vfs_create(disk, "wide", VFS_NODE_REGULAR) : 0;
@@ -185,7 +185,7 @@ int test_blockfs_pages64(void) {
 
     // Survives a remount: the flush really landed on the device.
     if (mnt && vfs_unmount(mnt)) valid = 0;
-    if (mnt && vfs_mount_blockfs(mnt, dev)) valid = 0;
+    if (mnt && vfs_mount_adytumfs(mnt, dev)) valid = 0;
     struct kernel_object *again = valid ? vfs_lookup(root, "pages") : 0;
     struct kernel_object *reopened_node = again ?
         vfs_lookup(again, "wide") : 0;

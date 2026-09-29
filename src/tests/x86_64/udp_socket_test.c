@@ -1,7 +1,7 @@
 #include "net_test.h"
 #include "vfs.h"
 #include "block.h"
-#include "blockfs.h"
+#include "adytumfs.h"
 
 static int unreachable(const struct ipv4_packet_view *packet, void *ctx) {
     return icmp_send_port_unreachable((struct icmp_context *)ctx, packet);
@@ -975,8 +975,8 @@ int test_socket_send_disk_file(const struct test64_env *env) {
     struct kernel_object *mount_point = root ?
         vfs_create(root, "sendfs", VFS_NODE_DIRECTORY) : 0;
     struct kernel_object *dev = block_create(320, 0);
-    valid = valid && mount_point && dev && !blockfs_format(dev) &&
-        !vfs_mount_blockfs(mount_point, dev);
+    valid = valid && mount_point && dev && !adytumfs_format(dev) &&
+        !vfs_mount_adytumfs(mount_point, dev);
     struct kernel_object *disk = valid ? vfs_lookup(root, "sendfs") : 0;
     struct kernel_object *node = disk ?
         vfs_create(disk, "payload.bin", VFS_NODE_REGULAR) : 0;

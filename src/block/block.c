@@ -44,7 +44,7 @@ struct block_state {
 static struct block_state devices[BLOCK_DEVICE_MAX];
 
 // Weak reference to the capsule-registered device so an in-kernel consumer (a
-// test, blockfs) can reach it the way net_interface_lookup exposes a registered
+// test, adytumfs) can reach it the way net_interface_lookup exposes a registered
 // interface. Weak is safe because the kernel run queue is single-threaded, so no
 // consumer holds this across a preemption; block_destroy clears it, and a capsule
 // restart simply re-registers, replacing a dead entry.
