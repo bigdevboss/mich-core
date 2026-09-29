@@ -3,6 +3,7 @@
 
 #include "types.h"
 #include "object.h"
+#include "siphash.h"
 
 #define TCP_HEADER_MIN 20
 #define TCP_OPTION_MAX 40
@@ -297,9 +298,8 @@ struct tcp_deadline {
 
 struct tcp_context {
     struct tcp_connection connections[TCP_CONNECTION_MAX];
-    u64 sequence_key0;
-    u64 sequence_key1;
-    u32 next_sequence;
+    u8 sequence_key[SIPHASH_KEY_SIZE];
+    u32 open_count;
     u32 now;
     struct tcp_stats stats;
     const struct tcp_cc_ops *cc;
@@ -347,7 +347,7 @@ int tcp_build_ipv6_opts(void *buffer, u32 buffer_length,
                         u8 flags, u16 window,
                         const void *options, u32 option_length,
                         const void *payload, u32 payload_length);
-void tcp_init(struct tcp_context *tcp, u64 sequence_seed);
+void tcp_init(struct tcp_context *tcp, const u8 key[SIPHASH_KEY_SIZE]);
 u64 tcp_listen(struct tcp_context *tcp, u32 local_address, u16 local_port);
 u64 tcp_listen_ipv6(struct tcp_context *tcp,
                     const u8 local_address[16], u16 local_port);

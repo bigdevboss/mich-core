@@ -5,6 +5,8 @@
 #include "event.h"
 #include "resource.h"
 #include "socket.h"
+#include "entropy.h"
+#include "crypto.h"
 
 static struct net_interface interfaces[NET_INTERFACE_MAX];
 static struct tcp_context tcp_contexts[NET_INTERFACE_TCP_MAX];
@@ -12,24 +14,6 @@ static u32 tcp_context_used[NET_INTERFACE_TCP_MAX];
 static struct kernel_object *registry[NET_INTERFACE_MAX];
 static struct route_table *route_table;
 static u32 next_interface_id;
-static u64 sequence_entropy_seed = 0x4D4943484E455453ULL;
-
-void net_interface_set_entropy(u64 entropy) {
-    if (entropy) sequence_entropy_seed = entropy;
-}
-
-static u64 tcp_sequence_entropy(const struct net_interface *interface,
-                                u32 address) {
-    u64 value = sequence_entropy_seed ^ (u64)(uptr_t)interface;
-    value ^= (u64)address << 17;
-    value ^= (u64)interface->interface_id << 49;
-    value ^= (u64)interface->now << 32;
-    for (u32 byte = 0; byte < 6; byte++)
-        value ^= (u64)interface->mac[byte] << (byte * 8);
-    sequence_entropy_seed = value * 0x9E3779B97F4A7C15ULL + 1;
-    return value ? value : 1;
-}
-
 static int name_valid(const char *name) {
     if (!name || !name[0]) return 0;
     for (u32 index = 0; index < NET_INTERFACE_NAME_MAX; index++)
@@ -873,8 +857,17 @@ int net_interface_set_ipv4(struct kernel_object *object,
         tcp_context_used[tcp_slot] = 1;
         interface->tcp_slot = tcp_slot;
         interface->tcp = &tcp_contexts[tcp_slot];
-        tcp_init(interface->tcp,
-                 tcp_sequence_entropy(interface, address));
+        // The ISN secret comes from the audited ChaCha20 DRBG, never from a
+        // raw timestamp, and a failed draw is fatal rather than a weak key.
+        u8 isn_key[SIPHASH_KEY_SIZE];
+        if (entropy_fill(isn_key, sizeof(isn_key))) {
+            tcp_context_used[tcp_slot] = 0;
+            interface->tcp = 0;
+            interface->tcp_slot = NET_INTERFACE_TCP_MAX;
+            return -1;
+        }
+        tcp_init(interface->tcp, isn_key);
+        crypto_zero(isn_key, sizeof(isn_key));
         // tcp_set_mss caps at the retransmit/OOO payload, not the MTU.
         tcp_set_mss(interface->tcp, (u16)(interface->mtu - 40));
         tcp_set_pmtu_blackhole_callback(interface->tcp,
@@ -1024,10 +1017,10 @@ int net_interface_tcp_probe_start(struct kernel_object *object,
         !interface->ipv4_ready || interface->tcp_probe_connection ||
         !destination || !port)
         return -1;
-    // Mix next_sequence into the local port so two interfaces sharing an
+    // Mix open_count into the local port so two interfaces sharing an
     // interface_id low byte do not collide.
     u16 local_port = (u16)(55000 +
-        ((interface->interface_id + interface->tcp->next_sequence) & 0xFF));
+        ((interface->interface_id + interface->tcp->open_count) & 0xFF));
     u64 connection = tcp_active_open(
         interface->tcp, interface->ipv4_address, local_port,
         destination, port);
@@ -1160,7 +1153,7 @@ int net_interface_tcp_connect(struct kernel_object *object,
         !destination || !port || !tcp || !connection)
         return -1;
     u16 local_port = (u16)(49152 +
-        ((interface->interface_id + interface->tcp->next_sequence) & 0x3FFF));
+        ((interface->interface_id + interface->tcp->open_count) & 0x3FFF));
     u64 id = tcp_active_open(interface->tcp, interface->ipv4_address,
                              local_port, destination, port);
     if (!id) return -1;

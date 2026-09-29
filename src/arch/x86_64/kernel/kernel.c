@@ -204,30 +204,6 @@ static void wrmsr(u32 msr, u64 value) {
                      "d"((u32)(value >> 32)));
 }
 
-static u64 network_sequence_entropy(void) {
-    u32 low;
-    u32 high;
-    __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
-    u64 value = ((u64)high << 32) | low;
-    u32 eax;
-    u32 ebx;
-    u32 ecx;
-    u32 edx;
-    __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
-                     : "a"(1), "c"(0));
-    if (ecx & (1u << 30)) {
-        u64 random;
-        u8 valid;
-        __asm__ volatile("rdrand %0; setc %1"
-                         : "=r"(random), "=qm"(valid));
-        if (valid) value ^= random;
-    }
-    (void)eax;
-    (void)ebx;
-    (void)edx;
-    return value ? value : 1;
-}
-
 int serial64_user_write(u64 address) {
     if (address < VM64_PROGRAM_BASE || address >= VM64_PROGRAM_LIMIT) return -1;
     u64 remaining = VM64_PROGRAM_LIMIT - address;
@@ -927,7 +903,6 @@ static int network_runtime_init(void) {
         return -1;
     }
     route_init(&runtime_routes);
-    net_interface_set_entropy(network_sequence_entropy());
     if (net_interface_init(&runtime_routes)) {
         loopback_destroy(&runtime_loopback);
         return -1;

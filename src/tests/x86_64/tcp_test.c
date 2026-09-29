@@ -1,5 +1,16 @@
 #include "net_test.h"
 
+// Expands the historic per-context seed into a SipHash key so each test keeps a
+// distinct initial sequence stream. The returned buffer is copied by tcp_init.
+static const u8 *isn_key(u64 seed) {
+    static u8 key[SIPHASH_KEY_SIZE];
+    for (u32 index = 0; index < 8; index++) {
+        key[index] = (u8)(seed >> (index * 8));
+        key[8 + index] = (u8)((seed + 0x9E3779B97F4A7C15ULL) >> (index * 8));
+    }
+    return key;
+}
+
 struct udpv6_test_link {
     struct ipv6_context *ipv6;
     u32 transmitted;
@@ -89,8 +100,8 @@ int test_tcp(void) {
     static struct tcp_context server;
     const u32 client_address = 0x0A000002u;
     const u32 server_address = 0x0A000003u;
-    tcp_init(&client, 1000);
-    tcp_init(&server, 9000);
+    tcp_init(&client, isn_key(1000));
+    tcp_init(&server, isn_key(9000));
     u64 listener = tcp_listen(&server, server_address, 8080);
     u64 active = tcp_active_open(&client, client_address, 50000,
                                  server_address, 8080);
@@ -274,7 +285,7 @@ int test_tcp(void) {
         !tcp_parse(segment, (u32)length, &view) &&
         view.sequence == 123 && view.acknowledgement == 456;
     static struct tcp_context tcp6;
-    tcp_init(&tcp6, 6000);
+    tcp_init(&tcp6, isn_key(6000));
     u64 connection6 = tcp_active_open_ipv6(
         &tcp6, source6, 51000, destination6, 8081);
     struct tcp_transmit syn6;
@@ -306,7 +317,7 @@ int test_tcp(void) {
         &tcp6, connection6, received, sizeof(received), &received_length) &&
         received_length == sizeof(payload);
     static struct tcp_context passive6;
-    tcp_init(&passive6, 0x60006000u);
+    tcp_init(&passive6, isn_key(0x60006000u));
     u64 listener6 = tcp_listen_ipv6(&passive6, destination6, 8082);
     length = tcp_build_ipv6(
         segment, sizeof(segment), source6, destination6,
@@ -329,7 +340,7 @@ int test_tcp(void) {
     valid = valid && !tcp_connection_state(
         &passive6, accepted6, &state6) && state6 == TCP_STATE_ESTABLISHED;
     static struct tcp_context stress;
-    tcp_init(&stress, 0x12345678u);
+    tcp_init(&stress, isn_key(0x12345678u));
     u32 stress_sequences[3] = {0, 0, 0};
     for (u32 cycle = 0; cycle < 1024 && valid; cycle++) {
         u64 connection = tcp_active_open(
@@ -349,7 +360,7 @@ int test_tcp(void) {
         stress_sequences[1] - stress_sequences[0] != 0x10001u &&
         stress_sequences[2] - stress_sequences[1] != 0x10001u;
     static struct tcp_context timeout;
-    tcp_init(&timeout, 77);
+    tcp_init(&timeout, isn_key(77));
     u64 timed = tcp_active_open(
         &timeout, client_address, 45000, server_address, 8080);
     struct tcp_transmit timed_transmit;
@@ -369,7 +380,7 @@ int test_tcp(void) {
         !tcp_take_error(&timeout, timed, &timeout_error) &&
         timeout_error == 0;
     static struct tcp_context persist;
-    tcp_init(&persist, 500);
+    tcp_init(&persist, isn_key(500));
     u64 persist_id = tcp_active_open(
         &persist, client_address, 46000, server_address, 8080);
     struct tcp_connection *persist_connection =
@@ -399,7 +410,7 @@ int test_tcp(void) {
         persist_connection->state == TCP_STATE_FIN_WAIT_1 &&
         persist_connection->detached;
     static struct tcp_context flood;
-    tcp_init(&flood, 900);
+    tcp_init(&flood, isn_key(900));
     u64 flood_listener = tcp_listen(&flood, server_address, 9090);
     valid = valid && flood_listener &&
         !tcp_set_listener_backlog(&flood, flood_listener, 8);
@@ -452,8 +463,8 @@ int test_tcp(void) {
     //
     static struct tcp_context sack_client;
     static struct tcp_context sack_server;
-    tcp_init(&sack_client, 3001);
-    tcp_init(&sack_server, 3002);
+    tcp_init(&sack_client, isn_key(3001));
+    tcp_init(&sack_server, isn_key(3002));
     u64 sack_listener = tcp_listen(&sack_server, server_address, 9999);
     u64 sack_id = tcp_active_open(&sack_client, client_address, 60000,
                                   server_address, 9999);
@@ -651,7 +662,7 @@ int test_tcp(void) {
     // cwnd clamped to BDP (floored at 4 MSS).
     //
     static struct tcp_context bbr_ctx;
-    tcp_init(&bbr_ctx, 4242);
+    tcp_init(&bbr_ctx, isn_key(4242));
     u64 bbr_id = tcp_active_open(&bbr_ctx, client_address, 61000,
                                  server_address, 9001);
     struct tcp_connection *bbr_connection = bbr_id
@@ -711,7 +722,7 @@ int test_tcp(void) {
     // slow start adds the acked bytes per ACK.
     //
     static struct tcp_context reno_ctx;
-    tcp_init(&reno_ctx, 5678);
+    tcp_init(&reno_ctx, isn_key(5678));
     tcp_set_cc(&reno_ctx, tcp_cc_reno());
     u64 reno_id = tcp_active_open(&reno_ctx, client_address, 61001,
                                   server_address, 9001);
@@ -747,7 +758,7 @@ int test_tcp(void) {
     // the combined ACK.
     //
     static struct tcp_context af_ctx;
-    tcp_init(&af_ctx, 777);
+    tcp_init(&af_ctx, isn_key(777));
     tcp_set_ack_filter(&af_ctx, 1);
     u64 af_id = tcp_active_open(&af_ctx, client_address, 62000,
                                 server_address, 9002);
@@ -808,7 +819,7 @@ int test_tcp(void) {
     // events via the timer version token.
     //
     static struct tcp_context heap_ctx;
-    tcp_init(&heap_ctx, 555);
+    tcp_init(&heap_ctx, isn_key(555));
     u64 h1 = tcp_active_open(&heap_ctx, client_address, 63000,
                              server_address, 9003);
     u64 h2 = tcp_active_open(&heap_ctx, client_address, 63001,
@@ -859,7 +870,7 @@ int test_tcp(void) {
     struct tcp_transmit optsz;
     valid = valid && sizeof(optsz.options) >= 20;
     static struct tcp_context close_ctx;
-    tcp_init(&close_ctx, 8800);
+    tcp_init(&close_ctx, isn_key(8800));
     u64 close_id = tcp_active_open(&close_ctx, client_address, 64000,
                                    server_address, 9100);
     struct tcp_connection *close_c = close_id
@@ -880,8 +891,8 @@ int test_tcp(void) {
         close_tx.flags == (TCP_FLAG_RST | TCP_FLAG_ACK);
     static struct tcp_context sim_client;
     static struct tcp_context sim_server;
-    tcp_init(&sim_client, 8811);
-    tcp_init(&sim_server, 8812);
+    tcp_init(&sim_client, isn_key(8811));
+    tcp_init(&sim_server, isn_key(8812));
     u64 sim_listener = tcp_listen(&sim_server, server_address, 9102);
     u64 sim_id = tcp_active_open(&sim_client, client_address, 64002,
                                  server_address, 9102);
@@ -939,8 +950,8 @@ int test_tcp(void) {
         sim_state == TCP_STATE_TIME_WAIT;
     static struct tcp_context fin_client;
     static struct tcp_context fin_server;
-    tcp_init(&fin_client, 8801);
-    tcp_init(&fin_server, 8802);
+    tcp_init(&fin_client, isn_key(8801));
+    tcp_init(&fin_server, isn_key(8802));
     u64 fin_listener = tcp_listen(&fin_server, server_address, 9101);
     u64 fin_id = tcp_active_open(&fin_client, client_address, 64001,
                                  server_address, 9101);
@@ -1052,7 +1063,7 @@ int test_tcp(void) {
     // payloads and SYNs must not look like a too-big packet.
     //
     static struct tcp_context hole;
-    tcp_init(&hole, 9001);
+    tcp_init(&hole, isn_key(9001));
     tcp_set_pmtu_blackhole_callback(&hole, hole_blackhole, 0);
     hole_mtu = 0;
     hole_family = 0;
@@ -1255,8 +1266,8 @@ int test_tcp_pages64(void) {
     const u32 server_address = 0x0A00000Bu;
     u32 objects = object_active_count();
     u32 free_pages = pmm_free_pages();
-    tcp_init(&client, 2000);
-    tcp_init(&server, 2100);
+    tcp_init(&client, isn_key(2000));
+    tcp_init(&server, isn_key(2100));
     struct kernel_object *pages = page_resource_create();
     struct kernel_object *big = page_resource_create();
     int valid = pages && big && !page_resource_grow(pages, 2) &&
