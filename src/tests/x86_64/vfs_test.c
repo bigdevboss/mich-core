@@ -100,6 +100,16 @@ int test_vfs64(void) {
         vfs_resolve(root, "/../../usr") : 0;
     struct kernel_object *trailing = root ?
         vfs_resolve(root, "/usr/lib/mich/config/") : 0;
+    struct kernel_object *beneath_ok = mich ?
+        vfs_resolve_beneath(mich, "config") : 0;
+    struct kernel_object *beneath_dotdot = usr ?
+        vfs_resolve_beneath(usr, "lib/../lib/mich/config") : 0;
+    int beneath_confined = usr && mich && boot_directory &&
+        !vfs_resolve_beneath(usr, "..") &&
+        !vfs_resolve_beneath(usr, "lib/../..") &&
+        !vfs_resolve_beneath(mich, "../mich/config") &&
+        !vfs_resolve_beneath(mich, "/usr/lib/mich/config") &&
+        !vfs_resolve_beneath(boot_directory, "..");
     char deep[VFS_PATH_MAX];
     u32 deep_length = 0;
     for (u32 component = 0; component < VFS_PATH_COMPONENT_MAX + 1;
@@ -110,6 +120,8 @@ int test_vfs64(void) {
     deep[deep_length] = 0;
     valid = valid && usr && lib && mich && path_file &&
         absolute == path_file && relative == path_file && clamped == usr &&
+        beneath_ok == path_file && beneath_dotdot == path_file &&
+        beneath_confined &&
         !trailing && !vfs_resolve(root, deep) &&
         !vfs_unlink_path(root, "/usr/lib/mich/config") &&
         !vfs_unlink_path(root, "/usr/lib/mich") &&
@@ -118,6 +130,8 @@ int test_vfs64(void) {
     if (absolute) object_release(absolute);
     if (relative) object_release(relative);
     if (clamped) object_release(clamped);
+    if (beneath_ok) object_release(beneath_ok);
+    if (beneath_dotdot) object_release(beneath_dotdot);
     if (path_file) object_release(path_file);
     if (mich) object_release(mich);
     if (lib) object_release(lib);

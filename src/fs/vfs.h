@@ -69,6 +69,10 @@ struct kernel_object *vfs_lookup(struct kernel_object *directory,
                                  const char *name);
 struct kernel_object *vfs_resolve(struct kernel_object *start,
                                   const char *path);
+// Resolves path relative to start with start as the top of the namespace: any
+// ".." that would ascend past start, and any absolute path, fails closed.
+struct kernel_object *vfs_resolve_beneath(struct kernel_object *start,
+                                          const char *path);
 struct kernel_object *vfs_create_path(struct kernel_object *start,
                                       const char *path, u32 type);
 int vfs_unlink_path(struct kernel_object *start, const char *path);
