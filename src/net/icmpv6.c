@@ -183,6 +183,10 @@ static int handle_echo(struct icmpv6_context *icmpv6,
         ipv6_address_unspecified(packet->source))
         return -1;
     icmpv6->stats.echo_requests++;
+    if (ipv6_address_multicast(packet->destination)) {
+        icmpv6->stats.multicast_suppressed++;
+        return 0;
+    }
     if (!reply_allowed(icmpv6)) return 0;
     u8 reply[ICMPV6_MESSAGE_MAX];
     if (packet->payload_length > sizeof(reply)) return -1;
