@@ -62,6 +62,8 @@ int tests64_run(const struct test64_env *env) {
     serial64_write("Mich test64: RTC civil date conversion pass\n");
     if (test_report_record(TEST_ID_SHA256, test_sha256_64())) return -1;
     serial64_write("Mich test64: SHA-256, HMAC and HKDF pass\n");
+    if (test_report_record(TEST_ID_SIPHASH, test_siphash64())) return -1;
+    serial64_write("Mich test64: SipHash-2-4 pass\n");
     if (test_report_record(TEST_ID_AES_GCM, test_aes_gcm64())) return -1;
     serial64_write("Mich test64: AES-128-GCM pass\n");
     if (test_report_record(TEST_ID_X25519, test_x25519_64())) return -1;
