@@ -834,7 +834,7 @@ release-check:
 	$(MAKE) test64-amd-iommu
 	$(MAKE) test64-panic
 	! grep -q '—' README.md
-	grep -q '#define MICH_VERSION_STRING "0.1.0"' src/core/version.h
+	grep -q '#define MICH_VERSION_STRING "0.2.0"' src/core/version.h
 	git diff --check
 
 DEPFILES = $(OBJS64:.o=.d) $(OBJS64_TEST:.o=.d) $(PORTABLE64_OBJS:.o=.d) \
