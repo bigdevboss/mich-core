@@ -109,6 +109,22 @@ static int name_constraints_permit(const struct x509_certificate *issuer,
     return 0;
 }
 
+// The leaf has to be usable for TLS server authentication in its own right. A
+// certificate legitimately issued off a shared public CA for another purpose -
+// client authentication, code signing, e-mail - must not be accepted for a
+// server connection. An absent extendedKeyUsage leaves the purpose unrestricted
+// per RFC 5280, and this stack only negotiates (EC)DHE, so a present keyUsage
+// must allow digitalSignature.
+static int leaf_usable_for_server(const struct x509_certificate *leaf) {
+    if (leaf->has_extended_key_usage && !leaf->eku_server_auth &&
+        !leaf->eku_any)
+        return -1;
+    if (leaf->has_key_usage &&
+        !(leaf->key_usage & X509_KEY_USAGE_DIGITAL_SIGNATURE))
+        return -1;
+    return 0;
+}
+
 static int names_equal(const struct x509_name *left,
                        const struct x509_name *right) {
     return left->length == right->length &&
@@ -231,6 +247,7 @@ int x509_verify_chain(const u8 *const *chain, const u32 *lengths, u32 count,
     if (x509_match_host(&parsed[0], host, host_length)) return -1;
     // A leaf must not be able to sign for anyone else.
     if (parsed[0].has_basic_constraints && parsed[0].is_ca) return -1;
+    if (leaf_usable_for_server(&parsed[0])) return -1;
 
     // A technically-constrained sub-CA must not issue a leaf for a host outside
     // its permitted subtrees. Every issuer in the presented chain is checked
