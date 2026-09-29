@@ -128,7 +128,6 @@ struct net_interface {
 };
 
 int net_interface_init(struct route_table *routes);
-void net_interface_set_entropy(u64 entropy);
 struct kernel_object *net_interface_create(
     struct driver_domain *owner, struct kernel_object *pool,
     struct kernel_object *rx_ring, struct kernel_object *tx_ring,

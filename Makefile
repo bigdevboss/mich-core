@@ -213,7 +213,7 @@ $(OBJ64)/vnic_core.o: $(NET)/vnic.c $(NET)/vnic.h $(NET)/net_buffer.h $(OBJECTS)
 $(OBJ64)/vnic_benchmark.o: $(ARCH64_KERNEL)/vnic_benchmark.c $(NET)/vnic_benchmark.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/net_interface_core.o: $(NET)/net_interface.c $(NET)/net_interface.h $(DRIVER)/driver_supervisor.h | $(OBJ64)
+$(OBJ64)/net_interface_core.o: $(NET)/net_interface.c $(NET)/net_interface.h $(DRIVER)/driver_supervisor.h $(CORE)/entropy.h $(CRYPTO)/crypto.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
 $(OBJ64)/ethernet_core.o: $(NET)/ethernet.c $(NET)/ethernet.h $(NET)/vnic.h | $(OBJ64)
@@ -243,7 +243,7 @@ $(OBJ64)/udp_core.o: $(NET)/udp.c $(NET)/udp.h $(NET)/ipv4.h | $(OBJ64)
 $(OBJ64)/udpv6_core.o: $(NET)/udpv6.c $(NET)/udpv6.h $(NET)/ipv6.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/tcp_core.o: $(NET)/tcp.c $(NET)/tcp.h | $(OBJ64)
+$(OBJ64)/tcp_core.o: $(NET)/tcp.c $(NET)/tcp.h $(CRYPTO)/siphash.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
 $(OBJ64)/tcp_cc_core.o: $(NET)/tcp_cc.c $(NET)/tcp.h | $(OBJ64)

@@ -213,19 +213,10 @@ int tcp_build_ipv6(void *buffer, u32 capacity,
                                flags, window, 0, 0, payload, payload_length);
 }
 
-static u64 sequence_mix(u64 value) {
-    value ^= value >> 30;
-    value *= 0xBF58476D1CE4E5B9ULL;
-    value ^= value >> 27;
-    value *= 0x94D049BB133111EBULL;
-    return value ^ (value >> 31);
-}
-
-void tcp_init(struct tcp_context *tcp, u64 seed) {
-    if (!seed) seed = 1;
-    tcp->sequence_key0 = sequence_mix(seed ^ 0x736F6D6570736575ULL);
-    tcp->sequence_key1 = sequence_mix(seed ^ 0x646F72616E646F6DULL);
-    tcp->next_sequence = 1;
+void tcp_init(struct tcp_context *tcp, const u8 key[SIPHASH_KEY_SIZE]) {
+    for (u32 index = 0; index < SIPHASH_KEY_SIZE; index++)
+        tcp->sequence_key[index] = key[index];
+    tcp->open_count = 0;
     tcp->now = 0;
     for (u32 i = 0; i < TCP_CONNECTION_MAX; i++) {
         tcp->connections[i].generation = i + 1;
@@ -242,24 +233,38 @@ void tcp_init(struct tcp_context *tcp, u64 seed) {
     tcp->pmtu_blackhole_context = 0;
 }
 
+// RFC 6528: ISN = M + F(local addr, remote addr, local port, remote port),
+// where M is a timer and F is a keyed hash a peer cannot predict without the
+// secret key. SipHash is F; tcp->now supplies M so a fresh incarnation of the
+// same four-tuple does not restart in the sequence space of the old one.
 static u32 next_initial_sequence(struct tcp_context *tcp,
                                  const struct tcp_connection *connection) {
-    u64 tuple = ((u64)connection->family << 56) |
-        ((u64)connection->local_port << 16) | connection->remote_port;
-    tuple ^= ((u64)connection->local_address << 32) |
-        connection->remote_address;
+    u8 tuple[38];
+    u32 length = 0;
+    tuple[length++] = (u8)connection->family;
+    tuple[length++] = (u8)(connection->local_port >> 8);
+    tuple[length++] = (u8)connection->local_port;
+    tuple[length++] = (u8)(connection->remote_port >> 8);
+    tuple[length++] = (u8)connection->remote_port;
     if (connection->family == 6) {
-        for (u32 byte = 0; byte < 16; byte++) {
-            tuple ^= (u64)connection->local_address6[byte] << ((byte & 7) * 8);
-            tuple = sequence_mix(tuple);
-            tuple ^= (u64)connection->remote_address6[byte] << ((byte & 7) * 8);
-        }
+        for (u32 byte = 0; byte < 16; byte++)
+            tuple[length++] = connection->local_address6[byte];
+        for (u32 byte = 0; byte < 16; byte++)
+            tuple[length++] = connection->remote_address6[byte];
+    } else {
+        tuple[length++] = (u8)(connection->local_address >> 24);
+        tuple[length++] = (u8)(connection->local_address >> 16);
+        tuple[length++] = (u8)(connection->local_address >> 8);
+        tuple[length++] = (u8)connection->local_address;
+        tuple[length++] = (u8)(connection->remote_address >> 24);
+        tuple[length++] = (u8)(connection->remote_address >> 16);
+        tuple[length++] = (u8)(connection->remote_address >> 8);
+        tuple[length++] = (u8)connection->remote_address;
     }
-    u64 counter = tcp->next_sequence++;
-    u64 value = sequence_mix(tuple ^ tcp->sequence_key0 ^
-                             (counter * 0x9E3779B97F4A7C15ULL));
-    value = sequence_mix(value ^ tcp->sequence_key1);
-    return (u32)(value ^ (value >> 32));
+    // Counts opened connections so a caller can spread ephemeral local ports;
+    // it no longer feeds the ISN, which now rests on the keyed hash alone.
+    tcp->open_count++;
+    return (u32)siphash_2_4(tcp->sequence_key, tuple, length) + tcp->now;
 }
 
 static u32 loan_spanned(const struct tcp_send_loan *loan) {
