@@ -136,4 +136,20 @@ int adytumfs_free_run(struct kernel_object *device,
                       struct adytumfs_superblock *super,
                       u64 start, u64 length);
 
+// Read or write one inode by number from the inode table (pack/unpack plus a
+// read-modify-write of its 4 KiB table block so siblings are preserved).
+int adytumfs_inode_read(struct kernel_object *device,
+                        const struct adytumfs_superblock *super,
+                        u64 inode_num, struct adytumfs_inode *out);
+int adytumfs_inode_write(struct kernel_object *device,
+                         const struct adytumfs_superblock *super,
+                         u64 inode_num, const struct adytumfs_inode *in);
+// Allocate the first free inode slot, initialised with mode and link count 1 and
+// a bumped generation, or free an inode. super->free_inodes is kept current.
+int adytumfs_inode_alloc(struct kernel_object *device,
+                         struct adytumfs_superblock *super,
+                         u16 mode, u64 *inode_num);
+int adytumfs_inode_free(struct kernel_object *device,
+                        struct adytumfs_superblock *super, u64 inode_num);
+
 #endif
