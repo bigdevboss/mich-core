@@ -46,4 +46,39 @@ static inline void adytumfs_write_le64(u8 *p, u64 value) {
 #define ADYTUMFS_FORMAT_VERSION 1u
 #define ADYTUMFS_ROOT_INODE 1u
 
+// The superblock lives in block 0 (a backup copy in the last block). Its
+// checksum is the last field and covers every byte before it, so it never has
+// to hash itself.
+#define ADYTUMFS_SIGNATURE "AdytumFS"
+#define ADYTUMFS_SIGNATURE_SIZE 8u
+#define ADYTUMFS_SUPER_CHECKSUM_OFFSET 4092u
+
+struct adytumfs_superblock {
+    u32 format_version;
+    u32 block_size;
+    u64 total_blocks;
+    u64 block_bitmap_start;
+    u64 block_bitmap_blocks;
+    u64 inode_table_start;
+    u64 inode_table_blocks;
+    u64 inode_count;
+    u64 root_inode;
+    u64 data_start;
+    u64 free_blocks;
+    u64 free_inodes;
+    u64 generation;
+    u64 feature_compat;
+    u64 feature_incompat;
+    u64 feature_ro_compat;
+    u64 data_checksum_region;
+};
+
+// Serialise a superblock into a 4 KiB block (little-endian, checksum computed).
+void adytumfs_super_pack(u8 *block, const struct adytumfs_superblock *super);
+// Parse a 4 KiB block: verifies signature, version, block size, and checksum.
+int adytumfs_super_unpack(struct adytumfs_superblock *super, const u8 *block);
+// Check that the region layout is internally consistent and fits device_blocks.
+int adytumfs_super_valid(const struct adytumfs_superblock *super,
+                         u64 device_blocks);
+
 #endif
