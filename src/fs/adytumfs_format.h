@@ -182,4 +182,15 @@ int adytumfs_dir_remove(struct kernel_object *device,
                         const struct adytumfs_superblock *super, u64 dir_inode,
                         const char *name, u32 name_len);
 
+// Read or write a byte range of a regular file through its extents. A write past
+// the current end grows the file (allocating blocks); size is updated. Returns 0
+// with the transferred count, or -1 on error.
+int adytumfs_file_read(struct kernel_object *device,
+                       const struct adytumfs_superblock *super, u64 inode_num,
+                       u64 offset, void *buffer, u64 length, u64 *out_read);
+int adytumfs_file_write(struct kernel_object *device,
+                        struct adytumfs_superblock *super, u64 inode_num,
+                        u64 offset, const void *buffer, u64 length,
+                        u64 *out_written);
+
 #endif

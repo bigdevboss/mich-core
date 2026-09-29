@@ -53,6 +53,7 @@ int test_adytumfs_alloc64(void);
 int test_adytumfs_inode64(void);
 int test_adytumfs_extent64(void);
 int test_adytumfs_dir64(void);
+int test_adytumfs_file64(void);
 int test_adytumfs64(void);
 int test_adytumfs_pages64(void);
 int test_nvme64(const struct test64_env *env);

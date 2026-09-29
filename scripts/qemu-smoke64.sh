@@ -574,6 +574,7 @@ for marker in \
     "Mich test64: adytumfs inode table pass" \
     "Mich test64: adytumfs extents pass" \
     "Mich test64: adytumfs directories pass" \
+    "Mich test64: adytumfs file read write pass" \
     "Mich test64: adytumfs format and mount pass" \
     "Mich test64: adytumfs file io pass" \
     "Mich test64: adytumfs busy unmount lifetime pass" \
