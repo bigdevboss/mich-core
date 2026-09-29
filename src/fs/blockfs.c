@@ -137,6 +137,18 @@ static int load_inode(struct blockfs_mount *m, u32 inode,
     u32 off = (inode % BLOCKFS_INODES_PER_SECTOR) * BLOCKFS_INODE_BYTES;
     if (block_cache_read(m->device, lba, sector, 1)) return -1;
     inode_unpack(out, sector + off);
+    // On-disk size and extent length are untrusted. A regular file spans at
+    // most BLOCKFS_FILE_SECTORS, so clamp both to that ceiling; the page path
+    // legitimately sets size before the extent is allocated, so the bound is the
+    // fixed maximum extent, not the current sectors. The truncate loop then
+    // breaks at the real extent end so no size-driven loop reaches another
+    // inode's data.
+    if (out->type == VFS_NODE_REGULAR) {
+        if (out->sectors > BLOCKFS_FILE_SECTORS)
+            out->sectors = BLOCKFS_FILE_SECTORS;
+        if (out->size > BLOCKFS_FILE_SIZE_MAX)
+            out->size = BLOCKFS_FILE_SIZE_MAX;
+    }
     return 0;
 }
 
@@ -559,6 +571,7 @@ int blockfs_truncate(u32 mount, u32 inode, u32 size, u32 *new_size) {
         u32 pos = size;
         while (pos < in.size) {
             u32 lba = in.start_lba + pos / BLOCK_SECTOR_SIZE;
+            if (lba >= in.start_lba + in.sectors) break;
             u32 skip = pos % BLOCK_SECTOR_SIZE;
             u32 n = BLOCK_SECTOR_SIZE - skip;
             if (n > in.size - pos) n = in.size - pos;
