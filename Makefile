@@ -681,28 +681,28 @@ $(DISK64): mkuefi64.py $(KERNEL64_ELF) $(KERNEL64_FLAT) $(UEFI64_EFI) $(INIT64_E
 
 $(DISK64_TEST): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(POSIXAPP64_ELF) $(POSIXDEMO64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
-		--efi $(UEFI64_EFI) $@ init64:0x20000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF)
+		--efi $(UEFI64_EFI) $@ init64:0x30000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF)
 
 # Ships the default disk (kernel, init, posix images so init's process tests
 # still pass) plus the virtio-blk capsule the kernel spots by module name.
 $(DISK64_VIRTIO_BLK): mkuefi64.py $(KERNEL64_ELF) $(KERNEL64_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(POSIXAPP64_ELF) $(POSIXDEMO64_ELF) $(VIRTIO_BLK64_ELF)
-	$(PYTHON) mkuefi64.py --efi $(UEFI64_EFI) $@ init64:0x20000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF) virtio-blk:0=$(VIRTIO_BLK64_ELF)
+	$(PYTHON) mkuefi64.py --efi $(UEFI64_EFI) $@ init64:0x30000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF) virtio-blk:0=$(VIRTIO_BLK64_ELF)
 
 # Production kernel plus the NVMe capsule the kernel spots by module name.
 $(DISK64_NVME): mkuefi64.py $(KERNEL64_ELF) $(KERNEL64_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(POSIXAPP64_ELF) $(POSIXDEMO64_ELF) $(NVME64_ELF)
-	$(PYTHON) mkuefi64.py --efi $(UEFI64_EFI) $@ init64:0x20000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF) nvme:0=$(NVME64_ELF)
+	$(PYTHON) mkuefi64.py --efi $(UEFI64_EFI) $@ init64:0x30000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF) nvme:0=$(NVME64_ELF)
 
 $(DISK64_UNIT): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(POSIXAPP64_ELF) $(POSIXDEMO64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
-		--efi $(UEFI64_EFI) $@ init64:0x120000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF)
+		--efi $(UEFI64_EFI) $@ init64:0x130000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF)
 
 $(DISK64_HARDWARE): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
-		--efi $(UEFI64_EFI) $@ init64:0x400000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF)
+		--efi $(UEFI64_EFI) $@ init64:0x410000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF)
 
 $(DISK64_DNS): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF) $(DNSPROBE64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
-		--efi $(UEFI64_EFI) $@ init64:0x400000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) dnsprobe:0=$(DNSPROBE64_ELF)
+		--efi $(UEFI64_EFI) $@ init64:0x410000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) dnsprobe:0=$(DNSPROBE64_ELF)
 # Loopback socket-path benchmark. Ships the same init flags and virtio-net
 # capsule as the dns and tls images so it reuses the kernel's probe-spawn hook,
 # but the kernel recognises the "netbench" module and skips the driver-live
@@ -711,31 +711,31 @@ $(DISK64_DNS): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_E
 # kernel. The benchmark itself never touches the NIC; it runs over loopback.
 $(DISK64_NETBENCH): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF) $(NETBENCH64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
-		--efi $(UEFI64_EFI) $@ init64:0x400000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) netbench:0=$(NETBENCH64_ELF)
+		--efi $(UEFI64_EFI) $@ init64:0x410000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) netbench:0=$(NETBENCH64_ELF)
 
 $(DISK64_TLS): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF) $(TLSPROBE64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
-		--efi $(UEFI64_EFI) $@ init64:0x400000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) tlsprobe:0x2000000=$(TLSPROBE64_ELF)
+		--efi $(UEFI64_EFI) $@ init64:0x410000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) tlsprobe:0x2000000=$(TLSPROBE64_ELF)
 
 # The kernel spawns whichever module is named "tlsprobe", so the real-internet
 # image ships the MICH_TLS_REAL build under that name. Everything else in the
 # image is identical to the local TLS test.
 $(DISK64_TLS_REAL): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF) $(TLSPROBE_REAL64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
-		--efi $(UEFI64_EFI) $@ init64:0x400000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) tlsprobe:0x2000000=$(TLSPROBE_REAL64_ELF)
+		--efi $(UEFI64_EFI) $@ init64:0x410000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) tlsprobe:0x2000000=$(TLSPROBE_REAL64_ELF)
 
 
 $(DISK64_HARDWARE_RESTART): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
-		--efi $(UEFI64_EFI) $@ init64:0x600000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF)
+		--efi $(UEFI64_EFI) $@ init64:0x610000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF)
 
 $(DISK64_HARDWARE_CIRCUIT): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
-		--efi $(UEFI64_EFI) $@ init64:0x680000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF)
+		--efi $(UEFI64_EFI) $@ init64:0x690000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF)
 
 $(DISK64_HARDWARE_RECOVERY): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF) $(VIRTIO_NET_SAFE64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
-		--efi $(UEFI64_EFI) $@ init64:0x640000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) virtio-net-safe:0=$(VIRTIO_NET_SAFE64_ELF)
+		--efi $(UEFI64_EFI) $@ init64:0x650000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) virtio-net-safe:0=$(VIRTIO_NET_SAFE64_ELF)
 
 $(DISK64_PANIC): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
