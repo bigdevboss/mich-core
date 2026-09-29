@@ -4,6 +4,7 @@
 #include "vm64.h"
 #include "resource.h"
 #include "object.h"
+#include "vtd64.h"
 
 #define MSIX64_MAX 64
 
@@ -14,6 +15,8 @@ struct msix64_state {
     usize_t mapping_length;
     volatile u32 *entry;
     u32 entry_index;
+    u16 ir_handle;
+    u8 ir_mapped;
     u8 vector;
     u8 enabled;
     u32 active;
@@ -48,6 +51,7 @@ static void msix_release(u32 source) {
     struct msix64_state *state = state_for(source);
     if (!state) return;
     if (state->entry) state->entry[3] |= 1u;
+    if (state->ir_mapped) vtd64_ir_release(state->ir_handle, 1);
     struct kernel_object *pci = 0;
     const struct msix_table_resource *table =
         msix_table_resource_get(state->table);
@@ -63,6 +67,8 @@ static void msix_release(u32 source) {
     state->mapping_length = 0;
     state->entry = 0;
     state->entry_index = 0;
+    state->ir_handle = 0;
+    state->ir_mapped = 0;
     state->vector = 0;
     state->enabled = 0;
     state->active = 0;
@@ -88,6 +94,8 @@ int msix64_init(u8 destination_apic_id) {
         states[index].mapping_length = 0;
         states[index].entry = 0;
         states[index].entry_index = 0;
+        states[index].ir_handle = 0;
+        states[index].ir_mapped = 0;
         states[index].vector = 0;
         states[index].enabled = 0;
         states[index].active = 0;
@@ -144,9 +152,24 @@ struct kernel_object *msix64_create(struct kernel_object *table_object,
         }
         state->vector = (u8)vector;
         state->entry[3] |= 1u;
-        state->entry[0] = 0xFEE00000u | ((u32)destination_id << 12);
+        u32 address = 0xFEE00000u | ((u32)destination_id << 12);
+        u32 data = (u32)vector;
+        if (vtd64_ir_active()) {
+            u16 sid = ((u16)pci->bus << 8) |
+                      ((u16)pci->device << 3) | pci->function;
+            u16 handle;
+            if (vtd64_ir_allocate(sid, (u8)vector, destination_id, 0, 1,
+                                  &handle)) {
+                msix_release(index + 1);
+                return 0;
+            }
+            vtd64_ir_compose_msi(handle, 0, &address, &data);
+            state->ir_handle = handle;
+            state->ir_mapped = 1;
+        }
+        state->entry[0] = address;
         state->entry[1] = 0;
-        state->entry[2] = (u32)vector;
+        state->entry[2] = data;
         struct kernel_object *irq =
             irq_resource_create_kind(IRQ_CONTROLLER_MSIX, index + 1,
                                      (u32)vector, IRQ_TRIGGER_EDGE,

@@ -2,6 +2,7 @@
 #include "acpi64.h"
 #include "vm64.h"
 #include "irq.h"
+#include "vtd64.h"
 
 struct ioapic64_controller {
     volatile u32 *registers;
@@ -80,9 +81,22 @@ int ioapic64_route(u32 gsi, u8 vector, u8 destination,
     if (active_low) low |= 1u << 13;
     if (level) low |= 1u << 15;
     if (masked) low |= 1u << 16;
+    u32 high = (u32)destination << 24;
+    // Under interrupt remapping the entry must carry a table handle instead of
+    // an APIC id. Legacy lines are only ever routed masked, so if the IOAPIC
+    // source-id is unavailable the compat form is left in place: a masked entry
+    // never delivers, and it will be reprogrammed remappable before any unmask.
+    if (vtd64_ir_active()) {
+        u16 source_id;
+        u16 handle;
+        if (!vtd64_ir_ioapic_source_id(&source_id) &&
+            !vtd64_ir_allocate(source_id, vector, destination, level, 1,
+                               &handle))
+            vtd64_ir_compose_ioapic(handle, vector, level, active_low, masked,
+                                    &low, &high);
+    }
     irq_state_t state = irq_save();
-    write_register(controller, (u8)(0x11 + entry * 2),
-                   (u32)destination << 24);
+    write_register(controller, (u8)(0x11 + entry * 2), high);
     write_register(controller, (u8)(0x10 + entry * 2), low);
     irq_restore(state);
     return 0;

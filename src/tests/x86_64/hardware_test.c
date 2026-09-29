@@ -126,6 +126,42 @@ out:
            object_active_count() == objects ? 0 : -1;
 }
 
+int test_vtd64_interrupt_remapping(void) {
+    if (!vtd64_ir_active()) return -1;
+    u16 sid = ((u16)0x1D << 3);
+    u8 vector = 0x71;
+    u8 destination = 0x03;
+    u16 handle;
+    if (vtd64_ir_allocate(sid, vector, destination, 0, 1, &handle)) return -1;
+    u64 low = 0;
+    u64 high = 0;
+    int valid = !vtd64_ir_entry(handle, &low, &high) && (low & 1) &&
+                ((low >> 16) & 0xFF) == vector &&
+                ((low >> 40) & 0xFF) == destination && !((low >> 4) & 1) &&
+                (u16)high == sid && ((high >> 18) & 3) == 1;
+    u32 address = 0;
+    u32 data = 0;
+    vtd64_ir_compose_msi(handle, 0, &address, &data);
+    valid = valid && (address & 0xFFF00000u) == 0xFEE00000u &&
+            (address & (1u << 3)) && !(address & (1u << 4)) &&
+            ((address >> 5) & 0x7FFFu) == handle && !data;
+    if (vtd64_ir_release(handle, 1)) valid = 0;
+    if (!vtd64_ir_entry(handle, &low, &high) && (low || high)) valid = 0;
+    u16 group;
+    if (vtd64_ir_allocate(sid, 0x80, destination, 0, 2, &group)) return -1;
+    u64 first_low = 0, first_high = 0, second_low = 0, second_high = 0;
+    valid = valid && !vtd64_ir_entry(group, &first_low, &first_high) &&
+            !vtd64_ir_entry((u16)(group + 1), &second_low, &second_high) &&
+            ((first_low >> 16) & 0xFF) == 0x80 &&
+            ((second_low >> 16) & 0xFF) == 0x81 &&
+            ((first_high >> 18) & 3) == 1 && ((second_high >> 18) & 3) == 1;
+    vtd64_ir_compose_msi(group, 1, &address, &data);
+    valid = valid && (address & (1u << 4)) &&
+            ((address >> 5) & 0x7FFFu) == group;
+    if (vtd64_ir_release(group, 2)) valid = 0;
+    return valid ? 0 : -1;
+}
+
 static int endpoint_test_notify(void *context, u32 source) {
     if (!context) return -1;
     *(u32 *)context = source;

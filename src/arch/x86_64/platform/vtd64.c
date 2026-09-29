@@ -19,15 +19,22 @@
 #define VTD64_REG_FSTS 0x34
 #define VTD64_REG_IQT 0x88
 #define VTD64_REG_IQA 0x90
+#define VTD64_REG_IRTA 0xB8
 #define VTD64_GCMD_TE (1u << 31)
 #define VTD64_GCMD_SRTP (1u << 30)
 #define VTD64_GCMD_QIE (1u << 26)
+#define VTD64_GCMD_IRE (1u << 25)
+#define VTD64_GCMD_SIRTP (1u << 24)
 #define VTD64_GSTS_TES (1u << 31)
 #define VTD64_GSTS_RTPS (1u << 30)
 #define VTD64_GSTS_QIES (1u << 26)
+#define VTD64_GSTS_IRES (1u << 25)
+#define VTD64_GSTS_IRTPS (1u << 24)
+#define VTD64_ECAP_IR (1ULL << 3)
 #define VTD64_QI_DESCRIPTORS 256
 #define VTD64_QI_CC 0x1ULL
 #define VTD64_QI_IOTLB 0x2ULL
+#define VTD64_QI_IEC 0x4ULL
 #define VTD64_QI_WAIT 0x5ULL
 #define VTD64_QI_GLOBAL (1ULL << 4)
 #define VTD64_QI_IOTLB_DRAIN ((1ULL << 6) | (1ULL << 7))
@@ -41,6 +48,11 @@
 #define VTD64_IOVA_STRIDE 0x01000000ULL
 #define VTD64_PAGE_READ 1ULL
 #define VTD64_PAGE_WRITE 2ULL
+#define VTD64_IR_ENTRIES 256
+#define VTD64_IR_SIZE 7
+#define VTD64_IRTE_PRESENT (1ULL << 0)
+#define VTD64_IRTE_TRIGGER_LEVEL (1ULL << 4)
+#define VTD64_IRTE_SVT_SID (1ULL << 18)
 
 struct vtd64_unit {
     volatile u8 *regs;
@@ -88,6 +100,9 @@ static u32 host_width;
 static int detected;
 static int translation_enabled;
 static u32 fault_count;
+static paddr_t ir_table;
+static int ir_enabled;
+static u8 ir_used[VTD64_IR_ENTRIES];
 
 static u32 reg32(const volatile u8 *base, u32 offset) {
     return *(const volatile u32 *)(base + offset);
@@ -190,6 +205,10 @@ static void reset_units(void) {
     }
     if (qi_status) pmm_free_page(qi_status);
     qi_status = 0;
+    if (ir_table) pmm_free_page(ir_table);
+    ir_table = 0;
+    ir_enabled = 0;
+    for (u32 i = 0; i < VTD64_IR_ENTRIES; i++) ir_used[i] = 0;
     unit_count = 0;
     host_width = 0;
     fault_count = 0;
@@ -254,6 +273,16 @@ static int invalidate_mask(u32 mask) {
     return 0;
 }
 
+// Drain stale interrupt remapping entries after a table write, the interrupt
+// analogue of the IOTLB flush. In the IEC descriptor bit 4 is the granularity
+// bit where 0 means global, the opposite polarity from the CC and IOTLB
+// descriptors above, so global invalidation submits the type field alone.
+static int invalidate_iec(void) {
+    for (u32 i = 0; i < unit_count; i++)
+        if (qi_submit(&units[i], VTD64_QI_IEC, 0)) return -1;
+    return 0;
+}
+
 static int unit_set_root(struct vtd64_unit *unit) {
     write64(unit->regs, VTD64_REG_RTADDR, unit->root);
     write32(unit->regs, VTD64_REG_GCMD, unit->gcmd | VTD64_GCMD_SRTP);
@@ -266,6 +295,38 @@ static int unit_enable(struct vtd64_unit *unit) {
     write32(unit->regs, VTD64_REG_GCMD, unit->gcmd);
     return wait32(unit->regs, VTD64_REG_GSTS,
                   VTD64_GSTS_TES, VTD64_GSTS_TES);
+}
+
+static int unit_set_ir_root(struct vtd64_unit *unit) {
+    write64(unit->regs, VTD64_REG_IRTA, ir_table | VTD64_IR_SIZE);
+    write32(unit->regs, VTD64_REG_GCMD, unit->gcmd | VTD64_GCMD_SIRTP);
+    return wait32(unit->regs, VTD64_REG_GSTS,
+                  VTD64_GSTS_IRTPS, VTD64_GSTS_IRTPS);
+}
+
+static int unit_enable_ir(struct vtd64_unit *unit) {
+    unit->gcmd |= VTD64_GCMD_IRE;
+    write32(unit->regs, VTD64_REG_GCMD, unit->gcmd);
+    return wait32(unit->regs, VTD64_REG_GSTS,
+                  VTD64_GSTS_IRES, VTD64_GSTS_IRES);
+}
+
+// Queued invalidation must already be running: the interrupt entry cache is
+// only reachable through QI, register-based invalidation cannot flush it. The
+// table page itself is reserved at discovery so enabling does not perturb the
+// page accounting the domain self-tests assert against.
+static int enable_ir(void) {
+    if (!ir_table) return -1;
+    zero_page(ir_table);
+    flush_page(ir_table);
+    __asm__ volatile("mfence" : : : "memory");
+    for (u32 i = 0; i < unit_count; i++)
+        if (unit_set_ir_root(&units[i])) return -1;
+    if (invalidate_iec()) return -1;
+    for (u32 i = 0; i < unit_count; i++)
+        if (unit_enable_ir(&units[i])) return -1;
+    ir_enabled = 1;
+    return 0;
 }
 
 static int unit_covers(u32 index, const struct pci_resource *pci) {
@@ -420,6 +481,17 @@ int vtd64_init(void) {
         units[i].flags = src->flags;
         unit_count++;
     }
+    int ir_supported = unit_count > 0;
+    for (u32 i = 0; i < unit_count; i++)
+        if (!(units[i].ecap & VTD64_ECAP_IR)) ir_supported = 0;
+    if (ir_supported) {
+        ir_table = pmm_alloc_page();
+        if (!ir_table) {
+            reset_units();
+            return -1;
+        }
+        zero_page(ir_table);
+    }
     detected = 1;
     return 0;
 }
@@ -462,7 +534,123 @@ int vtd64_enable(void) {
         enabled++;
     }
     translation_enabled = 1;
+    // With translation up, enable interrupt remapping wherever the hardware
+    // offers it so a device cannot forge an interrupt outside the entries bound
+    // to its own source-id. Where every unit reports the capability this is a
+    // fail-closed step: a supported-but-broken IR is treated as a hard failure
+    // rather than silently leaving the interrupt path unguarded.
+    for (u32 i = 0; i < unit_count; i++)
+        if (!(units[i].ecap & VTD64_ECAP_IR)) return 0;
+    return ir_enabled ? 0 : enable_ir();
+}
+
+int vtd64_ir_active(void) {
+    return ir_enabled;
+}
+
+// Reserve a run of consecutive remapping entries and program each to deliver a
+// fixed, physically-addressed interrupt validated against source_id. A run lets
+// multi-message MSI share one base handle while the device selects the member
+// through the subhandle, so vectors are assigned base..base+count-1.
+int vtd64_ir_allocate(u16 source_id, u8 vector, u8 destination,
+                      int level, u16 count, u16 *handle) {
+    if (!ir_enabled || !handle || !count || count > VTD64_IR_ENTRIES)
+        return -1;
+    for (u32 base = 0; base + count <= VTD64_IR_ENTRIES; base++) {
+        int available = 1;
+        for (u16 n = 0; n < count; n++)
+            if (ir_used[base + n]) {
+                available = 0;
+                break;
+            }
+        if (!available) continue;
+        for (u16 n = 0; n < count; n++) {
+            u64 *irte = &page(ir_table)[(base + n) * 2];
+            u64 low = VTD64_IRTE_PRESENT |
+                      ((u64)(u8)(vector + n) << 16) |
+                      ((u64)destination << 40);
+            if (level) low |= VTD64_IRTE_TRIGGER_LEVEL;
+            irte[0] = low;
+            irte[1] = (u64)source_id | VTD64_IRTE_SVT_SID;
+            ir_used[base + n] = 1;
+        }
+        flush_page(ir_table);
+        __asm__ volatile("mfence" : : : "memory");
+        if (invalidate_iec()) {
+            for (u16 n = 0; n < count; n++) {
+                u64 *irte = &page(ir_table)[(base + n) * 2];
+                irte[0] = 0;
+                irte[1] = 0;
+                ir_used[base + n] = 0;
+            }
+            return -1;
+        }
+        *handle = (u16)base;
+        return 0;
+    }
+    return -1;
+}
+
+int vtd64_ir_entry(u16 handle, u64 *low, u64 *high) {
+    if (!ir_table || handle >= VTD64_IR_ENTRIES || !low || !high) return -1;
+    u64 *irte = &page(ir_table)[(u32)handle * 2];
+    *low = irte[0];
+    *high = irte[1];
     return 0;
+}
+
+int vtd64_ir_release(u16 handle, u16 count) {
+    if (!ir_enabled || !count || (u32)handle + count > VTD64_IR_ENTRIES)
+        return -1;
+    for (u16 n = 0; n < count; n++)
+        if (!ir_used[handle + n]) return -1;
+    for (u16 n = 0; n < count; n++) {
+        u64 *irte = &page(ir_table)[(handle + n) * 2];
+        irte[0] = 0;
+        irte[1] = 0;
+        ir_used[handle + n] = 0;
+    }
+    flush_page(ir_table);
+    __asm__ volatile("mfence" : : : "memory");
+    return invalidate_iec();
+}
+
+// Remappable MSI address carries the entry handle, not an APIC id: the format
+// bit routes the request through the remapping table where destination and
+// vector actually live. A multi-message group sets SHV so the device's message
+// number becomes the subhandle added to this base handle.
+void vtd64_ir_compose_msi(u16 handle, int multi, u32 *address, u32 *data) {
+    u32 value = 0xFEE00000u | (1u << 3) |
+                (((u32)handle & 0x7FFFu) << 5) |
+                ((((u32)handle >> 15) & 1u) << 2);
+    if (multi) value |= 1u << 4;
+    if (address) *address = value;
+    if (data) *data = 0;
+}
+
+void vtd64_ir_compose_ioapic(u16 handle, u8 vector, int level, int active_low,
+                             int masked, u32 *low, u32 *high) {
+    u32 value = vector | ((((u32)handle >> 15) & 1u) << 11);
+    if (active_low) value |= 1u << 13;
+    if (level) value |= 1u << 15;
+    if (masked) value |= 1u << 16;
+    if (low) *low = value;
+    if (high) *high = (1u << 16) | (((u32)handle & 0x7FFFu) << 17);
+}
+
+// The IOAPIC has no config space to read a source-id from, so its remapping
+// entries take the source reported by its DMAR device scope (type 3).
+int vtd64_ir_ioapic_source_id(u16 *source_id) {
+    const struct acpi_dmar_info *dmar = acpi64_dmar();
+    if (!source_id || !dmar) return -1;
+    for (u32 i = 0; i < dmar->scope_count; i++) {
+        const struct acpi_dmar_scope *scope = &dmar->scopes[i];
+        if (scope->type != 3 || !scope->path_length) continue;
+        *source_id = ((u16)scope->start_bus << 8) |
+                     ((u16)scope->device[0] << 3) | scope->function[0];
+        return 0;
+    }
+    return -1;
 }
 
 u32 vtd64_fault_count(void) {
