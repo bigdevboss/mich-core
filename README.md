@@ -1,20 +1,22 @@
 # Mich Core
 
+## License
+
+Mich Core is available under the [GNU General Public License v3.0](LICENSE).
+
+Commercial dual licensing is also available under terms discussed separately by email: [mich-licensing@protonmail.com](mailto:mich-licensing@protonmail.com) or [shiftluckyxd@mail.ru](mailto:shiftluckyxd@mail.ru).
+
+See [LICENSE](LICENSE) for the GPLv3 terms.
+
+## Overview
+
 Mich Core is an experimental modular hybrid kernel for desktop operating systems. It is written from scratch and does not use Linux, BSD, XNU, or Windows source code.
 
-Version 0.1.0 includes an in-kernel virtual NIC with a cycle-accurate netbench and
-optimizes the VNIC packet path: the kernel now spends **224 cycles per 64-byte
-packet** and **328 cycles per 1500-byte packet** on the NIC abstraction
-(RX, KVM single-CPU, min) — a 31% to 82% reduction over the unoptimized path.
-It also includes a bounded VFS (ramfs, immutable bootfs, and persistent
-blockfs), bootfs firmware loading, a static x86-64 POSIX filesystem facade,
-graceful driver stop, and the networking stack (userspace `virtio-net`
-capsule, modern virtio PCI, split virtqueues, interrupt-driven RX/TX, DHCPv4,
-IPv4/IPv6, UDP/UDPv6, TCP, stream sockets).
+It includes an in-kernel virtual NIC, a bounded VFS (ramfs, immutable bootfs, and persistent blockfs), bootfs firmware loading, a static x86-64 POSIX filesystem facade, graceful driver stop, and a networking stack (userspace `virtio-net` capsule, modern virtio PCI, split virtqueues, interrupt-driven RX/TX, DHCPv4, IPv4/IPv6, UDP/UDPv6, TCP, stream sockets).
 
 x86-64 is the only supported architecture. AArch64 and RISC-V 64 are planned.
 
-Mich Core is still a development kernel. Do not use it for production systems or important data.
+Mich Core is still a development kernel.
 
 ## Design
 
@@ -75,58 +77,7 @@ complete POSIX conformance. Pipes, `mmap`, polling, sockets, signals, threads,
 terminal semantics, UID/GID, `umask`, `chmod`, ACLs, and Linux ABI
 compatibility remain outside this v0 application profile.
 
-## 0.1.0
-
-### VNIC packet-path optimization
-
-The VNIC's hot path is optimized for measured cycles per packet:
-
-- **SIMD frame copy**: the RX frame copy uses SSE2 128-bit moves (`movdqu`),
-  replacing a scalar byte loop. SSE2 is mandatory in x86-64, so no CPUID check.
-- **Cached ring resource pointer**: the VNIC caches the RX/TX ring resource
-  pointer at create, so the hot path skips the per-packet object lookup.
-- **Cached pool state**: the VNIC caches the packet pool state at create, so
-  the hot path skips the per-packet object lookup.
-
-Together these reduce the VNIC's RX cost from 1780 to 328 cycles/packet at
-1500 bytes (**−82%**) and from 326 to 224 cycles/packet at 64 bytes (**−31%**).
-
-### Measured cycles per packet (KVM, single CPU)
-
-The numbers below are the kernel-side cycles per packet (ring submission and
-consumption, pool state transitions, descriptor handling, and the frame copy),
-measured on an Intel Core i3-7100U at 2.40GHz under QEMU 11.1.1 with KVM and a
-single CPU (native CPU, real TSC). Because the netbench hot path is in memory
-(no MMIO), KVM single-CPU is a close proxy for bare metal. The TCG (emulated
-CPU) numbers run 5-9x higher on the same machine and are not shown.
-
-Cycle counts belong to the processor they were taken on, so reproduce them
-before comparing. Build the test image, then boot it under KVM with one CPU:
-
-```bash
-make bin/x86_64/disk-test.img
-( . scripts/uefi-firmware.sh
-  mich_uefi_firmware
-  trap 'rm -f "$uefi_vars"' EXIT
-  qemu-system-x86_64 -enable-kvm -cpu host -smp 1 -machine q35 \
-    -drive if=pflash,format=raw,readonly=on,file="$uefi_code" \
-    -drive if=pflash,format=raw,file="$uefi_vars" \
-    -drive file=bin/x86_64/disk-test.img,format=raw,if=none,id=esdisk \
-    -device ide-hd,drive=esdisk,bootindex=1 \
-    -m 128M -serial stdio -display none -no-reboot -nic none
-) | grep netbench
-```
-
-| Direction | 64 B (min) | 512 B (min) | 1500 B (min) |
-|-----------|-----------:|------------:|-------------:|
-| RX        | 224        | 254         | 328          |
-| TX        | 296        | 758         | 1746         |
-| Echo      | 460        | 958         | 2024         |
-
-For reference, the unoptimized path was 326 (64 B), 790 (512 B), and 1780
-(1500 B) cycles/packet on RX — the 0.1.0 optimization is a 31% to 82%
-reduction. The protocol stack (Ethernet → ARP → IP → TCP/UDP) adds on top of
-these numbers; the VNIC is the NIC abstraction the stack sits on.
+## Features
 
 ### Bounded VFS and blockfs
 
@@ -189,15 +140,6 @@ A driver manifest may set the graceful stop flag. Without the flag, the supervis
 4. If the driver does not acknowledge, the timeout path force-tears the domain at the deadline, and a failed teardown quarantines the domain
 
 The in-kernel driver tests cover the acknowledged path and the timeout fallback.
-
-### Experimental recovery laboratory
-
-The x86-64 QEMU laboratory can select one pretrusted, independently linked
-`virtio-net-safe.elf` artifact after a repeated exact primary-capsule crash
-fingerprint. The selection is one-shot and fail-closed; it does not patch or
-recompile driver code. See [Recovery Laboratory](docs/recovery-laboratory.md)
-for the selection contract, failure boundaries, audit record, and QEMU proof
-profiles.
 
 ### Network interface objects
 
@@ -745,7 +687,7 @@ Do not publish an unpatched vulnerability before the maintainer has had reasonab
 
 ## What is not here yet
 
-Mich Core 0.1.0 does not include:
+Mich Core does not include:
 
 - A general-purpose production filesystem: ramfs, bootfs, and blockfs are
   bounded implementations with deliberately small limits
@@ -998,11 +940,9 @@ The test build includes a netbench baseline on the virtual benchmark NIC. It mea
 
 The vnic harness measures the kernel-side path: ring submission and consumption, pool state transitions, and descriptor handling. Frame copies model the DMA payload transfer. p99 values include any tick or scheduler interference that lands during a run.
 
-After the 0.1.0 packet-path optimization (SIMD frame copy, cached ring resource
-pointer, cached pool state), the netbench reports the following min cycles per
-packet on the i3-7100U reference machine described above (KVM, single CPU,
-real TSC, a close proxy for bare metal because the hot path is in memory with
-no MMIO):
+The netbench reports the following min cycles per packet on an Intel Core
+i3-7100U at 2.40GHz (KVM, single CPU, real TSC, a close proxy for bare metal
+because the hot path is in memory with no MMIO):
 
 | Direction | 64 B | 512 B | 1500 B |
 |-----------|-----:|------:|-------:|
@@ -1010,10 +950,8 @@ no MMIO):
 | TX        | 296  | 758   | 1746   |
 | Echo      | 460  | 958   | 2024   |
 
-The unoptimized RX baseline was 326 / 790 / 1780 cycles per packet at 64 / 512
-/ 1500 bytes - a 31% / 68% / 82% reduction. TCG (emulated CPU) numbers run
-5-9x higher on the same machine and are useful only for spotting relative
-regressions, never as a figure to quote.
+TCG (emulated CPU) numbers run 5-9x higher on the same machine and are useful
+only for spotting relative regressions, never as a figure to quote.
 
 ## TLS 1.3
 
@@ -1062,11 +1000,3 @@ Bug reports, test results, design discussion, and documentation fixes are welcom
 Discuss large changes before opening a pull request. Do not submit proprietary code, leaked material, or code with an incompatible license.
 
 Contributions are accepted under GPLv3.
-
-## License
-
-All Mich Core code is available under the [GNU General Public License v3.0](LICENSE).
-
-Commercial dual licensing is also available under terms discussed separately by email: [mich-licensing@protonmail.com](mailto:mich-licensing@protonmail.com) or [shiftluckyxd@mail.ru](mailto:shiftluckyxd@mail.ru).
-
-See [LICENSE](LICENSE) for the GPLv3 terms.
