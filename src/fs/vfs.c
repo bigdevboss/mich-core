@@ -646,10 +646,13 @@ static int path_length(const char *path, u32 *length) {
     return 0;
 }
 
-struct kernel_object *vfs_resolve(struct kernel_object *start,
-                                  const char *path) {
+static struct kernel_object *resolve_path(struct kernel_object *start,
+                                          const char *path, int confine) {
     u32 length;
     if (path_length(path, &length)) return 0;
+    // A confined resolve is scoped to start, so an absolute path (which would
+    // begin the walk at the global root) is an escape by definition.
+    if (confine && path[0] == '/') return 0;
     struct kernel_object *current;
     u32 offset = 0;
     if (path[0] == '/') {
@@ -690,6 +693,13 @@ struct kernel_object *vfs_resolve(struct kernel_object *start,
                 object_release(current);
                 return 0;
             }
+            // Confined resolution treats start as the top of the namespace: an
+            // ascent past it, directly or across a mountpoint, is a scope escape
+            // and fails rather than climbing into the parent tree.
+            if (confine && current == start) {
+                object_release(current);
+                return 0;
+            }
             u32 parent_index = node->parent;
             if (parent_index == VFS_NODE_MAX) {
                 struct vfs_mount_state *mount = mount_for_root(current);
@@ -722,6 +732,16 @@ struct kernel_object *vfs_resolve(struct kernel_object *start,
         }
     }
     return current;
+}
+
+struct kernel_object *vfs_resolve(struct kernel_object *start,
+                                  const char *path) {
+    return resolve_path(start, path, 0);
+}
+
+struct kernel_object *vfs_resolve_beneath(struct kernel_object *start,
+                                          const char *path) {
+    return resolve_path(start, path, 1);
 }
 
 static struct kernel_object *path_parent(struct kernel_object *start,
