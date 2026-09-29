@@ -81,6 +81,7 @@
 #define TEST_ID_SIPHASH 92
 #define TEST_ID_CRC32C 93
 #define TEST_ID_ADYTUMFS_SUPER 94
+#define TEST_ID_ADYTUMFS_VOLUME 95
 
 struct test_result64 {
     u32 id;
