@@ -405,7 +405,7 @@ fi
 # full init battery stays covered by the disk-test and dns profiles.
 if [ "$profile" = "netbench" ]; then
     for marker in \
-        "Mich Core 0.1.0 x86_64: long mode alive" \
+        "Mich Core 0.2.0 x86_64: long mode alive" \
         "Mich x86_64: GDT and TSS alive" \
         "Mich x86_64: IDT alive" \
         "Mich x86_64: panic subsystem ready" \
@@ -431,7 +431,7 @@ elif [ "$profile" = "virtio-blk" ]; then
     # profile. Here we gate on boot-essential markers plus the capsule bringing
     # the real device up and reaching its serve state.
     for marker in \
-        "Mich Core 0.1.0 x86_64: long mode alive" \
+        "Mich Core 0.2.0 x86_64: long mode alive" \
         "Mich x86_64: GDT and TSS alive" \
         "Mich x86_64: IDT alive" \
         "Mich x86_64: panic subsystem ready" \
@@ -453,7 +453,7 @@ elif [ "$profile" = "nvme" ]; then
     # boot-essential markers plus the capsule bringing the real controller up and
     # reaching its serve state.
     for marker in \
-        "Mich Core 0.1.0 x86_64: long mode alive" \
+        "Mich Core 0.2.0 x86_64: long mode alive" \
         "Mich x86_64: GDT and TSS alive" \
         "Mich x86_64: IDT alive" \
         "Mich x86_64: panic subsystem ready" \
@@ -471,7 +471,7 @@ elif [ "$profile" = "nvme" ]; then
     done
 else
 for marker in \
-    "Mich Core 0.1.0 x86_64: long mode alive" \
+    "Mich Core 0.2.0 x86_64: long mode alive" \
     "Mich x86_64: GDT and TSS alive" \
     "Mich x86_64: IDT alive" \
     "Mich x86_64: panic subsystem ready" \
@@ -846,7 +846,7 @@ live_primary="Mich test64: driver live primary bootstrap pass"
 }
 fi
 if [ "$profile" = "uefi" ]; then
-    grep -Fq "BigDevBoot UEFI 0.1.0 by bigdevboss" "$log" || {
+    grep -Fq "BigDevBoot UEFI 0.2.0 by bigdevboss" "$log" || {
         cat "$log"
         exit 1
     }

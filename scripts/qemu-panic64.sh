@@ -25,7 +25,7 @@ if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
     exit 1
 fi
 for marker in \
-    "Mich Core 0.1.0 x86_64: long mode alive" \
+    "Mich Core 0.2.0 x86_64: long mode alive" \
     "Mich x86_64: IDT alive" \
     "Mich x86_64: panic subsystem ready" \
     "Mich x86_64: panic profile trigger" \
