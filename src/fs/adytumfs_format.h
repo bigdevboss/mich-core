@@ -165,4 +165,21 @@ int adytumfs_inode_truncate(struct kernel_object *device,
                             struct adytumfs_superblock *super,
                             struct adytumfs_inode *inode, u64 new_blocks);
 
+// Directory entries live in the directory's data blocks: an 8-byte target inode,
+// a 2-byte record length, a 1-byte name length, a 1-byte type, then the name.
+// inode 0 marks a free record. Records never cross a 4 KiB block boundary.
+#define ADYTUMFS_DIR_HEADER 12u
+#define ADYTUMFS_DTYPE_REG 1u
+#define ADYTUMFS_DTYPE_DIR 2u
+
+int adytumfs_dir_lookup(struct kernel_object *device,
+                        const struct adytumfs_superblock *super, u64 dir_inode,
+                        const char *name, u32 name_len, u64 *out_inode);
+int adytumfs_dir_add(struct kernel_object *device,
+                     struct adytumfs_superblock *super, u64 dir_inode,
+                     const char *name, u32 name_len, u64 target_inode, u8 type);
+int adytumfs_dir_remove(struct kernel_object *device,
+                        const struct adytumfs_superblock *super, u64 dir_inode,
+                        const char *name, u32 name_len);
+
 #endif

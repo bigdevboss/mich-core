@@ -97,6 +97,9 @@ int tests64_run(const struct test64_env *env) {
     if (test_report_record(TEST_ID_ADYTUMFS_EXTENT, test_adytumfs_extent64()))
         return -1;
     serial64_write("Mich test64: adytumfs extents pass\n");
+    if (test_report_record(TEST_ID_ADYTUMFS_DIR, test_adytumfs_dir64()))
+        return -1;
+    serial64_write("Mich test64: adytumfs directories pass\n");
     if (test_report_record(TEST_ID_ADYTUMFS, test_adytumfs64())) return -1;
     serial64_write("Mich test64: adytumfs format and mount pass\n");
     serial64_write("Mich test64: adytumfs file io pass\n");
