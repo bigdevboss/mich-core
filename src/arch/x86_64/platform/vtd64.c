@@ -297,6 +297,12 @@ static int unit_enable(struct vtd64_unit *unit) {
                   VTD64_GSTS_TES, VTD64_GSTS_TES);
 }
 
+static int unit_disable(struct vtd64_unit *unit) {
+    unit->gcmd &= ~VTD64_GCMD_TE;
+    write32(unit->regs, VTD64_REG_GCMD, unit->gcmd);
+    return wait32(unit->regs, VTD64_REG_GSTS, VTD64_GSTS_TES, 0);
+}
+
 static int unit_set_ir_root(struct vtd64_unit *unit) {
     write64(unit->regs, VTD64_REG_IRTA, ir_table | VTD64_IR_SIZE);
     write32(unit->regs, VTD64_REG_GCMD, unit->gcmd | VTD64_GCMD_SIRTP);
@@ -525,23 +531,30 @@ int vtd64_enable(void) {
     for (u32 i = 0; i < unit_count; i++)
         if (unit_set_root(&units[i])) return -1;
     if (invalidate_mask((1u << unit_count) - 1)) return -1;
-    u32 enabled = 0;
-    for (u32 i = 0; i < unit_count; i++) {
+    // All or nothing: a unit left without TE would DMA untranslated, so any
+    // failure rolls back the units already enabled and leaves translation_enabled
+    // clear. Reporting a half-configured IOMMU as on is how a device behind the
+    // un-enabled unit gets unconfined DMA while the supervisor, seeing the flag,
+    // skips the enable and spawns the capsule anyway.
+    for (u32 i = 0; i < unit_count; i++)
         if (unit_enable(&units[i])) {
-            translation_enabled = enabled != 0;
+            for (u32 j = 0; j < i; j++) unit_disable(&units[j]);
             return -1;
         }
-        enabled++;
+    // Interrupt remapping wherever every unit offers it, brought up before the
+    // global flag so a supported-but-broken IR unwinds translation too rather
+    // than leaving the interrupt path unguarded while the IOMMU reports as on. A
+    // device could otherwise forge an interrupt outside the entries bound to its
+    // own source-id.
+    int ir_required = unit_count > 0;
+    for (u32 i = 0; i < unit_count; i++)
+        if (!(units[i].ecap & VTD64_ECAP_IR)) ir_required = 0;
+    if (ir_required && !ir_enabled && enable_ir()) {
+        for (u32 i = 0; i < unit_count; i++) unit_disable(&units[i]);
+        return -1;
     }
     translation_enabled = 1;
-    // With translation up, enable interrupt remapping wherever the hardware
-    // offers it so a device cannot forge an interrupt outside the entries bound
-    // to its own source-id. Where every unit reports the capability this is a
-    // fail-closed step: a supported-but-broken IR is treated as a hard failure
-    // rather than silently leaving the interrupt path unguarded.
-    for (u32 i = 0; i < unit_count; i++)
-        if (!(units[i].ecap & VTD64_ECAP_IR)) return 0;
-    return ir_enabled ? 0 : enable_ir();
+    return 0;
 }
 
 int vtd64_ir_active(void) {
