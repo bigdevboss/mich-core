@@ -115,3 +115,87 @@ int adytumfs_inode_free(struct kernel_object *device,
     super->free_inodes++;
     return 0;
 }
+
+int adytumfs_inode_map(const struct adytumfs_inode *inode, u64 logical_block,
+                       u64 *physical_block) {
+    if (!inode || !physical_block) return -1;
+    u64 base = 0;
+    // Extents are packed from the front; a zero-length extent ends the list.
+    for (u32 index = 0; index < ADYTUMFS_DIRECT_EXTENTS; index++) {
+        u32 length = inode->direct[index].length;
+        if (length == 0) break;
+        if (logical_block < base + length) {
+            *physical_block =
+                inode->direct[index].start_block + (logical_block - base);
+            return 0;
+        }
+        base += length;
+    }
+    return -1;
+}
+
+int adytumfs_inode_grow(struct kernel_object *device,
+                        struct adytumfs_superblock *super,
+                        struct adytumfs_inode *inode, u64 new_blocks) {
+    if (!super || !inode) return -1;
+    if (new_blocks <= inode->blocks) return 0;
+    u64 add = new_blocks - inode->blocks;
+    u64 start;
+    if (adytumfs_alloc_run(device, super, add, &start)) return -1;
+
+    u32 last = 0;
+    int have = 0;
+    for (u32 index = 0; index < ADYTUMFS_DIRECT_EXTENTS; index++) {
+        if (inode->direct[index].length == 0) break;
+        last = index;
+        have = 1;
+    }
+    if (have && inode->direct[last].start_block + inode->direct[last].length ==
+        start) {
+        inode->direct[last].length += (u32)add;
+    } else {
+        u32 slot = have ? last + 1 : 0;
+        if (slot >= ADYTUMFS_DIRECT_EXTENTS) {
+            // No direct slot left; indirect blocks are not implemented yet, so
+            // give the run back rather than lose track of it.
+            adytumfs_free_run(device, super, start, add);
+            return -1;
+        }
+        inode->direct[slot].start_block = start;
+        inode->direct[slot].length = (u32)add;
+        inode->direct[slot].flags = 0;
+    }
+    inode->blocks = new_blocks;
+    return 0;
+}
+
+int adytumfs_inode_truncate(struct kernel_object *device,
+                            struct adytumfs_superblock *super,
+                            struct adytumfs_inode *inode, u64 new_blocks) {
+    if (!super || !inode) return -1;
+    if (new_blocks >= inode->blocks) return 0;
+    u64 base = 0;
+    for (u32 index = 0; index < ADYTUMFS_DIRECT_EXTENTS; index++) {
+        u32 length = inode->direct[index].length;
+        if (length == 0) break;
+        u64 end = base + length;
+        if (base >= new_blocks) {
+            if (adytumfs_free_run(device, super, inode->direct[index].start_block,
+                                  length))
+                return -1;
+            inode->direct[index].start_block = 0;
+            inode->direct[index].length = 0;
+            inode->direct[index].flags = 0;
+        } else if (end > new_blocks) {
+            u64 keep = new_blocks - base;
+            if (adytumfs_free_run(device, super,
+                                  inode->direct[index].start_block + keep,
+                                  length - keep))
+                return -1;
+            inode->direct[index].length = (u32)keep;
+        }
+        base = end;
+    }
+    inode->blocks = new_blocks;
+    return 0;
+}
