@@ -5,6 +5,7 @@
 #include "acpi64.h"
 #include "vm64.h"
 #include "apic64.h"
+#include "vtd64.h"
 
 #define PCI64_MAX_OBJECTS 64
 
@@ -467,6 +468,21 @@ u32 pci64_msi_max_vectors(struct kernel_object *pci) {
     return shift > 5 ? 32 : 1u << shift;
 }
 
+// The MSI capability holds no software state of its own, so the remapping
+// entries a prior enable reserved are recovered from the message already in
+// config space: a remappable address carries its base handle, and the message
+// control carries the group size.
+static void pci64_msi_release_ir(const struct pci_resource *resource,
+                                 u8 offset, u16 control) {
+    if (!vtd64_ir_active()) return;
+    u32 address = config_read32(resource->bus, resource->device,
+                                resource->function, offset + 4);
+    if (!(address & (1u << 3))) return;
+    u16 handle = (u16)(((address >> 5) & 0x7FFFu) |
+                       (((address >> 2) & 1u) << 15));
+    vtd64_ir_release(handle, (u16)(1u << ((control >> 4) & 7u)));
+}
+
 int pci64_msi_enable_group(struct kernel_object *pci, u8 vector,
                            u32 count, u8 destination) {
     const struct pci_resource *resource = pci_resource_get(pci);
@@ -486,6 +502,18 @@ int pci64_msi_enable_group(struct kernel_object *pci, u8 vector,
     config_write16(resource->bus, resource->device, resource->function,
                    offset + 2, control & (u16)~1u);
     u32 address = 0xFEE00000u | ((u32)destination << 12);
+    u16 data = vector;
+    if (vtd64_ir_active()) {
+        pci64_msi_release_ir(resource, offset, control);
+        u16 sid = ((u16)resource->bus << 8) |
+                  ((u16)resource->device << 3) | resource->function;
+        u16 handle;
+        if (vtd64_ir_allocate(sid, vector, destination, 0, (u16)count, &handle))
+            return -1;
+        u32 remapped_data;
+        vtd64_ir_compose_msi(handle, count > 1, &address, &remapped_data);
+        data = (u16)remapped_data;
+    }
     config_write32(resource->bus, resource->device, resource->function,
                    offset + 4, address);
     u8 data_offset;
@@ -497,7 +525,7 @@ int pci64_msi_enable_group(struct kernel_object *pci, u8 vector,
         data_offset = offset + 8;
     }
     config_write16(resource->bus, resource->device, resource->function,
-                   data_offset, vector);
+                   data_offset, data);
     u32 multiple = 0;
     while ((1u << multiple) < count) multiple++;
     control &= (u16)~0x70u;
@@ -520,6 +548,7 @@ int pci64_msi_disable(struct kernel_object *pci) {
     u8 offset = resource->msi_offset;
     u16 control = config_read16(resource->bus, resource->device,
                                 resource->function, offset + 2);
+    pci64_msi_release_ir(resource, offset, control);
     config_write16(resource->bus, resource->device, resource->function,
                    offset + 2, control & (u16)~1u);
     return 0;

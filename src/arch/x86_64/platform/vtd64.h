@@ -21,6 +21,15 @@ u32 vtd64_unit_count(void);
 u32 vtd64_host_address_width(void);
 int vtd64_translation_enabled(void);
 int vtd64_enable(void);
+int vtd64_ir_active(void);
+int vtd64_ir_allocate(u16 source_id, u8 vector, u8 destination,
+                      int level, u16 count, u16 *handle);
+int vtd64_ir_release(u16 handle, u16 count);
+int vtd64_ir_entry(u16 handle, u64 *low, u64 *high);
+void vtd64_ir_compose_msi(u16 handle, int multi, u32 *address, u32 *data);
+void vtd64_ir_compose_ioapic(u16 handle, u8 vector, int level, int active_low,
+                             int masked, u32 *low, u32 *high);
+int vtd64_ir_ioapic_source_id(u16 *source_id);
 u32 vtd64_fault_count(void);
 int vtd64_fault_decode(u32 unit, u64 low, u64 high,
                        struct vtd64_fault *fault);

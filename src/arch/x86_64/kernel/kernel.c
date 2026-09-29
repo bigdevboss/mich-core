@@ -2019,6 +2019,12 @@ void kernel64_main(u32 magic, struct bd_info *info) {
         if (test_iommu64_forbidden_dma())
             KERNEL_PANIC("Intel VT-d forbidden DMA test");
         serial64_write("Mich test64: Intel VT-d forbidden DMA blocked\n");
+        if (vtd64_ir_active()) {
+            if (test_vtd64_interrupt_remapping())
+                KERNEL_PANIC("Intel VT-d interrupt remapping test");
+            serial64_write(
+                "Mich test64: Intel VT-d interrupt remapping pass\n");
+        }
     }
     if (tests64_run_driver(&test_env)) KERNEL_PANIC("independent driver tests");
 #endif

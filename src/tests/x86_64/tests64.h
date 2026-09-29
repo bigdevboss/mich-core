@@ -83,6 +83,7 @@ int tests64_run_network(const struct test64_env *env);
 int tests64_run_driver(const struct test64_env *env);
 int test_vtd64_tables(struct kernel_object *pci);
 int test_iommu64_forbidden_dma(void);
+int test_vtd64_interrupt_remapping(void);
 int tests64_run_hardware(const struct test64_env *env,
                          int destructive, int *msi, int *msix);
 int tests64_run_irq(const struct test64_env *env,
