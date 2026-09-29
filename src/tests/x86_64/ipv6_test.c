@@ -175,6 +175,22 @@ int test_icmpv6(void) {
         ipv6_address_equal(link.destination, peer) &&
         !icmpv6_checksum(local, peer, link.message, link.length) &&
         icmpv6.stats.echo_requests == 1 && icmpv6.stats.replies_sent == 1;
+    // A spoofed-source echo request to a multicast group must be dropped, not
+    // answered, or every member amplifies traffic at the victim (RFC 4443).
+    u8 mcast_dest[16] = {0xFF, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01};
+    for (u32 index = 0; index < sizeof(packet); index++) packet[index] = 0;
+    valid = valid && !ipv6_build_header(packet, sizeof(packet), 16,
+                                        peer, mcast_dest, 58, 64, 0, 0);
+    packet[40] = ICMPV6_ECHO_REQUEST;
+    packet[47] = 1;
+    for (u32 index = 8; index < 16; index++) packet[40 + index] = (u8)index;
+    checksum = icmpv6_checksum(peer, mcast_dest, packet + 40, 16);
+    packet[42] = (u8)(checksum >> 8);
+    packet[43] = (u8)checksum;
+    valid = valid && !ipv6_receive(&ipv6, packet, 56) &&
+        icmpv6.stats.echo_requests == 2 &&
+        icmpv6.stats.multicast_suppressed == 1 &&
+        icmpv6.stats.replies_sent == 1 && link.transmitted == 1;
     u8 ns[32];
     u32 ns_length;
     u8 ns_destination[16];

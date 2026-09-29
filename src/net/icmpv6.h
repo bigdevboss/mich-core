@@ -64,6 +64,7 @@ struct icmpv6_stats {
     u64 option_errors;
     u64 transmit_errors;
     u64 rate_limited;
+    u64 multicast_suppressed;
 };
 
 struct icmpv6_context {
