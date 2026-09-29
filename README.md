@@ -737,10 +737,15 @@ yours lives somewhere else.
 ## Build
 
 ```bash
-git clone https://github.com/bigdevboss/mich-core.git
+git clone --recurse-submodules https://github.com/bigdevboss/mich-core.git
 cd mich-core
 make -j2
 ```
+
+The userspace (init, libc, and driver capsules) lives in the
+[mich-userkit](https://github.com/bigdevboss/mich-userkit) submodule under
+`src/user64`. If you cloned without `--recurse-submodules`, run
+`git submodule update --init` before building.
 
 Generated files are written under `bin/`.
 
@@ -865,9 +870,7 @@ Important source modules:
 ```text
 src/core/                 types, boot info, serial API, and page memory
 src/process/              tasks, scheduler, fork/exec, IPC, capabilities, POSIX FD/profile/process facade
-src/user64/lib/posix.c    static POSIX userspace wrappers and errno
-src/user64/posixdemo/     static POSIX application fixture (step-6 showcase)
-src/user64/include/       Mich APIs and the bounded POSIX public headers
+src/user64/               mich-userkit submodule: userspace init, libc, POSIX headers, and driver capsules
 src/objects/              kernel objects, resources, events, rings, completions
 src/net/                  full protocol stack (ARP through TCP, sockets)
 src/driver/               driver domains, supervisor, manager, virtio ABI
