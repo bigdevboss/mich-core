@@ -78,6 +78,7 @@
 #define TEST_ID_X509_CHAIN 89
 #define TEST_ID_TLS_RECORDS 90
 #define TEST_ID_TLS_HANDSHAKE 91
+#define TEST_ID_SIPHASH 92
 
 struct test_result64 {
     u32 id;
