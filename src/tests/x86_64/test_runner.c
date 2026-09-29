@@ -80,6 +80,8 @@ int tests64_run(const struct test64_env *env) {
     serial64_write("Mich test64: TLS 1.3 key schedule and records pass\n");
     if (test_report_record(TEST_ID_TLS_HANDSHAKE, test_tls_handshake64())) return -1;
     serial64_write("Mich test64: TLS 1.3 client handshake pass\n");
+    if (test_report_record(TEST_ID_CRC32C, test_crc32c64())) return -1;
+    serial64_write("Mich test64: crc32c and little-endian helpers pass\n");
     if (test_report_record(TEST_ID_ADYTUMFS, test_adytumfs64())) return -1;
     serial64_write("Mich test64: adytumfs format and mount pass\n");
     serial64_write("Mich test64: adytumfs file io pass\n");
