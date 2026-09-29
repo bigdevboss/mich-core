@@ -16,16 +16,24 @@
 #define VTD64_REG_GCMD 0x18
 #define VTD64_REG_GSTS 0x1C
 #define VTD64_REG_RTADDR 0x20
-#define VTD64_REG_CCMD 0x28
 #define VTD64_REG_FSTS 0x34
+#define VTD64_REG_IQT 0x88
+#define VTD64_REG_IQA 0x90
 #define VTD64_GCMD_TE (1u << 31)
 #define VTD64_GCMD_SRTP (1u << 30)
+#define VTD64_GCMD_QIE (1u << 26)
 #define VTD64_GSTS_TES (1u << 31)
 #define VTD64_GSTS_RTPS (1u << 30)
-#define VTD64_CCMD_ICC (1ULL << 63)
-#define VTD64_CCMD_GLOBAL (1ULL << 61)
-#define VTD64_IOTLB_IVT (1ULL << 63)
-#define VTD64_IOTLB_GLOBAL (1ULL << 60)
+#define VTD64_GSTS_QIES (1u << 26)
+#define VTD64_QI_DESCRIPTORS 256
+#define VTD64_QI_CC 0x1ULL
+#define VTD64_QI_IOTLB 0x2ULL
+#define VTD64_QI_WAIT 0x5ULL
+#define VTD64_QI_GLOBAL (1ULL << 4)
+#define VTD64_QI_IOTLB_DRAIN ((1ULL << 6) | (1ULL << 7))
+#define VTD64_QI_WAIT_SW (1ULL << 5)
+#define VTD64_QI_WAIT_FN (1ULL << 6)
+#define VTD64_QI_STATUS 0x1u
 #define VTD64_FAULT_VALID (1ULL << 63)
 #define VTD64_FAULT_WRITE (1ULL << 62)
 #define VTD64_WAIT_MAX 1000000
@@ -39,6 +47,8 @@ struct vtd64_unit {
     paddr_t root;
     paddr_t contexts[VTD64_CONTEXT_MAX];
     u8 context_bus[VTD64_CONTEXT_MAX];
+    paddr_t qi_queue;
+    u32 qi_tail;
     u64 cap;
     u64 ecap;
     u16 segment;
@@ -72,6 +82,7 @@ struct vtd64_domain {
 
 static struct vtd64_unit units[VTD64_UNIT_MAX];
 static struct vtd64_domain domains[VTD64_DOMAIN_MAX];
+static paddr_t qi_status;
 static u32 unit_count;
 static u32 host_width;
 static int detected;
@@ -99,12 +110,6 @@ static void write64(volatile u8 *base, u32 offset, u64 value) {
 static int wait32(volatile u8 *base, u32 offset, u32 mask, u32 value) {
     for (u32 i = 0; i < VTD64_WAIT_MAX; i++)
         if ((reg32(base, offset) & mask) == value) return 0;
-    return -1;
-}
-
-static int wait64(volatile u8 *base, u32 offset, u64 mask, u64 value) {
-    for (u32 i = 0; i < VTD64_WAIT_MAX; i++)
-        if ((reg64(base, offset) & mask) == value) return 0;
     return -1;
 }
 
@@ -172,14 +177,19 @@ static void reset_units(void) {
             units[i].context_bus[n] = 0;
         }
         if (units[i].root) pmm_free_page(units[i].root);
+        if (units[i].qi_queue) pmm_free_page(units[i].qi_queue);
         units[i].regs = 0;
         units[i].root = 0;
+        units[i].qi_queue = 0;
+        units[i].qi_tail = 0;
         units[i].cap = 0;
         units[i].ecap = 0;
         units[i].segment = 0;
         units[i].flags = 0;
         units[i].gcmd = 0;
     }
+    if (qi_status) pmm_free_page(qi_status);
+    qi_status = 0;
     unit_count = 0;
     host_width = 0;
     fault_count = 0;
@@ -194,14 +204,46 @@ static struct vtd64_domain *find_domain(u32 owner) {
     return 0;
 }
 
+static void qi_write_descriptor(struct vtd64_unit *unit, u64 low, u64 high) {
+    u64 *queue = page(unit->qi_queue);
+    queue[unit->qi_tail * 2] = low;
+    queue[unit->qi_tail * 2 + 1] = high;
+    unit->qi_tail = (unit->qi_tail + 1) % VTD64_QI_DESCRIPTORS;
+}
+
+// Interrupt remapping mandates queued invalidation, and register-based
+// invalidation stops working once QI is enabled (VT-d 6.5.1). Every flush is a
+// descriptor followed by a fenced wait descriptor whose status write we poll,
+// so the caller sees the invalidation actually drained before returning.
+static int qi_submit(struct vtd64_unit *unit, u64 invalidation, u64 high) {
+    volatile u32 *status = (volatile u32 *)(uptr_t)qi_status;
+    *status = 0;
+    qi_write_descriptor(unit, invalidation, high);
+    qi_write_descriptor(unit,
+                        VTD64_QI_WAIT | VTD64_QI_WAIT_SW | VTD64_QI_WAIT_FN |
+                        ((u64)VTD64_QI_STATUS << 32), qi_status);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    write64(unit->regs, VTD64_REG_IQT, (u64)unit->qi_tail * 16);
+    for (u32 i = 0; i < VTD64_WAIT_MAX; i++)
+        if (*status == VTD64_QI_STATUS) return 0;
+    return -1;
+}
+
+static int unit_enable_qi(struct vtd64_unit *unit) {
+    if (unit->gcmd & VTD64_GCMD_QIE) return 0;
+    write64(unit->regs, VTD64_REG_IQT, 0);
+    write64(unit->regs, VTD64_REG_IQA, unit->qi_queue);
+    unit->qi_tail = 0;
+    unit->gcmd |= VTD64_GCMD_QIE;
+    write32(unit->regs, VTD64_REG_GCMD, unit->gcmd);
+    return wait32(unit->regs, VTD64_REG_GSTS,
+                  VTD64_GSTS_QIES, VTD64_GSTS_QIES);
+}
+
 static int invalidate_unit(struct vtd64_unit *unit) {
-    write64(unit->regs, VTD64_REG_CCMD,
-            VTD64_CCMD_ICC | VTD64_CCMD_GLOBAL);
-    if (wait64(unit->regs, VTD64_REG_CCMD, VTD64_CCMD_ICC, 0)) return -1;
-    u32 offset = (u32)((unit->ecap >> 8) & 0x3FF) * 16 + 8;
-    if (offset > 4096 - 8) return -1;
-    write64(unit->regs, offset, VTD64_IOTLB_IVT | VTD64_IOTLB_GLOBAL);
-    return wait64(unit->regs, offset, VTD64_IOTLB_IVT, 0);
+    if (qi_submit(unit, VTD64_QI_CC | VTD64_QI_GLOBAL, 0)) return -1;
+    return qi_submit(unit,
+                     VTD64_QI_IOTLB | VTD64_QI_GLOBAL | VTD64_QI_IOTLB_DRAIN, 0);
 }
 
 static int invalidate_mask(u32 mask) {
@@ -341,6 +383,8 @@ int vtd64_init(void) {
     if (!dmar) return 0;
     if (!dmar->unit_count || dmar->unit_count > VTD64_UNIT_MAX) return -1;
     host_width = (u32)dmar->host_address_width + 1;
+    qi_status = pmm_alloc_page();
+    if (!qi_status) return -1;
     for (u32 i = 0; i < dmar->unit_count; i++) {
         const struct acpi_dmar_unit *src = &dmar->units[i];
         volatile u8 *regs = vm64_ioremap(
@@ -355,8 +399,12 @@ int vtd64_init(void) {
         u32 major = (version >> 4) & 0xF;
         u32 sagaw = (u32)((cap >> 8) & 0x1F);
         paddr_t root = pmm_alloc_page();
-        if (!major || !(sagaw & 2) || cap == ~0ULL || ecap == ~0ULL || !root) {
+        paddr_t queue = pmm_alloc_page();
+        // ECAP.QI (bit 1): queued invalidation is now required, not optional.
+        if (!major || !(sagaw & 2) || !(ecap & 2) || cap == ~0ULL ||
+            ecap == ~0ULL || !root || !queue) {
             if (root) pmm_free_page(root);
+            if (queue) pmm_free_page(queue);
             vm64_iounmap((void *)regs, 4096);
             reset_units();
             return -1;
@@ -364,6 +412,8 @@ int vtd64_init(void) {
         zero_page(root);
         units[i].regs = regs;
         units[i].root = root;
+        units[i].qi_queue = queue;
+        units[i].qi_tail = 0;
         units[i].cap = cap;
         units[i].ecap = ecap;
         units[i].segment = src->segment;
@@ -397,6 +447,8 @@ int vtd64_enable(void) {
     int active = 0;
     for (u32 i = 0; i < VTD64_DOMAIN_MAX; i++) active |= domains[i].active != 0;
     if (!active) return -1;
+    for (u32 i = 0; i < unit_count; i++)
+        if (unit_enable_qi(&units[i])) return -1;
     flush_tables((1u << unit_count) - 1);
     for (u32 i = 0; i < unit_count; i++)
         if (unit_set_root(&units[i])) return -1;
