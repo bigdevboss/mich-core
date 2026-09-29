@@ -62,6 +62,53 @@ int x509_match_host(const struct x509_certificate *certificate,
     return -1;
 }
 
+// RFC 5280 4.2.1.10: a dNSName constraint is satisfied by the name itself and
+// by any name formed by adding labels on the left, so "example.com" covers
+// "host.example.com" but not "notexample.com". A suffix match therefore only
+// counts on a label boundary, and an empty constraint matches every name.
+static int dns_constraint_matches(const u8 *constraint, u32 constraint_length,
+                                  const u8 *name, u32 name_length) {
+    if (!constraint_length) return 1;
+    if (name_length < constraint_length) return 0;
+    u32 offset = name_length - constraint_length;
+    if (offset && name[offset - 1u] != '.') return 0;
+    return labels_equal(name + offset, constraint_length, constraint,
+                        constraint_length);
+}
+
+// Enforces one issuer's Name Constraints against the leaf's dNSName entries.
+// Excluded subtrees veto a name outright; permitted subtrees, when any dNSName
+// form is present, require every leaf name to fall under one of them. An issuer
+// without the extension permits everything; a malformed extension fails closed.
+static int name_constraints_permit(const struct x509_certificate *issuer,
+                                   const struct x509_certificate *leaf) {
+    if (!issuer->name_constraints) return 0;
+    struct x509_name permitted;
+    struct x509_name excluded;
+    if (x509_name_constraints(issuer, &permitted, &excluded)) return -1;
+    u32 leaf_cursor = 0;
+    struct x509_name leaf_name;
+    while (!x509_san_next(leaf, &leaf_cursor, &leaf_name)) {
+        u32 cursor = 0;
+        struct x509_name constraint;
+        while (!x509_dns_constraint_next(&excluded, &cursor, &constraint))
+            if (dns_constraint_matches(constraint.data, constraint.length,
+                                       leaf_name.data, leaf_name.length))
+                return -1;
+        int has_permitted = 0;
+        int matched = 0;
+        cursor = 0;
+        while (!x509_dns_constraint_next(&permitted, &cursor, &constraint)) {
+            has_permitted = 1;
+            if (dns_constraint_matches(constraint.data, constraint.length,
+                                       leaf_name.data, leaf_name.length))
+                matched = 1;
+        }
+        if (has_permitted && !matched) return -1;
+    }
+    return 0;
+}
+
 static int names_equal(const struct x509_name *left,
                        const struct x509_name *right) {
     return left->length == right->length &&
@@ -184,6 +231,12 @@ int x509_verify_chain(const u8 *const *chain, const u32 *lengths, u32 count,
     if (x509_match_host(&parsed[0], host, host_length)) return -1;
     // A leaf must not be able to sign for anyone else.
     if (parsed[0].has_basic_constraints && parsed[0].is_ca) return -1;
+
+    // A technically-constrained sub-CA must not issue a leaf for a host outside
+    // its permitted subtrees. Every issuer in the presented chain is checked
+    // against the leaf, which is where such a sub-CA would sit.
+    for (u32 index = 1; index < count; index++)
+        if (name_constraints_permit(&parsed[index], &parsed[0])) return -1;
 
     // Walk up, but try to close on a trust anchor at every level instead of
     // insisting on reaching the last certificate sent. Servers commonly append
