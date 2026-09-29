@@ -81,4 +81,49 @@ int adytumfs_super_unpack(struct adytumfs_superblock *super, const u8 *block);
 int adytumfs_super_valid(const struct adytumfs_superblock *super,
                          u64 device_blocks);
 
+// Inode type bits, laid over the low permission bits inside mode (POSIX style).
+#define ADYTUMFS_MODE_DIR 0x4000u
+#define ADYTUMFS_MODE_REG 0x8000u
+#define ADYTUMFS_INODE_CHECKSUM_OFFSET 252u
+
+struct adytumfs_extent {
+    u64 start_block;
+    u32 length;
+    u32 flags;
+};
+
+struct adytumfs_inode {
+    u16 mode;
+    u16 links;
+    u32 uid;
+    u32 gid;
+    u32 flags;
+    u64 size;
+    u64 blocks;
+    u64 atime;
+    u64 mtime;
+    u64 ctime;
+    u64 generation;
+    struct adytumfs_extent direct[ADYTUMFS_DIRECT_EXTENTS];
+    u64 indirect1;
+    u64 indirect2;
+};
+
+// Serialise an inode into its 256-byte table slot (little-endian, checksum set).
+void adytumfs_inode_pack(u8 *slot, const struct adytumfs_inode *inode);
+// Parse an inode slot. A free slot (mode 0) carries no checksum and always
+// parses; an in-use inode with a bad checksum is rejected.
+int adytumfs_inode_unpack(struct adytumfs_inode *inode, const u8 *slot);
+
+struct kernel_object;
+
+// Read or write one 4 KiB filesystem block (eight device sectors) by block
+// number, through the block cache.
+int adytumfs_block_read(struct kernel_object *device, u64 block, u8 *buffer);
+int adytumfs_block_write(struct kernel_object *device, u64 block,
+                         const u8 *buffer);
+// Format a device: lay out the regions and write the superblock (and its
+// backup), the block bitmap, and an empty root directory.
+int adytumfs_make(struct kernel_object *device);
+
 #endif
