@@ -88,4 +88,18 @@ int x509_parse(struct x509_certificate *out, const u8 *data, u32 length);
 int x509_san_next(const struct x509_certificate *certificate, u32 *cursor,
                   struct x509_name *name);
 
+// Splits the Name Constraints extension into its permitted and excluded subtree
+// spans. A span with a null data pointer means that list is absent. Returns 0
+// when the certificate carries a well-formed extension, -1 when it has none or
+// the encoding is malformed.
+int x509_name_constraints(const struct x509_certificate *certificate,
+                          struct x509_name *permitted,
+                          struct x509_name *excluded);
+
+// Walks the dNSName entries of a subtree span returned above. Pass 0 in cursor
+// to start; it advances past the entry returned. Returns 0 while names remain,
+// -1 once the list is exhausted.
+int x509_dns_constraint_next(const struct x509_name *subtrees, u32 *cursor,
+                             struct x509_name *name);
+
 #endif

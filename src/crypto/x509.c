@@ -4,6 +4,8 @@
 #define TAG_VERSION (DER_TAG_CONTEXT | DER_TAG_CONSTRUCTED | 0u)
 #define TAG_EXTENSIONS (DER_TAG_CONTEXT | DER_TAG_CONSTRUCTED | 3u)
 #define TAG_SAN_DNS (DER_TAG_CONTEXT | 2u)
+#define TAG_CONSTRAINTS_PERMITTED (DER_TAG_CONTEXT | DER_TAG_CONSTRUCTED | 0u)
+#define TAG_CONSTRAINTS_EXCLUDED (DER_TAG_CONTEXT | DER_TAG_CONSTRUCTED | 1u)
 
 // Algorithm identifiers are compared as encoded bytes. Decoding an OID into
 // numbers would only be needed to print it, and this code never does.
@@ -304,6 +306,93 @@ int x509_san_next(const struct x509_certificate *certificate, u32 *cursor,
         return 0;
     }
     *cursor = sequence.offset;
+    return -1;
+}
+
+// Each GeneralSubtree is a SEQUENCE whose first element is the constrained
+// GeneralName; the optional minimum and maximum that may follow are not read.
+// The list must hold at least one subtree per RFC 5280, so an empty one is a
+// malformed extension rather than an absent constraint.
+static int validate_subtrees(const struct x509_name *subtrees) {
+    if (!subtrees->data) return 0;
+    struct der_reader reader;
+    if (der_init(&reader, subtrees->data, subtrees->length)) return -1;
+    int seen = 0;
+    while (!der_at_end(&reader)) {
+        struct der_reader subtree;
+        if (der_read_nested(&reader, DER_TAG_SEQUENCE, &subtree)) return -1;
+        u8 tag;
+        const u8 *value;
+        u32 length;
+        if (der_read_any(&subtree, &tag, &value, &length)) return -1;
+        seen = 1;
+    }
+    return seen ? 0 : -1;
+}
+
+int x509_name_constraints(const struct x509_certificate *certificate,
+                          struct x509_name *permitted,
+                          struct x509_name *excluded) {
+    if (!certificate || !permitted || !excluded ||
+        !certificate->name_constraints)
+        return -1;
+    permitted->data = 0;
+    permitted->length = 0;
+    excluded->data = 0;
+    excluded->length = 0;
+    struct der_reader reader;
+    struct der_reader sequence;
+    if (der_init(&reader, certificate->name_constraints,
+                 certificate->name_constraints_length))
+        return -1;
+    if (der_read_nested(&reader, DER_TAG_SEQUENCE, &sequence)) return -1;
+    while (!der_at_end(&sequence)) {
+        u8 tag;
+        const u8 *value;
+        u32 length;
+        if (der_read_any(&sequence, &tag, &value, &length)) return -1;
+        if (tag == TAG_CONSTRAINTS_PERMITTED) {
+            permitted->data = value;
+            permitted->length = length;
+        } else if (tag == TAG_CONSTRAINTS_EXCLUDED) {
+            excluded->data = value;
+            excluded->length = length;
+        } else {
+            return -1;
+        }
+    }
+    // Fully validate both lists here so the matching walk that follows can treat
+    // its own end and a malformed entry alike without letting a truncated
+    // excludedSubtrees hide an entry that should have blocked the name.
+    if (validate_subtrees(permitted) || validate_subtrees(excluded)) return -1;
+    return 0;
+}
+
+// Yields each dNSName base inside a GeneralSubtrees span. Constraint forms this
+// verifier never authorizes against (IP, directoryName, and so on) are skipped
+// rather than rejected: authorization here is by dNSName only, so a constraint
+// on another name form cannot create a bypass. Pass 0 in cursor to start.
+int x509_dns_constraint_next(const struct x509_name *subtrees, u32 *cursor,
+                             struct x509_name *name) {
+    if (!subtrees || !cursor || !name || !subtrees->data) return -1;
+    struct der_reader reader;
+    if (der_init(&reader, subtrees->data, subtrees->length)) return -1;
+    if (*cursor > reader.end) return -1;
+    reader.offset = *cursor;
+    while (!der_at_end(&reader)) {
+        struct der_reader subtree;
+        if (der_read_nested(&reader, DER_TAG_SEQUENCE, &subtree)) return -1;
+        u8 tag;
+        const u8 *value;
+        u32 length;
+        if (der_read_any(&subtree, &tag, &value, &length)) return -1;
+        if (tag != TAG_SAN_DNS) continue;
+        name->data = value;
+        name->length = length;
+        *cursor = reader.offset;
+        return 0;
+    }
+    *cursor = reader.offset;
     return -1;
 }
 
