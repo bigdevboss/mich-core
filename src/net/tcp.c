@@ -778,8 +778,11 @@ static void acknowledge(struct tcp_context *tcp, struct tcp_connection *c,
             for (u32 index = 0; index < TCP_RETRANSMISSION_MAX; index++) {
                 struct tcp_retransmission *e = &c->retransmissions[index];
                 if (!e->active) continue;
-                if (sequence_before(left, e->sequence)) continue;
-                if (sequence_after(right, e->end_sequence)) continue;
+                // A SACK block retires an entry only when it fully contains it:
+                // left <= e->sequence and right >= e->end_sequence. Skip when the
+                // entry starts before the block or ends after it.
+                if (sequence_before(e->sequence, left)) continue;
+                if (sequence_after(e->end_sequence, right)) continue;
                 e->active = 0;
                 retired++;
                 c->bbr_delivered += e->length;

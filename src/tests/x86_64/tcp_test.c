@@ -656,6 +656,49 @@ int test_tcp(void) {
         view.sack_blocks[1][0] == coalesce_base + 32 &&
         view.sack_blocks[1][1] == coalesce_base + 40;
         //
+    // Phase 3: SACK containment. A single SACK block that fully spans several
+    // in-flight entries must retire every one of them. The exact-match case
+    // above cannot distinguish full containment from an inverted subset test,
+    // which retires zero here.
+    //
+    static struct tcp_context span_ctx;
+    tcp_init(&span_ctx, isn_key(3131));
+    u64 span_id = tcp_active_open(&span_ctx, client_address, 62000,
+                                  server_address, 9100);
+    struct tcp_connection *span = span_id
+        ? &span_ctx.connections[(u32)span_id - 1] : 0;
+    if (span) {
+        span->state = TCP_STATE_ESTABLISHED;
+        span->send_unacknowledged = 5000;
+        span->send_next = 5000;
+        span->receive_next = 7000;
+        span->peer_sack = 1;
+    }
+    valid = valid && span_id && span;
+    u8 span_payload[8] = {0};
+    struct tcp_transmit span_transmit;
+    for (u32 seg = 0; seg < 3 && valid; seg++)
+        valid = valid &&
+            !tcp_queue_send(&span_ctx, span_id, span_payload, 8) &&
+            tcp_prepare_transmit(&span_ctx, span_id, 200, &span_transmit) == 1;
+    u32 span_retired_before = span_ctx.stats.sack_retired_segments;
+    // Cumulative ack stays at 5000 (segment [5000,5008) is the hole); the one
+    // SACK block covers the next two segments [5008,5024).
+    u8 span_opts[12] = {
+        1, 1, 5, 10,
+        (u8)(5008 >> 24), (u8)(5008 >> 16), (u8)(5008 >> 8), (u8)5008,
+        (u8)(5024 >> 24), (u8)(5024 >> 16), (u8)(5024 >> 8), (u8)5024,
+    };
+    int span_ack_len = tcp_build_ipv4_opts(
+        sseg, sizeof(sseg), server_address, client_address,
+        9100, 62000, span->receive_next, 5000,
+        TCP_FLAG_ACK, 65535, span_opts, sizeof(span_opts), 0, 0);
+    struct tcp_response span_resp;
+    valid = valid && span_ack_len == TCP_HEADER_MIN + 12 &&
+        !tcp_receive_ipv4(&span_ctx, server_address, client_address,
+                          sseg, (u32)span_ack_len, &span_resp) &&
+        span_ctx.stats.sack_retired_segments == span_retired_before + 2;
+        //
     // Phase 3: BBR v1. Drive eight 512-byte segments with a 10-tick RTT;
     // the ACK clock must converge on 51.2 B/ms, min RTT 10, and the
     // phase machine must walk STARTUP -> DRAIN -> PROBE_BW with the
