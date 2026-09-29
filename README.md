@@ -12,7 +12,7 @@ See [LICENSE](LICENSE) for the GPLv3 terms.
 
 Mich Core is an experimental modular hybrid kernel for desktop operating systems. It is written from scratch and does not use Linux, BSD, XNU, or Windows source code.
 
-It includes an in-kernel virtual NIC, a bounded VFS (ramfs, immutable bootfs, and persistent blockfs), bootfs firmware loading, a static x86-64 POSIX filesystem facade, graceful driver stop, and a networking stack (userspace `virtio-net` capsule, modern virtio PCI, split virtqueues, interrupt-driven RX/TX, DHCPv4, IPv4/IPv6, UDP/UDPv6, TCP, stream sockets).
+It includes an in-kernel virtual NIC, a bounded VFS (ramfs, immutable bootfs, and persistent adytumfs), bootfs firmware loading, a static x86-64 POSIX filesystem facade, graceful driver stop, and a networking stack (userspace `virtio-net` capsule, modern virtio PCI, split virtqueues, interrupt-driven RX/TX, DHCPv4, IPv4/IPv6, UDP/UDPv6, TCP, stream sockets).
 
 x86-64 is the only supported architecture. AArch64 and RISC-V 64 are planned.
 
@@ -65,7 +65,7 @@ getpid, getppid, waitpid(WNOHANG/blocking)
 ```
 
 `O_CREAT`, `O_TRUNC`, `O_APPEND`, and `O_CLOEXEC` are supported. File
-permissions are stored in ramfs and persistent blockfs. Because v0 has no
+permissions are stored in ramfs and persistent adytumfs. Because v0 has no
 UID/GID model, every admitted profile is treated as the owner: only owner
 `0400`, `0200`, and `0100` bits grant read, write, and directory-search access.
 Group and other bits remain stored and are reported through `st_mode`, but do
@@ -79,7 +79,7 @@ compatibility remain outside this v0 application profile.
 
 ## Features
 
-### Bounded VFS and blockfs
+### Bounded VFS and adytumfs
 
 The x86-64 port initializes a kernel VFS on the same object and handle model as the rest of the kernel:
 
@@ -93,7 +93,7 @@ The x86-64 port initializes a kernel VFS on the same object and handle model as 
 
 The root of the tree is a ramfs directory. At boot, every boot module is
 published read-only under `/boot` as a bootfs mount, up to 16 modules of 1 MiB
-each. The bounded blockfs backend stores regular files, directories, parent
+each. The bounded adytumfs backend stores regular files, directories, parent
 links, modes, and file data on block devices; mount reconstruction validates
 persistent hierarchy and mount generations protect against stale open files.
 
@@ -615,9 +615,9 @@ This prevents an MSI-X interrupt from corrupting a queue or causing a lost wakeu
 | Driver quarantine and reset policy | Yes |
 | Packet pools and virtual NIC | Yes |
 | Userspace `virtio-net` driver | Yes |
-| VFS (ramfs, bootfs, and bounded blockfs) | Yes |
+| VFS (ramfs, bootfs, and bounded adytumfs) | Yes |
 | Static POSIX application profile | Yes |
-| Block layer and bounded blockfs | Yes |
+| Block layer and bounded adytumfs | Yes |
 | Firmware loading | Yes |
 | Graceful driver stop | Yes |
 | External IPv4 | Yes |
@@ -689,7 +689,7 @@ Do not publish an unpatched vulnerability before the maintainer has had reasonab
 
 Mich Core does not include:
 
-- A general-purpose production filesystem: ramfs, bootfs, and blockfs are
+- A general-purpose production filesystem: ramfs, bootfs, and adytumfs are
   bounded implementations with deliberately small limits
 - USB
 - Audio
@@ -824,7 +824,7 @@ The suites cover:
 - Handle rights, transfer, revoke, and generation stress
 - VFS nodes, mounts, paths, modes, append serialization, unlink-open semantics,
   and root escape protection
-- Persistent blockfs file and directory hierarchy reconstruction, mode restore,
+- Persistent adytumfs file and directory hierarchy reconstruction, mode restore,
   live-open unmount protection, and stale-generation rejection
 - POSIX FD/OFD lifetime, `FD_CLOEXEC`, cwd/detached-cwd behavior, owner-mode
   enforcement, the userspace POSIX filesystem facade, the process facade

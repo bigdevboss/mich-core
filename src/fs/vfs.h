@@ -24,7 +24,7 @@
 
 #define VFS_FILESYSTEM_RAMFS 1
 #define VFS_FILESYSTEM_BOOTFS 2
-#define VFS_FILESYSTEM_BLOCKFS 3
+#define VFS_FILESYSTEM_ADYTUMFS 3
 #define VFS_BOOTFS_ENTRY_MAX 16
 #define VFS_BOOTFS_FILE_SIZE_MAX 0x100000
 
@@ -57,7 +57,7 @@ struct kernel_object *vfs_root(void);
 struct kernel_object *vfs_mount_root(void);
 int vfs_mount_bootfs(struct kernel_object *directory,
                      const struct vfs_bootfs_entry *entries, u32 count);
-int vfs_mount_blockfs(struct kernel_object *directory,
+int vfs_mount_adytumfs(struct kernel_object *directory,
                       struct kernel_object *device);
 int vfs_unmount(struct kernel_object *directory);
 struct kernel_object *vfs_create(struct kernel_object *directory,

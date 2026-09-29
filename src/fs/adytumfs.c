@@ -1,14 +1,14 @@
-#include "blockfs.h"
+#include "adytumfs.h"
 #include "vfs.h"
 #include "block.h"
 #include "cache.h"
 #include "resource.h"
 
-#define BLOCKFS_INODE_BYTES 64
-#define BLOCKFS_INODES_PER_SECTOR (BLOCK_SECTOR_SIZE / BLOCKFS_INODE_BYTES)
-#define BLOCKFS_MOUNT_MAX 8
+#define ADYTUMFS_INODE_BYTES 64
+#define ADYTUMFS_INODES_PER_SECTOR (BLOCK_SECTOR_SIZE / ADYTUMFS_INODE_BYTES)
+#define ADYTUMFS_MOUNT_MAX 8
 
-struct blockfs_super {
+struct adytumfs_super {
     u32 magic;
     u32 inode_count;
     u32 inode_lba;
@@ -17,7 +17,7 @@ struct blockfs_super {
     u32 next_data;
 };
 
-struct blockfs_inode {
+struct adytumfs_inode {
     u32 used;
     u32 type;
     u32 size;
@@ -29,7 +29,7 @@ struct blockfs_inode {
     u32 reserved;
 };
 
-struct blockfs_cache {
+struct adytumfs_cache {
     struct kernel_object *pages;
     u64 present;
     u64 dirty;
@@ -37,9 +37,9 @@ struct blockfs_cache {
     u32 active;
 };
 
-struct blockfs_mount {
+struct adytumfs_mount {
     struct kernel_object *device;
-    struct blockfs_cache cache[BLOCKFS_INODE_MAX];
+    struct adytumfs_cache cache[ADYTUMFS_INODE_MAX];
     u32 inode_count;
     u32 inode_lba;
     u32 data_lba;
@@ -48,13 +48,13 @@ struct blockfs_mount {
     u32 active;
 };
 
-static struct blockfs_mount mounts[BLOCKFS_MOUNT_MAX];
+static struct adytumfs_mount mounts[ADYTUMFS_MOUNT_MAX];
 
 static void copy_bytes(u8 *dst, const u8 *src, u32 n) {
     for (u32 i = 0; i < n; i++) dst[i] = src[i];
 }
 
-static void inode_pack(u8 *raw, const struct blockfs_inode *in) {
+static void inode_pack(u8 *raw, const struct adytumfs_inode *in) {
     u32 *w = (u32 *)raw;
     w[0] = in->used;
     w[1] = in->type;
@@ -67,7 +67,7 @@ static void inode_pack(u8 *raw, const struct blockfs_inode *in) {
     w[15] = in->reserved;
 }
 
-static void inode_unpack(struct blockfs_inode *in, const u8 *raw) {
+static void inode_unpack(struct adytumfs_inode *in, const u8 *raw) {
     const u32 *w = (const u32 *)raw;
     in->used = w[0];
     in->type = w[1];
@@ -80,13 +80,13 @@ static void inode_unpack(struct blockfs_inode *in, const u8 *raw) {
     in->reserved = w[15];
 }
 
-static struct blockfs_mount *mount_at(u32 mount) {
-    if (!mount || mount >= BLOCKFS_MOUNT_MAX) return 0;
-    struct blockfs_mount *m = &mounts[mount];
+static struct adytumfs_mount *mount_at(u32 mount) {
+    if (!mount || mount >= ADYTUMFS_MOUNT_MAX) return 0;
+    struct adytumfs_mount *m = &mounts[mount];
     return m->active ? m : 0;
 }
 
-static int load_super(struct kernel_object *device, struct blockfs_super *super) {
+static int load_super(struct kernel_object *device, struct adytumfs_super *super) {
     u8 sector[BLOCK_SECTOR_SIZE];
     if (block_cache_read(device, 0, sector, 1)) return -1;
     const u32 *w = (const u32 *)sector;
@@ -96,15 +96,15 @@ static int load_super(struct kernel_object *device, struct blockfs_super *super)
     super->data_lba = w[3];
     super->data_sectors = w[4];
     super->next_data = w[5];
-    if (super->magic != BLOCKFS_MAGIC ||
-        !super->inode_count || super->inode_count > BLOCKFS_INODE_MAX ||
+    if (super->magic != ADYTUMFS_MAGIC ||
+        !super->inode_count || super->inode_count > ADYTUMFS_INODE_MAX ||
         super->inode_lba != 1 || super->data_lba < 2)
         return -1;
     return 0;
 }
 
 static int store_super(struct kernel_object *device,
-                       const struct blockfs_super *super) {
+                       const struct adytumfs_super *super) {
     u8 sector[BLOCK_SECTOR_SIZE];
     for (u32 i = 0; i < BLOCK_SECTOR_SIZE; i++) sector[i] = 0;
     u32 *w = (u32 *)sector;
@@ -118,9 +118,9 @@ static int store_super(struct kernel_object *device,
            block_cache_flush(device);
 }
 
-static int persist_super(struct blockfs_mount *m) {
-    struct blockfs_super super;
-    super.magic = BLOCKFS_MAGIC;
+static int persist_super(struct adytumfs_mount *m) {
+    struct adytumfs_super super;
+    super.magic = ADYTUMFS_MAGIC;
     super.inode_count = m->inode_count;
     super.inode_lba = m->inode_lba;
     super.data_lba = m->data_lba;
@@ -129,54 +129,54 @@ static int persist_super(struct blockfs_mount *m) {
     return store_super(m->device, &super);
 }
 
-static int load_inode(struct blockfs_mount *m, u32 inode,
-                      struct blockfs_inode *out) {
+static int load_inode(struct adytumfs_mount *m, u32 inode,
+                      struct adytumfs_inode *out) {
     if (!m || inode >= m->inode_count) return -1;
     u8 sector[BLOCK_SECTOR_SIZE];
-    u32 lba = m->inode_lba + inode / BLOCKFS_INODES_PER_SECTOR;
-    u32 off = (inode % BLOCKFS_INODES_PER_SECTOR) * BLOCKFS_INODE_BYTES;
+    u32 lba = m->inode_lba + inode / ADYTUMFS_INODES_PER_SECTOR;
+    u32 off = (inode % ADYTUMFS_INODES_PER_SECTOR) * ADYTUMFS_INODE_BYTES;
     if (block_cache_read(m->device, lba, sector, 1)) return -1;
     inode_unpack(out, sector + off);
     // On-disk size and extent length are untrusted. A regular file spans at
-    // most BLOCKFS_FILE_SECTORS, so clamp both to that ceiling; the page path
+    // most ADYTUMFS_FILE_SECTORS, so clamp both to that ceiling; the page path
     // legitimately sets size before the extent is allocated, so the bound is the
     // fixed maximum extent, not the current sectors. The truncate loop then
     // breaks at the real extent end so no size-driven loop reaches another
     // inode's data.
     if (out->type == VFS_NODE_REGULAR) {
-        if (out->sectors > BLOCKFS_FILE_SECTORS)
-            out->sectors = BLOCKFS_FILE_SECTORS;
-        if (out->size > BLOCKFS_FILE_SIZE_MAX)
-            out->size = BLOCKFS_FILE_SIZE_MAX;
+        if (out->sectors > ADYTUMFS_FILE_SECTORS)
+            out->sectors = ADYTUMFS_FILE_SECTORS;
+        if (out->size > ADYTUMFS_FILE_SIZE_MAX)
+            out->size = ADYTUMFS_FILE_SIZE_MAX;
     }
     return 0;
 }
 
-static int store_inode(struct blockfs_mount *m, u32 inode,
-                       const struct blockfs_inode *in) {
+static int store_inode(struct adytumfs_mount *m, u32 inode,
+                       const struct adytumfs_inode *in) {
     if (!m || inode >= m->inode_count) return -1;
     u8 sector[BLOCK_SECTOR_SIZE];
-    u32 lba = m->inode_lba + inode / BLOCKFS_INODES_PER_SECTOR;
-    u32 off = (inode % BLOCKFS_INODES_PER_SECTOR) * BLOCKFS_INODE_BYTES;
+    u32 lba = m->inode_lba + inode / ADYTUMFS_INODES_PER_SECTOR;
+    u32 off = (inode % ADYTUMFS_INODES_PER_SECTOR) * ADYTUMFS_INODE_BYTES;
     if (block_cache_read(m->device, lba, sector, 1)) return -1;
     inode_pack(sector + off, in);
     return block_cache_write(m->device, lba, sector, 1) ||
            block_cache_flush(m->device);
 }
 
-static int ensure_extent(struct blockfs_mount *m, struct blockfs_inode *in) {
+static int ensure_extent(struct adytumfs_mount *m, struct adytumfs_inode *in) {
     if (in->start_lba) return 0;
-    if (m->next_data + BLOCKFS_FILE_SECTORS > m->data_lba + m->data_sectors)
+    if (m->next_data + ADYTUMFS_FILE_SECTORS > m->data_lba + m->data_sectors)
         return -1;
     in->start_lba = m->next_data;
-    in->sectors = BLOCKFS_FILE_SECTORS;
-    m->next_data += BLOCKFS_FILE_SECTORS;
+    in->sectors = ADYTUMFS_FILE_SECTORS;
+    m->next_data += ADYTUMFS_FILE_SECTORS;
     return persist_super(m);
 }
 
-static struct blockfs_cache *cache_slot(struct blockfs_mount *m, u32 inode) {
+static struct adytumfs_cache *cache_slot(struct adytumfs_mount *m, u32 inode) {
     if (!m || inode >= m->inode_count) return 0;
-    struct blockfs_cache *slot = &m->cache[inode];
+    struct adytumfs_cache *slot = &m->cache[inode];
     if (!slot->active) return 0;
     struct page_resource *resource =
         slot->pages ? page_resource_get(slot->pages) : 0;
@@ -193,15 +193,15 @@ static struct blockfs_cache *cache_slot(struct blockfs_mount *m, u32 inode) {
 // One submit is bounded by BLOCK_IO_SG_SECTORS_MAX sectors, not by the SG
 // entry count, so a transfer is chunked at eight pages even though a page
 // resource holds up to sixty four.
-#define BLOCKFS_SG_PAGES (BLOCK_IO_SG_SECTORS_MAX / (4096u / BLOCK_SECTOR_SIZE))
+#define ADYTUMFS_SG_PAGES (BLOCK_IO_SG_SECTORS_MAX / (4096u / BLOCK_SECTOR_SIZE))
 
-static int page_transfer(struct blockfs_mount *m, struct blockfs_cache *slot,
+static int page_transfer(struct adytumfs_mount *m, struct adytumfs_cache *slot,
                          u32 start_lba, u32 first, u32 count, u32 op) {
-    if (!count || count > BLOCKFS_SG_PAGES) return -1;
-    struct kernel_object *pages[BLOCKFS_SG_PAGES];
-    u32 indices[BLOCKFS_SG_PAGES];
-    u32 offsets[BLOCKFS_SG_PAGES];
-    u32 lengths[BLOCKFS_SG_PAGES];
+    if (!count || count > ADYTUMFS_SG_PAGES) return -1;
+    struct kernel_object *pages[ADYTUMFS_SG_PAGES];
+    u32 indices[ADYTUMFS_SG_PAGES];
+    u32 offsets[ADYTUMFS_SG_PAGES];
+    u32 lengths[ADYTUMFS_SG_PAGES];
     for (u32 index = 0; index < count; index++) {
         pages[index] = slot->pages;
         indices[index] = first + index;
@@ -256,15 +256,15 @@ static int page_transfer(struct blockfs_mount *m, struct blockfs_cache *slot,
     return result;
 }
 
-int blockfs_pages_attach(u32 mount, u32 inode, struct kernel_object *pages) {
-    struct blockfs_mount *m = mount_at(mount);
-    struct blockfs_inode in;
+int adytumfs_pages_attach(u32 mount, u32 inode, struct kernel_object *pages) {
+    struct adytumfs_mount *m = mount_at(mount);
+    struct adytumfs_inode in;
     if (!m || !pages || inode >= m->inode_count || m->cache[inode].active ||
         load_inode(m, inode, &in) || !in.used || in.type != VFS_NODE_REGULAR)
         return -1;
     struct page_resource *resource = page_resource_get(pages);
-    if (!resource || resource->pages > BLOCKFS_FILE_PAGES) return -1;
-    struct blockfs_cache *slot = &m->cache[inode];
+    if (!resource || resource->pages > ADYTUMFS_FILE_PAGES) return -1;
+    struct adytumfs_cache *slot = &m->cache[inode];
     slot->pages = pages;
     slot->present = 0;
     slot->dirty = 0;
@@ -273,11 +273,11 @@ int blockfs_pages_attach(u32 mount, u32 inode, struct kernel_object *pages) {
     return 0;
 }
 
-int blockfs_pages_fault(u32 mount, u32 inode, u32 page) {
-    struct blockfs_mount *m = mount_at(mount);
-    struct blockfs_cache *slot = cache_slot(m, inode);
-    struct blockfs_inode in;
-    if (!slot || page >= BLOCKFS_FILE_PAGES ||
+int adytumfs_pages_fault(u32 mount, u32 inode, u32 page) {
+    struct adytumfs_mount *m = mount_at(mount);
+    struct adytumfs_cache *slot = cache_slot(m, inode);
+    struct adytumfs_inode in;
+    if (!slot || page >= ADYTUMFS_FILE_PAGES ||
         load_inode(m, inode, &in) || !in.used || in.type != VFS_NODE_REGULAR)
         return -1;
     if (slot->present & (1ull << page)) return 0;
@@ -296,11 +296,11 @@ int blockfs_pages_fault(u32 mount, u32 inode, u32 page) {
     return 0;
 }
 
-int blockfs_pages_dirty(u32 mount, u32 inode, u32 page, u32 size) {
-    struct blockfs_mount *m = mount_at(mount);
-    struct blockfs_cache *slot = cache_slot(m, inode);
-    struct blockfs_inode in;
-    if (!slot || page >= BLOCKFS_FILE_PAGES || size > BLOCKFS_FILE_SIZE_MAX ||
+int adytumfs_pages_dirty(u32 mount, u32 inode, u32 page, u32 size) {
+    struct adytumfs_mount *m = mount_at(mount);
+    struct adytumfs_cache *slot = cache_slot(m, inode);
+    struct adytumfs_inode in;
+    if (!slot || page >= ADYTUMFS_FILE_PAGES || size > ADYTUMFS_FILE_SIZE_MAX ||
         load_inode(m, inode, &in) || !in.used || in.type != VFS_NODE_REGULAR)
         return -1;
     slot->present |= 1ull << page;
@@ -312,10 +312,10 @@ int blockfs_pages_dirty(u32 mount, u32 inode, u32 page, u32 size) {
     return 0;
 }
 
-int blockfs_pages_sync(u32 mount, u32 inode) {
-    struct blockfs_mount *m = mount_at(mount);
-    struct blockfs_cache *slot = cache_slot(m, inode);
-    struct blockfs_inode in;
+int adytumfs_pages_sync(u32 mount, u32 inode) {
+    struct adytumfs_mount *m = mount_at(mount);
+    struct adytumfs_cache *slot = cache_slot(m, inode);
+    struct adytumfs_inode in;
     if (!slot) return 0;
     if (load_inode(m, inode, &in) || !in.used ||
         in.type != VFS_NODE_REGULAR)
@@ -323,13 +323,13 @@ int blockfs_pages_sync(u32 mount, u32 inode) {
     if (!slot->dirty) return 0;
     if (ensure_extent(m, &in) || store_inode(m, inode, &in)) return -1;
     u32 page = 0;
-    while (page < BLOCKFS_FILE_PAGES) {
+    while (page < ADYTUMFS_FILE_PAGES) {
         if (!(slot->dirty & (1ull << page))) {
             page++;
             continue;
         }
         u32 count = 0;
-        while (count < BLOCKFS_SG_PAGES && page + count < BLOCKFS_FILE_PAGES &&
+        while (count < ADYTUMFS_SG_PAGES && page + count < ADYTUMFS_FILE_PAGES &&
                (slot->dirty & (1ull << (page + count))))
             count++;
         if (page_transfer(m, slot, in.start_lba, page, count,
@@ -342,10 +342,10 @@ int blockfs_pages_sync(u32 mount, u32 inode) {
     return 0;
 }
 
-void blockfs_pages_detach(u32 mount, u32 inode) {
-    struct blockfs_mount *m = mount_at(mount);
+void adytumfs_pages_detach(u32 mount, u32 inode) {
+    struct adytumfs_mount *m = mount_at(mount);
     if (!m || inode >= m->inode_count) return;
-    struct blockfs_cache *slot = &m->cache[inode];
+    struct adytumfs_cache *slot = &m->cache[inode];
     slot->pages = 0;
     slot->present = 0;
     slot->dirty = 0;
@@ -353,16 +353,16 @@ void blockfs_pages_detach(u32 mount, u32 inode) {
     slot->active = 0;
 }
 
-int blockfs_format(struct kernel_object *device) {
+int adytumfs_format(struct kernel_object *device) {
     struct block_info info;
     if (!device || block_info(device, &info) ||
         info.sector_count < 16 || (info.flags & BLOCK_FLAG_READ_ONLY))
         return -1;
-    u32 inode_sectors = (BLOCKFS_INODE_MAX + BLOCKFS_INODES_PER_SECTOR - 1) /
-                        BLOCKFS_INODES_PER_SECTOR;
-    struct blockfs_super super;
-    super.magic = BLOCKFS_MAGIC;
-    super.inode_count = BLOCKFS_INODE_MAX;
+    u32 inode_sectors = (ADYTUMFS_INODE_MAX + ADYTUMFS_INODES_PER_SECTOR - 1) /
+                        ADYTUMFS_INODES_PER_SECTOR;
+    struct adytumfs_super super;
+    super.magic = ADYTUMFS_MAGIC;
+    super.inode_count = ADYTUMFS_INODE_MAX;
     super.inode_lba = 1;
     super.data_lba = 1 + inode_sectors;
     super.data_sectors = info.sector_count - super.data_lba;
@@ -373,7 +373,7 @@ int blockfs_format(struct kernel_object *device) {
     for (u32 s = 0; s < inode_sectors; s++)
         if (block_cache_write(device, super.inode_lba + s, sector, 1))
             return -1;
-    struct blockfs_inode root;
+    struct adytumfs_inode root;
     for (u32 i = 0; i < 32; i++) root.name[i] = 0;
     root.used = 1;
     root.type = VFS_NODE_DIRECTORY;
@@ -388,12 +388,12 @@ int blockfs_format(struct kernel_object *device) {
            block_cache_flush(device);
 }
 
-int blockfs_attach(u32 mount, struct kernel_object *device) {
-    struct blockfs_super super;
+int adytumfs_attach(u32 mount, struct kernel_object *device) {
+    struct adytumfs_super super;
     if (mount_at(mount) || !device || load_super(device, &super)) return -1;
     if (object_retain(device)) return -1;
-    struct blockfs_mount *m = &mounts[mount];
-    for (u32 inode = 0; inode < BLOCKFS_INODE_MAX; inode++) {
+    struct adytumfs_mount *m = &mounts[mount];
+    for (u32 inode = 0; inode < ADYTUMFS_INODE_MAX; inode++) {
         m->cache[inode].pages = 0;
         m->cache[inode].present = 0;
         m->cache[inode].dirty = 0;
@@ -410,14 +410,14 @@ int blockfs_attach(u32 mount, struct kernel_object *device) {
     return 0;
 }
 
-void blockfs_detach(u32 mount) {
-    struct blockfs_mount *m = mount_at(mount);
+void adytumfs_detach(u32 mount) {
+    struct adytumfs_mount *m = mount_at(mount);
     if (!m) return;
     if (m->device) {
         for (u32 inode = 0; inode < m->inode_count; inode++) {
             if (!m->cache[inode].active) continue;
-            blockfs_pages_sync(mount, inode);
-            blockfs_pages_detach(mount, inode);
+            adytumfs_pages_sync(mount, inode);
+            adytumfs_pages_detach(mount, inode);
         }
         block_cache_flush(m->device);
         object_release(m->device);
@@ -427,15 +427,15 @@ void blockfs_detach(u32 mount) {
     m->active = 0;
 }
 
-u32 blockfs_inode_count(u32 mount) {
-    struct blockfs_mount *m = mount_at(mount);
+u32 adytumfs_inode_count(u32 mount) {
+    struct adytumfs_mount *m = mount_at(mount);
     return m ? m->inode_count : 0;
 }
 
-int blockfs_inode_get(u32 mount, u32 inode, u32 *used, u32 *type, u32 *size,
+int adytumfs_inode_get(u32 mount, u32 inode, u32 *used, u32 *type, u32 *size,
                       u32 *parent, u32 *mode, char *name) {
-    struct blockfs_mount *m = mount_at(mount);
-    struct blockfs_inode in;
+    struct adytumfs_mount *m = mount_at(mount);
+    struct adytumfs_inode in;
     if (!m || load_inode(m, inode, &in)) return -1;
     if (used) *used = in.used;
     if (type) *type = in.type;
@@ -447,19 +447,19 @@ int blockfs_inode_get(u32 mount, u32 inode, u32 *used, u32 *type, u32 *size,
     return 0;
 }
 
-int blockfs_inode_create(u32 mount, const char *name, u32 parent, u32 type,
+int adytumfs_inode_create(u32 mount, const char *name, u32 parent, u32 type,
                          u32 mode, u32 *inode) {
-    struct blockfs_mount *m = mount_at(mount);
+    struct adytumfs_mount *m = mount_at(mount);
     if (!m || !name || !name[0] || !inode || parent >= m->inode_count ||
         (type != VFS_NODE_REGULAR && type != VFS_NODE_DIRECTORY) ||
         (mode & ~VFS_MODE_MASK))
         return -1;
-    struct blockfs_inode parent_inode;
+    struct adytumfs_inode parent_inode;
     if (load_inode(m, parent, &parent_inode) || !parent_inode.used ||
         parent_inode.type != VFS_NODE_DIRECTORY)
         return -1;
     for (u32 i = 1; i < m->inode_count; i++) {
-        struct blockfs_inode in;
+        struct adytumfs_inode in;
         if (load_inode(m, i, &in)) return -1;
         if (in.used) continue;
         for (u32 n = 0; n < 32; n++) in.name[n] = 0;
@@ -479,11 +479,11 @@ int blockfs_inode_create(u32 mount, const char *name, u32 parent, u32 type,
     return -1;
 }
 
-int blockfs_inode_remove(u32 mount, u32 inode) {
-    struct blockfs_mount *m = mount_at(mount);
-    struct blockfs_inode in;
+int adytumfs_inode_remove(u32 mount, u32 inode) {
+    struct adytumfs_mount *m = mount_at(mount);
+    struct adytumfs_inode in;
     if (!m || !inode || load_inode(m, inode, &in) || !in.used) return -1;
-    blockfs_pages_detach(mount, inode);
+    adytumfs_pages_detach(mount, inode);
     in.used = 0;
     in.size = 0;
     in.start_lba = 0;
@@ -494,10 +494,10 @@ int blockfs_inode_remove(u32 mount, u32 inode) {
     return store_inode(m, inode, &in);
 }
 
-int blockfs_truncate(u32 mount, u32 inode, u32 size, u32 *new_size) {
-    struct blockfs_mount *m = mount_at(mount);
-    struct blockfs_inode in;
-    if (!m || !new_size || size > BLOCKFS_FILE_SIZE_MAX ||
+int adytumfs_truncate(u32 mount, u32 inode, u32 size, u32 *new_size) {
+    struct adytumfs_mount *m = mount_at(mount);
+    struct adytumfs_inode in;
+    if (!m || !new_size || size > ADYTUMFS_FILE_SIZE_MAX ||
         load_inode(m, inode, &in) || !in.used ||
         in.type != VFS_NODE_REGULAR)
         return -1;

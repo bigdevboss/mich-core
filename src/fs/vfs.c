@@ -1,7 +1,7 @@
 #include "vfs.h"
 #include "spinlock.h"
 #include "resource.h"
-#include "blockfs.h"
+#include "adytumfs.h"
 #include "entropy.h"
 
 struct vfs_node_state {
@@ -41,7 +41,7 @@ struct vfs_mount_state {
 static struct vfs_node_state nodes[VFS_NODE_MAX];
 static struct vfs_file_state files[VFS_FILE_MAX];
 static struct vfs_mount_state mounts[VFS_MOUNT_MAX];
-/* Pairs file-table admission/final close with blockfs unmount preflight. */
+/* Pairs file-table admission/final close with adytumfs unmount preflight. */
 static struct spinlock vfs_file_lock = SPINLOCK_INIT;
 /* One VFS domain makes EOF selection and append write indivisible. */
 static struct spinlock vfs_write_lock = SPINLOCK_INIT;
@@ -107,10 +107,10 @@ static struct vfs_mount_state *mount_for_root(
 }
 
 static int node_backing_live(const struct vfs_node_state *node) {
-    if (node && node->filesystem == VFS_FILESYSTEM_BLOCKFS) {
+    if (node && node->filesystem == VFS_FILESYSTEM_ADYTUMFS) {
         if (!node->mount || node->mount >= VFS_MOUNT_MAX) return 0;
         const struct vfs_mount_state *mount = &mounts[node->mount];
-        return mount->active && mount->filesystem == VFS_FILESYSTEM_BLOCKFS &&
+        return mount->active && mount->filesystem == VFS_FILESYSTEM_ADYTUMFS &&
                mount->generation == node->mount_generation;
     }
     return 1;
@@ -120,7 +120,7 @@ static int mount_has_open_file(u32 mount_index, u32 generation) {
     for (u32 index = 0; index < VFS_FILE_MAX; index++) {
         if (!files[index].active) continue;
         struct vfs_node_state *node = node_for(files[index].node);
-        if (node && node->filesystem == VFS_FILESYSTEM_BLOCKFS &&
+        if (node && node->filesystem == VFS_FILESYSTEM_ADYTUMFS &&
             node->mount == mount_index &&
             node->mount_generation == generation)
             return 1;
@@ -144,11 +144,11 @@ static void node_destroy(struct kernel_object *object) {
     node->self = 0;
     node->external_data = 0;
     if (node->pages) {
-        // The blockfs cache slot borrows this resource, so it must be dropped
+        // The adytumfs cache slot borrows this resource, so it must be dropped
         // before the last reference goes away.
-        if (node->filesystem == VFS_FILESYSTEM_BLOCKFS) {
-            blockfs_pages_sync(node->mount, node->fs_id);
-            blockfs_pages_detach(node->mount, node->fs_id);
+        if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) {
+            adytumfs_pages_sync(node->mount, node->fs_id);
+            adytumfs_pages_detach(node->mount, node->fs_id);
         }
         object_release(node->pages);
         node->pages = 0;
@@ -191,8 +191,8 @@ static void mount_destroy(struct kernel_object *object) {
     struct vfs_mount_state *mount = &mounts[mount_index];
     if (!mount->active || mount->self != object) return;
     mount->self = 0;
-    if (mount->filesystem == VFS_FILESYSTEM_BLOCKFS)
-        blockfs_detach(mount_index);
+    if (mount->filesystem == VFS_FILESYSTEM_ADYTUMFS)
+        adytumfs_detach(mount_index);
     if (mount_index) {
         for (u32 index = 1; index < VFS_NODE_MAX; index++) {
             struct vfs_node_state *node = &nodes[index];
@@ -297,7 +297,7 @@ int vfs_unmount(struct kernel_object *directory) {
     if (!mount || !mount->self || !mount->active) return -1;
     u32 mount_index = (u32)(mount - mounts);
     spin_lock(&vfs_file_lock);
-    if (mount->filesystem == VFS_FILESYSTEM_BLOCKFS &&
+    if (mount->filesystem == VFS_FILESYSTEM_ADYTUMFS &&
         mount_has_open_file(mount_index, mount->generation)) {
         spin_unlock(&vfs_file_lock);
         return -1;
@@ -394,7 +394,7 @@ int vfs_mount_bootfs(struct kernel_object *directory,
     return 0;
 }
 
-int vfs_mount_blockfs(struct kernel_object *directory,
+int vfs_mount_adytumfs(struct kernel_object *directory,
                       struct kernel_object *device) {
     struct vfs_node_state *point = node_for(directory);
     if (!point || point->type != VFS_NODE_DIRECTORY || !point->linked ||
@@ -407,23 +407,23 @@ int vfs_mount_blockfs(struct kernel_object *directory,
             mount_index = index;
             break;
         }
-    if (mount_index == VFS_MOUNT_MAX || blockfs_attach(mount_index, device))
+    if (mount_index == VFS_MOUNT_MAX || adytumfs_attach(mount_index, device))
         return -1;
-    u32 inode_count = blockfs_inode_count(mount_index);
-    u32 used[BLOCKFS_INODE_MAX];
-    u32 types[BLOCKFS_INODE_MAX];
-    u32 sizes[BLOCKFS_INODE_MAX];
-    u32 parents[BLOCKFS_INODE_MAX];
-    u32 modes[BLOCKFS_INODE_MAX];
-    char names[BLOCKFS_INODE_MAX][VFS_NAME_MAX];
-    u32 inode_item[BLOCKFS_INODE_MAX];
+    u32 inode_count = adytumfs_inode_count(mount_index);
+    u32 used[ADYTUMFS_INODE_MAX];
+    u32 types[ADYTUMFS_INODE_MAX];
+    u32 sizes[ADYTUMFS_INODE_MAX];
+    u32 parents[ADYTUMFS_INODE_MAX];
+    u32 modes[ADYTUMFS_INODE_MAX];
+    char names[ADYTUMFS_INODE_MAX][VFS_NAME_MAX];
+    u32 inode_item[ADYTUMFS_INODE_MAX];
     u32 count = 0;
     for (u32 inode = 0; inode < inode_count; inode++) {
         inode_item[inode] = VFS_NODE_MAX;
-        if (blockfs_inode_get(mount_index, inode, &used[inode], &types[inode],
+        if (adytumfs_inode_get(mount_index, inode, &used[inode], &types[inode],
                               &sizes[inode], &parents[inode], &modes[inode],
                               names[inode])) {
-            blockfs_detach(mount_index);
+            adytumfs_detach(mount_index);
             return -1;
         }
         if (!used[inode]) continue;
@@ -434,20 +434,20 @@ int vfs_mount_blockfs(struct kernel_object *directory,
                        names[inode][VFS_NAME_MAX - 1] ||
                        !valid_name(names[inode]))) ||
             (inode && parents[inode] >= inode_count)) {
-            blockfs_detach(mount_index);
+            adytumfs_detach(mount_index);
             return -1;
         }
         inode_item[inode] = count++;
     }
     if (!used[0] || types[0] != VFS_NODE_DIRECTORY || parents[0] || !count) {
-        blockfs_detach(mount_index);
+        adytumfs_detach(mount_index);
         return -1;
     }
     for (u32 inode = 1; inode < inode_count; inode++) {
         if (!used[inode]) continue;
         u32 parent = parents[inode];
         if (!used[parent] || types[parent] != VFS_NODE_DIRECTORY) {
-            blockfs_detach(mount_index);
+            adytumfs_detach(mount_index);
             return -1;
         }
         u32 ancestor = inode;
@@ -455,21 +455,21 @@ int vfs_mount_blockfs(struct kernel_object *directory,
             if (!ancestor) break;
             ancestor = parents[ancestor];
             if (ancestor >= inode_count || !used[ancestor]) {
-                blockfs_detach(mount_index);
+                adytumfs_detach(mount_index);
                 return -1;
             }
             if (depth + 1 == inode_count) {
-                blockfs_detach(mount_index);
+                adytumfs_detach(mount_index);
                 return -1;
             }
         }
     }
-    u32 slots[BLOCKFS_INODE_MAX];
+    u32 slots[ADYTUMFS_INODE_MAX];
     u32 found = 0;
     for (u32 index = 1; index < VFS_NODE_MAX && found < count; index++)
         if (!nodes[index].active) slots[found++] = index;
     if (found != count) {
-        blockfs_detach(mount_index);
+        adytumfs_detach(mount_index);
         return -1;
     }
     u32 created = 0;
@@ -481,7 +481,7 @@ int vfs_mount_blockfs(struct kernel_object *directory,
         node->parent = inode ? slots[inode_item[parents[inode]]] : VFS_NODE_MAX;
         node->type = types[inode];
         node->size = sizes[inode];
-        node->filesystem = VFS_FILESYSTEM_BLOCKFS;
+        node->filesystem = VFS_FILESYSTEM_ADYTUMFS;
         node->mount = mount_index;
         node->mount_generation = mounts[mount_index].generation;
         node->readonly = 0;
@@ -501,7 +501,7 @@ int vfs_mount_blockfs(struct kernel_object *directory,
             node->active = 0;
             for (u32 undo = 0; undo < created; undo++)
                 object_release(nodes[slots[undo]].self);
-            blockfs_detach(mount_index);
+            adytumfs_detach(mount_index);
             return -1;
         }
         created++;
@@ -512,12 +512,12 @@ int vfs_mount_blockfs(struct kernel_object *directory,
             object_release(nodes[slots[0]].self);
         for (u32 undo = 0; undo < created; undo++)
             object_release(nodes[slots[undo]].self);
-        blockfs_detach(mount_index);
+        adytumfs_detach(mount_index);
         return -1;
     }
     mount->root = nodes[slots[0]].self;
     mount->mountpoint = directory;
-    mount->filesystem = VFS_FILESYSTEM_BLOCKFS;
+    mount->filesystem = VFS_FILESYSTEM_ADYTUMFS;
     mount->active = 1;
     mount->self = object_create(
         KOBJECT_MOUNT, mount_index + 1, mount_destroy);
@@ -530,7 +530,7 @@ int vfs_mount_blockfs(struct kernel_object *directory,
         object_release(nodes[slots[0]].self);
         for (u32 undo = 0; undo < created; undo++)
             object_release(nodes[slots[undo]].self);
-        blockfs_detach(mount_index);
+        adytumfs_detach(mount_index);
         return -1;
     }
     return 0;
@@ -569,8 +569,8 @@ struct kernel_object *vfs_create_mode(struct kernel_object *directory,
         node->active = 1;
         for (u32 byte = 0; byte < VFS_NAME_MAX; byte++) node->name[byte] = 0;
         for (u32 byte = 0; name[byte]; byte++) node->name[byte] = name[byte];
-        if (parent->filesystem == VFS_FILESYSTEM_BLOCKFS &&
-            blockfs_inode_create(parent->mount, name, parent->fs_id, type,
+        if (parent->filesystem == VFS_FILESYSTEM_ADYTUMFS &&
+            adytumfs_inode_create(parent->mount, name, parent->fs_id, type,
                                  mode, &node->fs_id)) {
             node->linked = 0;
             node->active = 0;
@@ -582,7 +582,7 @@ struct kernel_object *vfs_create_mode(struct kernel_object *directory,
             object_type, index + 1, node_destroy);
         if (!object) {
             if (node->fs_id)
-                blockfs_inode_remove(parent->mount, node->fs_id);
+                adytumfs_inode_remove(parent->mount, node->fs_id);
             node->linked = 0;
             node->active = 0;
             return 0;
@@ -590,7 +590,7 @@ struct kernel_object *vfs_create_mode(struct kernel_object *directory,
         node->self = object;
         if (object_retain(object)) {
             if (node->fs_id)
-                blockfs_inode_remove(parent->mount, node->fs_id);
+                adytumfs_inode_remove(parent->mount, node->fs_id);
             node->linked = 0;
             object_release(object);
             return 0;
@@ -810,8 +810,8 @@ int vfs_unlink(struct kernel_object *directory, const char *name) {
         if (node->readonly || mount_for_point(node->self) ||
             (node->type == VFS_NODE_DIRECTORY && child_count(index)))
             return -1;
-        if (node->filesystem == VFS_FILESYSTEM_BLOCKFS && node->fs_id &&
-            blockfs_inode_remove(node->mount, node->fs_id))
+        if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS && node->fs_id &&
+            adytumfs_inode_remove(node->mount, node->fs_id))
             return -1;
         node->linked = 0;
         node->parent = VFS_NODE_MAX;
@@ -864,11 +864,11 @@ struct kernel_object *vfs_open(struct kernel_object *object) {
     return 0;
 }
 
-static int blockfs_pages_ready(struct vfs_node_state *node, u32 end) {
+static int adytumfs_pages_ready(struct vfs_node_state *node, u32 end) {
     if (!node->pages) {
         node->pages = page_resource_create();
         if (!node->pages) return -1;
-        if (blockfs_pages_attach(node->mount, node->fs_id, node->pages)) {
+        if (adytumfs_pages_attach(node->mount, node->fs_id, node->pages)) {
             object_release(node->pages);
             node->pages = 0;
             return -1;
@@ -881,7 +881,7 @@ static int blockfs_pages_ready(struct vfs_node_state *node, u32 end) {
         page_resource_grow(node->pages, needed))
         return -1;
     for (u32 page = 0; page < needed; page++)
-        if (blockfs_pages_fault(node->mount, node->fs_id, page)) return -1;
+        if (adytumfs_pages_fault(node->mount, node->fs_id, page)) return -1;
     return 0;
 }
 
@@ -890,14 +890,14 @@ int vfs_read(struct kernel_object *object, u32 offset,
     struct vfs_file_state *file = file_for(object);
     struct vfs_node_state *node = file ? node_for(file->node) : 0;
     if (!node || !node_backing_live(node) || !buffer || !transferred) return -1;
-    if (node->filesystem == VFS_FILESYSTEM_BLOCKFS) {
+    if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) {
         if (offset >= node->size) {
             *transferred = 0;
             return 0;
         }
         u32 count = node->size - offset;
         if (count > length) count = length;
-        if (blockfs_pages_ready(node, offset + count)) return -1;
+        if (adytumfs_pages_ready(node, offset + count)) return -1;
         struct page_resource *resource = page_resource_get(node->pages);
         if (!resource) return -1;
         u32 done = 0;
@@ -966,13 +966,13 @@ static int write_node(struct vfs_node_state *node, u32 offset,
         node->external_data || !buffer || !transferred ||
         offset > VFS_FILE_SIZE_MAX || length > VFS_FILE_SIZE_MAX - offset)
         return -1;
-    if (node->filesystem == VFS_FILESYSTEM_BLOCKFS) {
-        if (offset > BLOCKFS_FILE_SIZE_MAX ||
-            length > BLOCKFS_FILE_SIZE_MAX - offset)
+    if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) {
+        if (offset > ADYTUMFS_FILE_SIZE_MAX ||
+            length > ADYTUMFS_FILE_SIZE_MAX - offset)
             return -1;
         u32 end = offset + length;
         if (length) {
-            if (blockfs_pages_ready(node, end)) return -1;
+            if (adytumfs_pages_ready(node, end)) return -1;
             struct page_resource *resource = page_resource_get(node->pages);
             if (!resource) return -1;
             u32 size = end > node->size ? end : node->size;
@@ -986,7 +986,7 @@ static int write_node(struct vfs_node_state *node, u32 offset,
                 if (!target) return -1;
                 for (u32 index = 0; index < chunk; index++)
                     target[within + index] = ((const u8 *)buffer)[done + index];
-                if (blockfs_pages_dirty(node->mount, node->fs_id,
+                if (adytumfs_pages_dirty(node->mount, node->fs_id,
                                         position / 4096, size))
                     return -1;
                 done += chunk;
@@ -1052,13 +1052,13 @@ static int truncate_node(struct vfs_node_state *node, u32 size) {
     if (!node || !node_backing_live(node) || node->readonly ||
         node->external_data || size > VFS_FILE_SIZE_MAX)
         return -1;
-    if (node->filesystem == VFS_FILESYSTEM_BLOCKFS) {
+    if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) {
         u32 new_size = 0;
-        if (blockfs_pages_sync(node->mount, node->fs_id)) return -1;
-        int result = blockfs_truncate(node->mount, node->fs_id, size,
+        if (adytumfs_pages_sync(node->mount, node->fs_id)) return -1;
+        int result = adytumfs_truncate(node->mount, node->fs_id, size,
                                       &new_size);
         if (!result && node->pages) {
-            blockfs_pages_detach(node->mount, node->fs_id);
+            adytumfs_pages_detach(node->mount, node->fs_id);
             object_release(node->pages);
             node->pages = 0;
         }
@@ -1087,9 +1087,9 @@ int vfs_sync(struct kernel_object *object) {
     struct vfs_file_state *file = file_for(object);
     struct vfs_node_state *node = file ? node_for(file->node) : 0;
     if (!node || !node_backing_live(node)) return -1;
-    if (node->filesystem != VFS_FILESYSTEM_BLOCKFS) return 0;
+    if (node->filesystem != VFS_FILESYSTEM_ADYTUMFS) return 0;
     spin_lock(&vfs_write_lock);
-    int result = blockfs_pages_sync(node->mount, node->fs_id);
+    int result = adytumfs_pages_sync(node->mount, node->fs_id);
     spin_unlock(&vfs_write_lock);
     return result;
 }
@@ -1129,11 +1129,11 @@ struct kernel_object *vfs_file_pages(struct kernel_object *object,
     struct vfs_file_state *file = file_for(object);
     struct vfs_node_state *node = file ? node_for(file->node) : 0;
     if (!node || !node_backing_live(node) || !size) return 0;
-    if (node->filesystem == VFS_FILESYSTEM_BLOCKFS) {
+    if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) {
         // A mapping exposes the whole extent, so every page has to hold disk
         // contents before userspace can reach it.
         spin_lock(&vfs_write_lock);
-        int ready = blockfs_pages_ready(node, node->size ? node->size : 4096);
+        int ready = adytumfs_pages_ready(node, node->size ? node->size : 4096);
         spin_unlock(&vfs_write_lock);
         if (ready) return 0;
     }

@@ -4,7 +4,7 @@
 #include "event.h"
 #include "pci64.h"
 #include "block.h"
-#include "blockfs.h"
+#include "adytumfs.h"
 #include "vfs.h"
 #include "nvme.h"
 #include "kernel64_internal.h"
@@ -160,8 +160,8 @@ int test_nvme64(const struct test64_env *env) {
     struct kernel_object *root = vfs_root();
     struct kernel_object *mnt = root ?
         vfs_create(root, "nvmedisk", VFS_NODE_DIRECTORY) : 0;
-    valid = valid && mnt && !blockfs_format(dev) &&
-        !vfs_mount_blockfs(mnt, dev);
+    valid = valid && mnt && !adytumfs_format(dev) &&
+        !vfs_mount_adytumfs(mnt, dev);
     struct kernel_object *disk = valid ? vfs_lookup(root, "nvmedisk") : 0;
     struct kernel_object *node = disk ?
         vfs_create_mode(disk, "hello", VFS_NODE_REGULAR, 0604) : 0;
@@ -180,7 +180,7 @@ int test_nvme64(const struct test64_env *env) {
         !vfs_read(opened, 0, received, sizeof(received), &transferred) &&
         transferred == sizeof(received) &&
         !vfs_stat(opened, &details) &&
-        details.filesystem == VFS_FILESYSTEM_BLOCKFS &&
+        details.filesystem == VFS_FILESYSTEM_ADYTUMFS &&
         details.size == sizeof(payload) && details.mode == 0604;
     for (u32 index = 0; index < sizeof(received); index++)
         if (received[index] != payload[index]) valid = 0;
@@ -223,6 +223,6 @@ int tests64_run_nvme(const struct test64_env *env) {
     serial64_write("Mich test64: nvme controller and prp io pass\n");
     serial64_write("Mich test64: nvme scatter-gather io pass\n");
     serial64_write("Mich test64: nvme msi-x completion wake pass\n");
-    serial64_write("Mich test64: nvme blockfs mount pass\n");
+    serial64_write("Mich test64: nvme adytumfs mount pass\n");
     return 0;
 }

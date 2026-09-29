@@ -80,14 +80,14 @@ int tests64_run(const struct test64_env *env) {
     serial64_write("Mich test64: TLS 1.3 key schedule and records pass\n");
     if (test_report_record(TEST_ID_TLS_HANDSHAKE, test_tls_handshake64())) return -1;
     serial64_write("Mich test64: TLS 1.3 client handshake pass\n");
-    if (test_report_record(TEST_ID_BLOCKFS, test_blockfs64())) return -1;
-    serial64_write("Mich test64: blockfs format and mount pass\n");
-    serial64_write("Mich test64: blockfs file io pass\n");
-    serial64_write("Mich test64: blockfs busy unmount lifetime pass\n");
-    serial64_write("Mich test64: blockfs stale vnode generation pass\n");
-    if (test_report_record(TEST_ID_BLOCKFS_PAGES, test_blockfs_pages64()))
+    if (test_report_record(TEST_ID_ADYTUMFS, test_adytumfs64())) return -1;
+    serial64_write("Mich test64: adytumfs format and mount pass\n");
+    serial64_write("Mich test64: adytumfs file io pass\n");
+    serial64_write("Mich test64: adytumfs busy unmount lifetime pass\n");
+    serial64_write("Mich test64: adytumfs stale vnode generation pass\n");
+    if (test_report_record(TEST_ID_ADYTUMFS_PAGES, test_adytumfs_pages64()))
         return -1;
-    serial64_write("Mich test64: blockfs page-backed write-back pass\n");
+    serial64_write("Mich test64: adytumfs page-backed write-back pass\n");
     if (test_report_record(TEST_ID_RESOURCE, test_resource64())) return -1;
     serial64_write("Mich test64: resource object layer pass\n");
     if (test_report_record(TEST_ID_PAGE, test_page64(env))) return -1;

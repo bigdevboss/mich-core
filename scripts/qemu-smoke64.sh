@@ -567,10 +567,10 @@ for marker in \
     "Mich test64: TLS 1.3 key schedule and records pass" \
     "Mich test64: TLS 1.3 client handshake pass" \
     "Mich x86_64: wall clock anchored" \
-    "Mich test64: blockfs format and mount pass" \
-    "Mich test64: blockfs file io pass" \
-    "Mich test64: blockfs busy unmount lifetime pass" \
-    "Mich test64: blockfs stale vnode generation pass" \
+    "Mich test64: adytumfs format and mount pass" \
+    "Mich test64: adytumfs file io pass" \
+    "Mich test64: adytumfs busy unmount lifetime pass" \
+    "Mich test64: adytumfs stale vnode generation pass" \
     "Mich test64: resource object layer pass" \
     "Mich test64: page and shared memory objects pass" \
     "Mich test64: page grow and trim pass" \
@@ -659,12 +659,12 @@ for marker in \
     "Mich test64: TCP page send pass" \
     "Mich test64: socket send file pass" \
     "Mich test64: socket receive file pass" \
-    "Mich test64: socket send blockfs file pass" \
-    "Mich test64: blockfs page-backed write-back pass" \
+    "Mich test64: socket send adytumfs file pass" \
+    "Mich test64: adytumfs page-backed write-back pass" \
     "Mich test64: nvme controller and prp io pass" \
     "Mich test64: nvme scatter-gather io pass" \
     "Mich test64: nvme msi-x completion wake pass" \
-    "Mich test64: nvme blockfs mount pass" \
+    "Mich test64: nvme adytumfs mount pass" \
     "Mich test64: ICMP checksum pass" \
     "Mich test64: ICMP echo request and reply pass" \
     "Mich test64: ICMP rate limit pass" \
