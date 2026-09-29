@@ -98,6 +98,7 @@
 #define BOOT_MODULE_DRIVER_RESTART_TEST (1u << 29)
 #define BOOT_MODULE_HARDWARE_TEST (1u << 30)
 #define BOOT_MODULE_PANIC_TEST (1u << 31)
+#define BOOT_MODULE_ALLOW_UNCONFINED_DMA (1u << 24)
 #define IOMMU_FAULT_BATCH 8
 // The primary capsule's sole test ud2. Its link address depends on the capsule
 // toolchain, so the build extracts it from the compiled capsule rather than
@@ -394,6 +395,10 @@ static int supervisor64_resource(
         return objects[0] ? 1 : -1;
     }
     if (request->kind == DRIVER_RESOURCE_DMA) {
+        // Fail closed: without an IOMMU to confine it, a DMA grant is raw
+        // physical R/W. Only a boot opt-in (dev/QEMU images with no VT-d or
+        // AMD-Vi) permits unconfined DMA; otherwise deny the grant.
+        if (!iommu_dma_permitted()) return -1;
         objects[0] = dma_resource_allocate((u32)request->amount,
                                            (paddr_t)request->limit);
         if (!objects[0]) return -1;
@@ -1892,6 +1897,8 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     if (devfs64_init()) KERNEL_PANIC("dev urandom");
     resource_init();
     iommu_init();
+    iommu_set_unconfined_dma_allowed(
+        (init_module->flags & BOOT_MODULE_ALLOW_UNCONFINED_DMA) != 0);
     if (page_resource_set_revoke_backend(vm64_revoke_object_all))
         KERNEL_PANIC("page revoke backend");
     ring_init();

@@ -31,6 +31,9 @@ struct iommu_backend {
 void iommu_init(void);
 int iommu_register(const struct iommu_backend *backend);
 int iommu_present(void);
+void iommu_set_unconfined_dma_allowed(int allowed);
+int iommu_unconfined_dma_allowed(void);
+int iommu_dma_permitted(void);
 const char *iommu_name(void);
 int iommu_enable(void);
 int iommu_enabled(void);

@@ -5,6 +5,7 @@
 #include "vm64.h"
 #include "sg.h"
 #include "ring.h"
+#include "iommu.h"
 #include "tests64.h"
 
 int test_resource64(void) {
@@ -72,6 +73,16 @@ int test_resource64(void) {
     object_release(dma_wide);
     object_release(msix);
     object_release(pci);
+    // VUL-004: a DMA grant is fail-closed. With the opt-in off, permission must
+    // track IOMMU presence exactly; the boot opt-in must always permit. Restore
+    // the boot policy so later driver tests keep their granted DMA.
+    int dma_saved = iommu_unconfined_dma_allowed();
+    iommu_set_unconfined_dma_allowed(0);
+    int dma_base = iommu_dma_permitted();
+    iommu_set_unconfined_dma_allowed(1);
+    int dma_opt_in = iommu_dma_permitted();
+    iommu_set_unconfined_dma_allowed(dma_saved);
+    if (dma_base != iommu_present() || !dma_opt_in) return -1;
     return pmm_free_pages() == free_before ? 0 : -1;
 }
 
