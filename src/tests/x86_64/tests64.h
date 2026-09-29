@@ -49,6 +49,7 @@ int test_tls_handshake64(void);
 int test_crc32c64(void);
 int test_adytumfs_super64(void);
 int test_adytumfs_volume64(void);
+int test_adytumfs_alloc64(void);
 int test_adytumfs64(void);
 int test_adytumfs_pages64(void);
 int test_nvme64(const struct test64_env *env);

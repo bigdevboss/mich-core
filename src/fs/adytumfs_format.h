@@ -126,4 +126,14 @@ int adytumfs_block_write(struct kernel_object *device, u64 block,
 // backup), the block bitmap, and an empty root directory.
 int adytumfs_make(struct kernel_object *device);
 
+// Allocate a contiguous run of length data blocks (first-fit) and return its
+// start block, or free a previously allocated run. The bitmap is the source of
+// truth; super->free_blocks is kept up to date in memory.
+int adytumfs_alloc_run(struct kernel_object *device,
+                       struct adytumfs_superblock *super,
+                       u64 length, u64 *start);
+int adytumfs_free_run(struct kernel_object *device,
+                      struct adytumfs_superblock *super,
+                      u64 start, u64 length);
+
 #endif

@@ -92,3 +92,82 @@ int adytumfs_make(struct kernel_object *device) {
 
     return block_cache_flush(device);
 }
+
+// The bitmap block for a given data block is re-read on every bit access; the
+// block cache absorbs the repeats, so it stays a read-modify-write against one
+// staging block rather than holding the whole bitmap in memory.
+static u8 adytumfs_bitmap_scratch[ADYTUMFS_BLOCK_SIZE];
+
+static int adytumfs_bit_test(struct kernel_object *device,
+                             const struct adytumfs_superblock *super,
+                             u64 block) {
+    const u64 bits_per_block = (u64)ADYTUMFS_BLOCK_SIZE * 8;
+    u64 bitmap = block / bits_per_block;
+    u64 offset = block % bits_per_block;
+    if (bitmap >= super->block_bitmap_blocks) return -1;
+    if (adytumfs_block_read(device, super->block_bitmap_start + bitmap,
+                            adytumfs_bitmap_scratch))
+        return -1;
+    return (adytumfs_bitmap_scratch[offset / 8] >> (offset % 8)) & 1;
+}
+
+static int adytumfs_bit_write(struct kernel_object *device,
+                              const struct adytumfs_superblock *super,
+                              u64 block, int used) {
+    const u64 bits_per_block = (u64)ADYTUMFS_BLOCK_SIZE * 8;
+    u64 bitmap = block / bits_per_block;
+    u64 offset = block % bits_per_block;
+    if (bitmap >= super->block_bitmap_blocks) return -1;
+    if (adytumfs_block_read(device, super->block_bitmap_start + bitmap,
+                            adytumfs_bitmap_scratch))
+        return -1;
+    if (used)
+        adytumfs_bitmap_scratch[offset / 8] |= (u8)(1u << (offset % 8));
+    else
+        adytumfs_bitmap_scratch[offset / 8] &= (u8)~(1u << (offset % 8));
+    return adytumfs_block_write(device, super->block_bitmap_start + bitmap,
+                                adytumfs_bitmap_scratch);
+}
+
+int adytumfs_alloc_run(struct kernel_object *device,
+                       struct adytumfs_superblock *super,
+                       u64 length, u64 *start) {
+    if (!super || !start || length == 0) return -1;
+    // The last block holds the backup superblock, so it is never allocatable.
+    u64 usable_end = super->total_blocks - 1;
+    u64 run_start = 0;
+    u64 run = 0;
+    for (u64 block = super->data_start; block < usable_end; block++) {
+        int used = adytumfs_bit_test(device, super, block);
+        if (used < 0) return -1;
+        if (used) {
+            run = 0;
+            continue;
+        }
+        if (run == 0) run_start = block;
+        run++;
+        if (run == length) {
+            for (u64 mark = run_start; mark < run_start + length; mark++)
+                if (adytumfs_bit_write(device, super, mark, 1)) return -1;
+            super->free_blocks -= length;
+            *start = run_start;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int adytumfs_free_run(struct kernel_object *device,
+                      struct adytumfs_superblock *super,
+                      u64 start, u64 length) {
+    if (!super || length == 0) return -1;
+    // Only data blocks are freeable; the metadata prefix and the backup super
+    // must never be handed back to the allocator.
+    if (start < super->data_start || start >= super->total_blocks - 1 ||
+        length > super->total_blocks - 1 - start)
+        return -1;
+    for (u64 block = start; block < start + length; block++)
+        if (adytumfs_bit_write(device, super, block, 0)) return -1;
+    super->free_blocks += length;
+    return 0;
+}
