@@ -1986,7 +1986,10 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             KRIGHT_CONTROL, KOBJECT_BLOCK);
         return object ? (u64)(i64)block_service(object) : (u64)-1;
     }
-    if (number == 186) {
+    // Number 186 is shared: a driver domain registers a block capsule transport
+    // with it, while an admitted POSIX profile uses it as open(). Disambiguate by
+    // domain so a non-driver task falls through to the POSIX handler below.
+    if (number == 186 && driver_domain_for_pid(task_pool[current_task_slot].id)) {
         struct task *task = &task_pool[current_task_slot];
         struct driver_domain *domain = driver_domain_for_pid(task->id);
         struct block_driver_register_request request;
