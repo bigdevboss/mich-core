@@ -598,3 +598,190 @@ int test_adytumfs_policy64(void) {
         block_active_count() == devices;
     return valid ? 0 : -1;
 }
+
+// Payloads are short byte ramps so a leaked or overwritten page is caught by
+// one comparison instead of a full buffer audit.
+static void reuse_fill(u8 *buffer, u32 length, u8 base) {
+    for (u32 index = 0; index < length; index++)
+        buffer[index] = (u8)(base + index);
+}
+
+static int reuse_matches(const u8 *buffer, u32 length, u8 base) {
+    for (u32 index = 0; index < length; index++)
+        if (buffer[index] != (u8)(base + index)) return 0;
+    return 1;
+}
+
+int test_adytumfs_reuse64(void) {
+    u32 objects = object_active_count();
+    u32 nodes = vfs_node_active_count();
+    u32 files = vfs_file_active_count();
+    u32 mounts = vfs_mount_active_count();
+    u32 devices = block_active_count();
+    struct kernel_object *root = vfs_root();
+    int valid = root != 0;
+
+    // A handle that outlives its unlink keeps its vnode, and the freed slot
+    // can be reused by the next create. Every later backend call through the
+    // stale handle must fail closed instead of reaching the new owner.
+    {
+        struct kernel_object *dev = block_create(320, 0);
+        struct kernel_object *point = root ?
+            vfs_create(root, "reuse", VFS_NODE_DIRECTORY) : 0;
+        int ok = dev && point && !adytumfs_format(dev) &&
+            !vfs_mount_adytumfs(point, dev);
+        struct kernel_object *disk = ok ? vfs_lookup(root, "reuse") : 0;
+        u32 mount_id = 0;
+        for (u32 probe = 1; probe < VFS_MOUNT_MAX; probe++)
+            if (adytumfs_inode_count(probe)) {
+                mount_id = probe;
+                break;
+            }
+        u32 used = 0, type = 0, size = 0, parent = 0, mode = 0, moved = 0;
+        char name[VFS_NAME_MAX];
+        u64 first_generation = 0;
+        u64 second_generation = 0;
+        u64 third_generation = 0;
+        u64 fourth_generation = 0;
+        u8 payload[16];
+        u8 received[16];
+
+        // Slot 1: a stale handle with a live page cache must fail its reads
+        // and writes once another file owns the slot.
+        struct kernel_object *first = disk ?
+            vfs_create(disk, "first", VFS_NODE_REGULAR) : 0;
+        struct kernel_object *first_file = first ? vfs_open(first) : 0;
+        reuse_fill(payload, sizeof(payload), 0x10);
+        ok = ok && disk && mount_id && first && first_file &&
+            !adytumfs_inode_get(mount_id, 1, &used, &type, &size, &parent,
+                               &mode, name, &first_generation) &&
+            used == 1 && probe_name_equals(name, "first") &&
+            first_generation &&
+            !vfs_write(first_file, 0, payload, sizeof(payload), &moved) &&
+            moved == sizeof(payload) &&
+            !vfs_unlink(disk, "first");
+        struct kernel_object *second = disk ?
+            vfs_create(disk, "second", VFS_NODE_REGULAR) : 0;
+        struct kernel_object *second_file = second ? vfs_open(second) : 0;
+        reuse_fill(payload, sizeof(payload), 0x20);
+        ok = ok && second && second_file &&
+            !adytumfs_inode_get(mount_id, 1, &used, &type, &size, &parent,
+                               &mode, name, &second_generation) &&
+            used == 1 && probe_name_equals(name, "second") &&
+            second_generation && second_generation != first_generation &&
+            !vfs_write(second_file, 0, payload, sizeof(payload), &moved) &&
+            moved == sizeof(payload) &&
+            !vfs_sync(second_file) &&
+            vfs_read(first_file, 0, received, sizeof(received), &moved) < 0 &&
+            vfs_write(first_file, 0, payload, sizeof(payload), &moved) < 0 &&
+            !vfs_read(second_file, 0, received, sizeof(received), &moved) &&
+            moved == sizeof(received) &&
+            reuse_matches(received, sizeof(received), 0x20);
+
+        // Slot 1 teardown: releasing the stale vnode must not detach the new
+        // owner's cache, or its dirty pages would never reach the disk.
+        reuse_fill(payload, sizeof(payload), 0x30);
+        ok = ok && !vfs_write(second_file, 4096, payload, sizeof(payload),
+                              &moved) &&
+            moved == sizeof(payload);
+        if (first_file) {
+            object_release(first_file);
+            first_file = 0;
+        }
+        if (first) {
+            object_release(first);
+            first = 0;
+        }
+        ok = ok && !vfs_sync(second_file) &&
+            !vfs_read(second_file, 4096, received, sizeof(received), &moved) &&
+            moved == sizeof(received) &&
+            reuse_matches(received, sizeof(received), 0x30);
+
+        // Slot 2: a handle that never touched the disk before its unlink is
+        // the sharpest form of the hazard, because its first write would
+        // attach a page cache over the reused slot's new inode.
+        struct kernel_object *third = disk ?
+            vfs_create(disk, "third", VFS_NODE_REGULAR) : 0;
+        struct kernel_object *third_file = third ? vfs_open(third) : 0;
+        ok = ok && third && third_file &&
+            !adytumfs_inode_get(mount_id, 2, &used, &type, &size, &parent,
+                               &mode, name, &third_generation) &&
+            used == 1 && third_generation &&
+            !vfs_unlink(disk, "third");
+        struct kernel_object *fourth = disk ?
+            vfs_create(disk, "fourth", VFS_NODE_REGULAR) : 0;
+        struct kernel_object *fourth_file = fourth ? vfs_open(fourth) : 0;
+        reuse_fill(payload, sizeof(payload), 0x40);
+        ok = ok && fourth && fourth_file &&
+            !adytumfs_inode_get(mount_id, 2, &used, &type, &size, &parent,
+                               &mode, name, &fourth_generation) &&
+            used == 1 && fourth_generation &&
+            fourth_generation != third_generation &&
+            vfs_write(third_file, 0, payload, sizeof(payload), &moved) < 0;
+        reuse_fill(payload, sizeof(payload), 0x50);
+        ok = ok && !vfs_write(fourth_file, 0, payload, sizeof(payload),
+                              &moved) &&
+            moved == sizeof(payload) &&
+            !vfs_sync(fourth_file) &&
+            !vfs_read(fourth_file, 0, received, sizeof(received), &moved) &&
+            moved == sizeof(received) &&
+            reuse_matches(received, sizeof(received), 0x50);
+
+        // The stale slot 2 handle must also drop without touching the new
+        // owner, and both files must come back whole after a remount.
+        if (third_file) {
+            object_release(third_file);
+            third_file = 0;
+        }
+        if (third) {
+            object_release(third);
+            third = 0;
+        }
+        ok = ok && !vfs_sync(fourth_file);
+        if (fourth_file) object_release(fourth_file);
+        if (fourth) object_release(fourth);
+        if (second_file) object_release(second_file);
+        if (second) object_release(second);
+        if (disk) object_release(disk);
+        ok = ok && !vfs_unmount(point) && !vfs_mount_adytumfs(point, dev);
+        struct kernel_object *fresh = ok ? vfs_lookup(root, "reuse") : 0;
+        struct kernel_object *kept_second = fresh ?
+            vfs_lookup(fresh, "second") : 0;
+        struct kernel_object *kept_fourth = fresh ?
+            vfs_lookup(fresh, "fourth") : 0;
+        struct kernel_object *second_read = kept_second ?
+            vfs_open(kept_second) : 0;
+        struct kernel_object *fourth_read = kept_fourth ?
+            vfs_open(kept_fourth) : 0;
+        ok = ok && fresh && kept_second && kept_fourth && second_read &&
+            fourth_read && !vfs_lookup(fresh, "first") &&
+            !vfs_lookup(fresh, "third") &&
+            !vfs_read(second_read, 0, received, sizeof(received), &moved) &&
+            moved == sizeof(received) &&
+            reuse_matches(received, sizeof(received), 0x20) &&
+            !vfs_read(second_read, 4096, received, sizeof(received), &moved) &&
+            moved == sizeof(received) &&
+            reuse_matches(received, sizeof(received), 0x30) &&
+            !vfs_read(fourth_read, 0, received, sizeof(received), &moved) &&
+            moved == sizeof(received) &&
+            reuse_matches(received, sizeof(received), 0x50);
+        if (second_read) object_release(second_read);
+        if (fourth_read) object_release(fourth_read);
+        if (kept_second) object_release(kept_second);
+        if (kept_fourth) object_release(kept_fourth);
+        if (fresh) object_release(fresh);
+        ok = ok && !vfs_unmount(point);
+        valid = valid && ok;
+        if (point) object_release(point);
+        if (root) vfs_unlink(root, "reuse");
+        if (dev) object_release(dev);
+    }
+
+    if (root) object_release(root);
+    valid = valid && object_active_count() == objects &&
+        vfs_node_active_count() == nodes &&
+        vfs_file_active_count() == files &&
+        vfs_mount_active_count() == mounts &&
+        block_active_count() == devices;
+    return valid ? 0 : -1;
+}
