@@ -43,7 +43,8 @@ int adytumfs_make(struct kernel_object *device) {
     // format cost proportional on large volumes instead of zeroing a full
     // thirty-second of the device through the block cache.
     u64 inode_table_blocks = total_blocks / 32;
-    if (inode_table_blocks > 16) inode_table_blocks = 16;
+    if (inode_table_blocks > ADYTUMFS_INODE_TABLE_BLOCKS_MAX)
+        inode_table_blocks = ADYTUMFS_INODE_TABLE_BLOCKS_MAX;
     if (inode_table_blocks == 0) inode_table_blocks = 1;
     u64 inode_table_start = 1 + bitmap_blocks;
     u64 data_start = inode_table_start + inode_table_blocks;

@@ -92,6 +92,9 @@ static int walk_tree(struct adytumfs_mount *m) {
     struct adytumfs_inode root;
     if (adytumfs_inode_read(m->device, &m->super, m->super.root_inode, &root))
         return -1;
+    // The mount root is the directory every walk starts from; anything else
+    // would have file data parsed as directory records.
+    if ((root.mode & ADYTUMFS_MODE_DIR) == 0) return -1;
     m->slots[0].inode = m->super.root_inode;
     m->slots[0].generation = root.generation;
     m->slots[0].parent = 0;
@@ -384,6 +387,7 @@ int adytumfs_attach(u32 mount, struct kernel_object *device) {
     // v1 defines no ro-compat features; an image asking for one would need a
     // read-only mount, which the VFS contract cannot express.
     if (super.feature_ro_compat) return -1;
+    if (adytumfs_verify(device, &super)) return -1;
     if (object_retain(device)) return -1;
     struct adytumfs_mount *m = &mounts[mount];
     for (u32 slot = 0; slot < ADYTUMFS_INODE_MAX; slot++) {
