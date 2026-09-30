@@ -64,7 +64,9 @@ int adytumfs_make(struct kernel_object *device) {
         .root_inode = ADYTUMFS_ROOT_INODE,
         .data_start = data_start,
         .free_blocks = total_blocks - (data_start + 1),
-        .free_inodes = inode_count - 1,
+        // Slot 0 is the null inode and the root occupies slot 1, so the
+        // free count starts two below the table size.
+        .free_inodes = inode_count - 2,
         .generation = 1,
         .feature_compat = 0,
         .feature_incompat = 0,
@@ -171,7 +173,7 @@ int adytumfs_alloc_run(struct kernel_object *device,
                 if (adytumfs_bit_write(device, super, mark, 1)) return -1;
             super->free_blocks -= length;
             *start = run_start;
-            return 0;
+            return adytumfs_super_sync(device, super);
         }
     }
     return -1;
@@ -189,5 +191,5 @@ int adytumfs_free_run(struct kernel_object *device,
     for (u64 block = start; block < start + length; block++)
         if (adytumfs_bit_write(device, super, block, 0)) return -1;
     super->free_blocks += length;
-    return 0;
+    return adytumfs_super_sync(device, super);
 }
