@@ -45,6 +45,10 @@ static inline void adytumfs_write_le64(u8 *p, u64 value) {
 #define ADYTUMFS_DIRECT_EXTENTS 10u
 #define ADYTUMFS_FORMAT_VERSION 1u
 #define ADYTUMFS_ROOT_INODE 1u
+// v1 bounds the inode table at sixteen blocks (256 inodes at sixteen per
+// block); the formatter caps at the same value, so a bigger table is a volume
+// this format never wrote.
+#define ADYTUMFS_INODE_TABLE_BLOCKS_MAX 16u
 
 // The superblock lives in block 0 (a backup copy in the last block). Its
 // checksum is the last field and covers every byte before it, so it never has
@@ -163,6 +167,14 @@ int adytumfs_inode_alloc(struct kernel_object *device,
                          u16 mode, u64 *inode_num);
 int adytumfs_inode_free(struct kernel_object *device,
                         struct adytumfs_superblock *super, u64 inode_num);
+
+// Mount time audit of the allocation state: every used inode's extents must
+// stay inside the data region, no two extents may share a block, the bitmap
+// must agree with the extents exactly, and the superblock counters must match
+// what a full scan of the table and the bitmap finds. Returns 0 only when the
+// three views of the volume agree.
+int adytumfs_verify(struct kernel_object *device,
+                    const struct adytumfs_superblock *super);
 
 // Map a logical file block to its physical block through the inode's extents.
 int adytumfs_inode_map(const struct adytumfs_inode *inode, u64 logical_block,

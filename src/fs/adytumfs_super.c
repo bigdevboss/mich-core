@@ -69,8 +69,11 @@ int adytumfs_super_valid(const struct adytumfs_superblock *super,
     // data, up to total_blocks. Each bound is checked with subtraction so a
     // crafted size cannot overflow the addition.
     if (super->block_bitmap_start != 1) return -1;
-    if (super->block_bitmap_blocks == 0 ||
-        super->block_bitmap_blocks > super->total_blocks - 1)
+    // The bitmap covers exactly one bit per block of the volume; a spare
+    // window would be state this format never writes.
+    if (super->block_bitmap_blocks !=
+        (super->total_blocks + (u64)ADYTUMFS_BLOCK_SIZE * 8u - 1u) /
+            ((u64)ADYTUMFS_BLOCK_SIZE * 8u))
         return -1;
     if (super->inode_table_start !=
         super->block_bitmap_start + super->block_bitmap_blocks)
@@ -79,6 +82,9 @@ int adytumfs_super_valid(const struct adytumfs_superblock *super,
         super->inode_table_start > super->total_blocks ||
         super->inode_table_blocks > super->total_blocks - super->inode_table_start)
         return -1;
+    // The v1 table cap also bounds the mount audit's extent ledger, so a
+    // crafted volume cannot force an unbounded walk.
+    if (super->inode_table_blocks > ADYTUMFS_INODE_TABLE_BLOCKS_MAX) return -1;
     if (super->data_start !=
         super->inode_table_start + super->inode_table_blocks)
         return -1;
