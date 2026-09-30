@@ -117,6 +117,13 @@ int adytumfs_inode_unpack(struct adytumfs_inode *inode, const u8 *slot);
 
 struct kernel_object;
 
+// Rewrite the primary superblock (block 0) from the in-memory copy, checksum
+// included, so the allocation counters on disk track what the allocator has
+// handed out. The backup copy stays a format time snapshot until the
+// durability work turns both copies into a generation pair.
+int adytumfs_super_sync(struct kernel_object *device,
+                        const struct adytumfs_superblock *super);
+
 // Read or write one 4 KiB filesystem block (eight device sectors) by block
 // number, through the block cache.
 int adytumfs_block_read(struct kernel_object *device, u64 block, u8 *buffer);

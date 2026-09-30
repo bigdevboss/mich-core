@@ -96,3 +96,17 @@ int adytumfs_super_valid(const struct adytumfs_superblock *super,
         return -1;
     return 0;
 }
+
+// Rewrite the primary superblock from the in-memory copy so the allocation
+// counters on disk match what the allocator has handed out. The backup copy
+// stays a format time snapshot until the durability work turns both copies
+// into a generation pair.
+int adytumfs_super_sync(struct kernel_object *device,
+                        const struct adytumfs_superblock *super) {
+    if (!device || !super) return -1;
+    // A 4 KiB staging block is too large for a modest stack, and the allocator
+    // paths are single threaded, so the staging is static.
+    static u8 block[ADYTUMFS_BLOCK_SIZE];
+    adytumfs_super_pack(block, super);
+    return adytumfs_block_write(device, 0, block);
+}

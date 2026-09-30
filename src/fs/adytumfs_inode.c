@@ -99,7 +99,7 @@ int adytumfs_inode_alloc(struct kernel_object *device,
         if (adytumfs_inode_write(device, super, candidate, &fresh)) return -1;
         super->free_inodes--;
         *inode_num = candidate;
-        return 0;
+        return adytumfs_super_sync(device, super);
     }
     return -1;
 }
@@ -113,7 +113,7 @@ int adytumfs_inode_free(struct kernel_object *device,
     inode.mode = 0;
     if (adytumfs_inode_write(device, super, inode_num, &inode)) return -1;
     super->free_inodes++;
-    return 0;
+    return adytumfs_super_sync(device, super);
 }
 
 int adytumfs_inode_map(const struct adytumfs_inode *inode, u64 logical_block,
