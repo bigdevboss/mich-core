@@ -89,6 +89,7 @@
 #define TEST_ID_ADYTUMFS_FILE 100
 #define TEST_ID_ADYTUMFS_OPS 101
 #define TEST_ID_ADYTUMFS_DIRITER 102
+#define TEST_ID_ADYTUMFS_POLICY 103
 
 struct test_result64 {
     u32 id;

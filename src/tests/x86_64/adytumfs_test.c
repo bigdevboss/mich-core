@@ -1,6 +1,7 @@
 #include "types.h"
 #include "object.h"
 #include "block.h"
+#include "cache.h"
 #include "adytumfs.h"
 #include "adytumfs_format.h"
 #include "vfs.h"
@@ -27,6 +28,58 @@ static int probe_read_block(struct kernel_object *dev, u64 block, u8 *buffer) {
                      (u32)(block * ADYTUMFS_SECTORS_PER_BLOCK + sector), 1,
                      buffer + sector * BLOCK_SECTOR_SIZE, BLOCK_SECTOR_SIZE))
             return -1;
+    return 0;
+}
+
+// Parse the volume superblock through the block cache, which the corruption
+// scenarios below also write their edits through.
+static int policy_super(struct kernel_object *dev,
+                        struct adytumfs_superblock *super) {
+    if (adytumfs_block_read(dev, 0, adytumfs_probe_block)) return -1;
+    return adytumfs_super_unpack(super, adytumfs_probe_block);
+}
+
+// Locate a root directory record by name and leave its data block in the
+// staging buffer, so a scenario can edit one field of one record in place.
+static int policy_find_record(struct kernel_object *dev,
+                              const struct adytumfs_superblock *super,
+                              const char *name, u32 name_len, u64 *block,
+                              u32 *offset) {
+    struct adytumfs_inode dir;
+    if (adytumfs_inode_read(dev, super, super->root_inode, &dir)) return -1;
+    u64 physical = 0;
+    if (adytumfs_inode_map(&dir, 0, &physical)) return -1;
+    if (adytumfs_block_read(dev, physical, adytumfs_probe_block)) return -1;
+    u32 cursor = 0;
+    while (cursor + ADYTUMFS_DIR_HEADER <= ADYTUMFS_BLOCK_SIZE) {
+        u64 entry_inode = adytumfs_read_le64(adytumfs_probe_block + cursor);
+        u16 rec_len = adytumfs_read_le16(adytumfs_probe_block + cursor + 8);
+        u8 stored_len = adytumfs_probe_block[cursor + 10];
+        if (rec_len < ADYTUMFS_DIR_HEADER ||
+            cursor + rec_len > ADYTUMFS_BLOCK_SIZE)
+            return -1;
+        if (entry_inode && stored_len == name_len) {
+            u32 index = 0;
+            while (index < name_len &&
+                   adytumfs_probe_block[cursor + 12 + index] == (u8)name[index])
+                index++;
+            if (index == name_len) {
+                *block = physical;
+                *offset = cursor;
+                return 0;
+            }
+        }
+        cursor += rec_len;
+    }
+    return -1;
+}
+
+// Land a staging-block edit on the device and drop the cached copies, so the
+// next mount attempt reads the corruption the way a later boot would.
+static int policy_commit(struct kernel_object *dev, u64 block) {
+    if (adytumfs_block_write(dev, block, adytumfs_probe_block)) return -1;
+    if (block_cache_flush(dev)) return -1;
+    block_cache_drop_device((u32)dev->value);
     return 0;
 }
 
@@ -297,6 +350,247 @@ int test_adytumfs_pages64(void) {
     if (mnt) object_release(mnt);
     if (root) object_release(root);
     if (dev) object_release(dev);
+    valid = valid && object_active_count() == objects &&
+        vfs_node_active_count() == nodes &&
+        vfs_file_active_count() == files &&
+        vfs_mount_active_count() == mounts &&
+        block_active_count() == devices;
+    return valid ? 0 : -1;
+}
+
+int test_adytumfs_policy64(void) {
+    u32 objects = object_active_count();
+    u32 nodes = vfs_node_active_count();
+    u32 files = vfs_file_active_count();
+    u32 mounts = vfs_mount_active_count();
+    u32 devices = block_active_count();
+    struct kernel_object *root = vfs_root();
+    int valid = root != 0;
+
+    // A dirent naming an inode the table no longer backs must fail the mount
+    // rather than surface a file with another inode's content.
+    {
+        struct kernel_object *dev = block_create(320, 0);
+        struct kernel_object *point = root ?
+            vfs_create(root, "policy", VFS_NODE_DIRECTORY) : 0;
+        int ok = dev && point && !adytumfs_format(dev) &&
+            !vfs_mount_adytumfs(point, dev);
+        struct kernel_object *disk = ok ? vfs_lookup(root, "policy") : 0;
+        struct kernel_object *node = disk ?
+            vfs_create(disk, "hello", VFS_NODE_REGULAR) : 0;
+        ok = ok && disk && node;
+        if (node) object_release(node);
+        if (disk) object_release(disk);
+        ok = ok && !vfs_unmount(point);
+        struct adytumfs_superblock super;
+        u64 target = 0;
+        ok = ok && !policy_super(dev, &super) &&
+            !adytumfs_dir_lookup(dev, &super, super.root_inode, "hello", 5,
+                                 &target) &&
+            target;
+        u64 table = super.inode_table_start +
+            target / ADYTUMFS_INODES_PER_BLOCK;
+        u32 slot = (u32)((target % ADYTUMFS_INODES_PER_BLOCK) *
+                         ADYTUMFS_INODE_SIZE);
+        ok = ok && !adytumfs_block_read(dev, table, adytumfs_probe_block);
+        if (ok)
+            for (u32 index = 0; index < ADYTUMFS_INODE_SIZE; index++)
+                adytumfs_probe_block[slot + index] = 0;
+        ok = ok && !policy_commit(dev, table) &&
+            vfs_mount_adytumfs(point, dev) < 0;
+        valid = valid && ok;
+        if (point) object_release(point);
+        if (root) vfs_unlink(root, "policy");
+        if (dev) object_release(dev);
+    }
+
+    // A dirent whose type disagrees with the target inode means the tree
+    // cannot be trusted, so the mount must fail.
+    {
+        struct kernel_object *dev = block_create(320, 0);
+        struct kernel_object *point = root ?
+            vfs_create(root, "policy", VFS_NODE_DIRECTORY) : 0;
+        int ok = dev && point && !adytumfs_format(dev) &&
+            !vfs_mount_adytumfs(point, dev);
+        struct kernel_object *disk = ok ? vfs_lookup(root, "policy") : 0;
+        struct kernel_object *node = disk ?
+            vfs_create(disk, "hello", VFS_NODE_REGULAR) : 0;
+        ok = ok && disk && node;
+        if (node) object_release(node);
+        if (disk) object_release(disk);
+        ok = ok && !vfs_unmount(point);
+        struct adytumfs_superblock super;
+        u64 block = 0;
+        u32 at = 0;
+        ok = ok && !policy_super(dev, &super) &&
+            !policy_find_record(dev, &super, "hello", 5, &block, &at);
+        if (ok) adytumfs_probe_block[at + 11] = ADYTUMFS_DTYPE_DIR;
+        ok = ok && !policy_commit(dev, block) &&
+            vfs_mount_adytumfs(point, dev) < 0;
+        valid = valid && ok;
+        if (point) object_release(point);
+        if (root) vfs_unlink(root, "policy");
+        if (dev) object_release(dev);
+    }
+
+    // Two names for one inode would alias one file under two vnodes, so the
+    // mount must fail.
+    {
+        struct kernel_object *dev = block_create(320, 0);
+        struct kernel_object *point = root ?
+            vfs_create(root, "policy", VFS_NODE_DIRECTORY) : 0;
+        int ok = dev && point && !adytumfs_format(dev) &&
+            !vfs_mount_adytumfs(point, dev);
+        struct kernel_object *disk = ok ? vfs_lookup(root, "policy") : 0;
+        struct kernel_object *first = disk ?
+            vfs_create(disk, "a", VFS_NODE_REGULAR) : 0;
+        struct kernel_object *second = disk ?
+            vfs_create(disk, "b", VFS_NODE_REGULAR) : 0;
+        ok = ok && disk && first && second;
+        if (first) object_release(first);
+        if (second) object_release(second);
+        if (disk) object_release(disk);
+        ok = ok && !vfs_unmount(point);
+        struct adytumfs_superblock super;
+        u64 alias = 0;
+        u64 block = 0;
+        u32 at = 0;
+        ok = ok && !policy_super(dev, &super) &&
+            !adytumfs_dir_lookup(dev, &super, super.root_inode, "a", 1,
+                                 &alias) &&
+            alias &&
+            !policy_find_record(dev, &super, "b", 1, &block, &at);
+        if (ok) adytumfs_write_le64(adytumfs_probe_block + at, alias);
+        ok = ok && !policy_commit(dev, block) &&
+            vfs_mount_adytumfs(point, dev) < 0;
+        valid = valid && ok;
+        if (point) object_release(point);
+        if (root) vfs_unlink(root, "policy");
+        if (dev) object_release(dev);
+    }
+
+    // An inode no dirent names is invisible, not fatal: the mount succeeds,
+    // the orphan stays unreached, and the table still admits new files.
+    {
+        struct kernel_object *dev = block_create(320, 0);
+        struct kernel_object *point = root ?
+            vfs_create(root, "policy", VFS_NODE_DIRECTORY) : 0;
+        int ok = dev && point && !adytumfs_format(dev) &&
+            !vfs_mount_adytumfs(point, dev);
+        struct kernel_object *disk = ok ? vfs_lookup(root, "policy") : 0;
+        struct kernel_object *first = disk ?
+            vfs_create(disk, "a", VFS_NODE_REGULAR) : 0;
+        struct kernel_object *second = disk ?
+            vfs_create(disk, "b", VFS_NODE_REGULAR) : 0;
+        ok = ok && disk && first && second;
+        if (first) object_release(first);
+        if (second) object_release(second);
+        if (disk) object_release(disk);
+        ok = ok && !vfs_unmount(point);
+        struct adytumfs_superblock super;
+        u64 block = 0;
+        u32 at = 0;
+        ok = ok && !policy_super(dev, &super) &&
+            !policy_find_record(dev, &super, "b", 1, &block, &at);
+        if (ok) adytumfs_write_le64(adytumfs_probe_block + at, 0);
+        ok = ok && !policy_commit(dev, block) &&
+            !vfs_mount_adytumfs(point, dev);
+        struct kernel_object *fresh = ok ? vfs_lookup(root, "policy") : 0;
+        struct kernel_object *kept = fresh ? vfs_lookup(fresh, "a") : 0;
+        struct kernel_object *gone = fresh ? vfs_lookup(fresh, "b") : 0;
+        struct kernel_object *added = fresh ?
+            vfs_create(fresh, "c", VFS_NODE_REGULAR) : 0;
+        ok = ok && fresh && kept && added && !gone;
+        if (added) object_release(added);
+        if (gone) object_release(gone);
+        if (kept) object_release(kept);
+        if (fresh) object_release(fresh);
+        ok = ok && point && !vfs_unmount(point);
+        valid = valid && ok;
+        if (point) object_release(point);
+        if (root) vfs_unlink(root, "policy");
+        if (dev) object_release(dev);
+    }
+
+    // More reachable inodes than the mount's slot bound must fail the mount,
+    // so the volume cannot silently drop files. Slot 0 of the table is
+    // unused, so a 512-sector volume carries 32 on-disk inodes, double the
+    // VFS bound, and the 17th reachable inode is placed by the format layer
+    // itself.
+    {
+        struct kernel_object *dev = block_create(512, 0);
+        struct kernel_object *point = root ?
+            vfs_create(root, "policy", VFS_NODE_DIRECTORY) : 0;
+        int ok = dev && point && !adytumfs_format(dev) &&
+            !vfs_mount_adytumfs(point, dev);
+        struct kernel_object *disk = ok ? vfs_lookup(root, "policy") : 0;
+        for (u32 index = 0; index < 15 && ok; index++) {
+            char label[4];
+            label[0] = 'f';
+            label[1] = (char)('0' + index / 10);
+            label[2] = (char)('0' + index % 10);
+            label[3] = 0;
+            struct kernel_object *node = disk ?
+                vfs_create(disk, label, VFS_NODE_REGULAR) : 0;
+            ok = node != 0;
+            if (node) object_release(node);
+        }
+        ok = ok && disk;
+        if (disk) object_release(disk);
+        ok = ok && point && !vfs_unmount(point);
+        struct adytumfs_superblock super;
+        u64 extra = 0;
+        ok = ok && !policy_super(dev, &super) &&
+            !adytumfs_inode_alloc(dev, &super,
+                                  (u16)(ADYTUMFS_MODE_REG | 0644u), &extra) &&
+            extra &&
+            !adytumfs_dir_add(dev, &super, super.root_inode, "extra", 5,
+                              extra, ADYTUMFS_DTYPE_REG) &&
+            !block_cache_flush(dev);
+        if (dev) block_cache_drop_device((u32)dev->value);
+        ok = ok && vfs_mount_adytumfs(point, dev) < 0;
+        valid = valid && ok;
+        if (point) object_release(point);
+        if (root) vfs_unlink(root, "policy");
+        if (dev) object_release(dev);
+    }
+
+    // A name longer than the VFS bound is legal on disk but cannot be
+    // surfaced, so the mount must fail rather than truncate the name.
+    {
+        struct kernel_object *dev = block_create(320, 0);
+        struct kernel_object *point = root ?
+            vfs_create(root, "policy", VFS_NODE_DIRECTORY) : 0;
+        int ok = dev && point && !adytumfs_format(dev) &&
+            !vfs_mount_adytumfs(point, dev);
+        struct kernel_object *disk = ok ? vfs_lookup(root, "policy") : 0;
+        struct kernel_object *node = disk ?
+            vfs_create(disk, "hello", VFS_NODE_REGULAR) : 0;
+        ok = ok && disk && node;
+        if (node) object_release(node);
+        if (disk) object_release(disk);
+        ok = ok && !vfs_unmount(point);
+        static const char long_name[] =
+            "abcdefghijklmnopqrstuvwxyz0123456789xyz";
+        struct adytumfs_superblock super;
+        u64 target = 0;
+        ok = ok && !policy_super(dev, &super) &&
+            !adytumfs_dir_lookup(dev, &super, super.root_inode, "hello", 5,
+                                 &target) &&
+            target &&
+            !adytumfs_dir_add(dev, &super, super.root_inode, long_name,
+                              sizeof(long_name) - 1, target,
+                              ADYTUMFS_DTYPE_REG) &&
+            !block_cache_flush(dev);
+        if (dev) block_cache_drop_device((u32)dev->value);
+        ok = ok && vfs_mount_adytumfs(point, dev) < 0;
+        valid = valid && ok;
+        if (point) object_release(point);
+        if (root) vfs_unlink(root, "policy");
+        if (dev) object_release(dev);
+    }
+
+    if (root) object_release(root);
     valid = valid && object_active_count() == objects &&
         vfs_node_active_count() == nodes &&
         vfs_file_active_count() == files &&
