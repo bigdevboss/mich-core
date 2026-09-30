@@ -166,6 +166,14 @@ int adytumfs_inode_grow(struct kernel_object *device,
         inode->direct[slot].flags = 0;
     }
     inode->blocks = new_blocks;
+    // A reallocated block still holds the previous file's bytes. Reads clamp
+    // to size, but a mapping exposes whole pages and a write that skipped
+    // pages must read back as zeroes, so every freshly allocated block is
+    // zeroed here. The zeroing is direct I/O on purpose: the pages path moves
+    // file data with direct transfers, and a cached zero would be flushed
+    // over the real bytes later.
+    for (u64 block = start; block < start + add; block++)
+        if (adytumfs_block_zero(device, block)) return -1;
     return 0;
 }
 
