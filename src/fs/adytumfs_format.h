@@ -193,4 +193,18 @@ int adytumfs_file_write(struct kernel_object *device,
                         u64 offset, const void *buffer, u64 length,
                         u64 *out_written);
 
+// Resolve an absolute path to its inode by walking directory entries from the
+// root. Create a named child (a fresh inode plus a directory entry) under a
+// parent directory, or unlink a regular file (reclaiming its data).
+int adytumfs_path_resolve(struct kernel_object *device,
+                          const struct adytumfs_superblock *super,
+                          const char *path, u64 *out_inode);
+int adytumfs_create_at(struct kernel_object *device,
+                       struct adytumfs_superblock *super, u64 parent_inode,
+                       const char *name, u32 name_len, u16 mode,
+                       u64 *out_inode);
+int adytumfs_unlink_at(struct kernel_object *device,
+                       struct adytumfs_superblock *super, u64 parent_inode,
+                       const char *name, u32 name_len);
+
 #endif

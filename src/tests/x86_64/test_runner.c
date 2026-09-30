@@ -103,6 +103,9 @@ int tests64_run(const struct test64_env *env) {
     if (test_report_record(TEST_ID_ADYTUMFS_FILE, test_adytumfs_file64()))
         return -1;
     serial64_write("Mich test64: adytumfs file read write pass\n");
+    if (test_report_record(TEST_ID_ADYTUMFS_OPS, test_adytumfs_ops64()))
+        return -1;
+    serial64_write("Mich test64: adytumfs path operations pass\n");
     if (test_report_record(TEST_ID_ADYTUMFS, test_adytumfs64())) return -1;
     serial64_write("Mich test64: adytumfs format and mount pass\n");
     serial64_write("Mich test64: adytumfs file io pass\n");
