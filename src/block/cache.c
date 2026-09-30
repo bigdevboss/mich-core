@@ -164,6 +164,29 @@ void block_cache_drop_device(u32 device) {
     }
 }
 
+// Drop the cached pages overlapping [lba, lba + sectors). A filesystem block
+// that the allocator hands out again must not resurrect the previous owner's
+// content from the cache, so the caller invalidates on reallocation, where
+// the dropped content is dead by definition.
+void block_cache_invalidate(struct kernel_object *device, u32 lba,
+                            u32 sectors) {
+    if (!device || !sectors) return;
+    u32 id = (u32)device->value;
+    u32 first = page_lba(lba);
+    u32 last = page_lba(lba + sectors - 1);
+    for (u32 page = first; page <= last; page += BLOCK_CACHE_SECTORS)
+        for (u32 i = 0; i < BLOCK_CACHE_MAX; i++) {
+            if (entries[i].state == CACHE_EMPTY || entries[i].device_id != id)
+                continue;
+            if (entries[i].lba != page) continue;
+            entries[i].device = 0;
+            entries[i].device_id = 0;
+            entries[i].lba = 0;
+            entries[i].sectors = 0;
+            entries[i].state = CACHE_EMPTY;
+        }
+}
+
 u32 block_cache_dirty_count(void) {
     u32 n = 0;
     for (u32 i = 0; i < BLOCK_CACHE_MAX; i++)

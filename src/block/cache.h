@@ -14,6 +14,8 @@ int block_cache_write(struct kernel_object *device, u32 lba,
                       const void *buffer, u32 sectors);
 int block_cache_flush(struct kernel_object *device);
 void block_cache_drop_device(u32 device);
+void block_cache_invalidate(struct kernel_object *device, u32 lba,
+                            u32 sectors);
 u32 block_cache_dirty_count(void);
 
 #endif
