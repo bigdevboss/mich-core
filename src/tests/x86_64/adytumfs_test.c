@@ -785,3 +785,279 @@ int test_adytumfs_reuse64(void) {
         block_active_count() == devices;
     return valid ? 0 : -1;
 }
+
+// Stage the baseline every integrity scenario corrupts: one volume, two
+// one-block files, written and synced through the VFS, then unmounted, so the
+// on-disk state is exactly what a clean session leaves behind. Returns 0 with
+// the device, the mount point, the parsed superblock, and both file inodes.
+static int integrity_stage(struct kernel_object *root,
+                           struct kernel_object **dev_out,
+                           struct kernel_object **point_out,
+                           struct adytumfs_superblock *super,
+                           u64 *data_inode, u64 *other_inode) {
+    struct kernel_object *dev = block_create(320, 0);
+    struct kernel_object *point = root ?
+        vfs_create(root, "integrity", VFS_NODE_DIRECTORY) : 0;
+    int ok = dev && point && !adytumfs_format(dev) &&
+        !vfs_mount_adytumfs(point, dev);
+    struct kernel_object *disk = ok ? vfs_lookup(root, "integrity") : 0;
+    struct kernel_object *data = disk ?
+        vfs_create_mode(disk, "data", VFS_NODE_REGULAR, 0600) : 0;
+    struct kernel_object *other = disk ?
+        vfs_create_mode(disk, "other", VFS_NODE_REGULAR, 0600) : 0;
+    struct kernel_object *data_file = data ? vfs_open(data) : 0;
+    struct kernel_object *other_file = other ? vfs_open(other) : 0;
+    u32 moved = 0;
+    u8 payload[16];
+    reuse_fill(payload, sizeof(payload), 0x60);
+    ok = ok && data && other && data_file && other_file &&
+        !vfs_write(data_file, 0, payload, sizeof(payload), &moved) &&
+        moved == sizeof(payload) && !vfs_sync(data_file) &&
+        !vfs_write(other_file, 0, payload, sizeof(payload), &moved) &&
+        moved == sizeof(payload) && !vfs_sync(other_file);
+    if (data_file) object_release(data_file);
+    if (other_file) object_release(other_file);
+    if (data) object_release(data);
+    if (other) object_release(other);
+    if (disk) object_release(disk);
+    ok = ok && point && !vfs_unmount(point) && !policy_super(dev, super) &&
+        !adytumfs_dir_lookup(dev, super, super->root_inode, "data", 4,
+                             data_inode) && *data_inode &&
+        !adytumfs_dir_lookup(dev, super, super->root_inode, "other", 5,
+                             other_inode) && *other_inode;
+    if (!ok) {
+        if (point) object_release(point);
+        if (dev) object_release(dev);
+        return -1;
+    }
+    *dev_out = dev;
+    *point_out = point;
+    return 0;
+}
+
+// Land the staged edits and drop the cached copies, so the next mount reads
+// the bytes the way a fresh boot would.
+static int integrity_commit(struct kernel_object *dev) {
+    if (block_cache_flush(dev)) return -1;
+    block_cache_drop_device((u32)dev->value);
+    return 0;
+}
+
+static void integrity_cleanup(struct kernel_object *root,
+                              struct kernel_object *point,
+                              struct kernel_object *dev) {
+    if (point) object_release(point);
+    if (root) vfs_unlink(root, "integrity");
+    if (dev) object_release(dev);
+}
+
+int test_adytumfs_integrity64(void) {
+    u32 objects = object_active_count();
+    u32 nodes = vfs_node_active_count();
+    u32 files = vfs_file_active_count();
+    u32 mounts = vfs_mount_active_count();
+    u32 devices = block_active_count();
+    struct kernel_object *root = vfs_root();
+    int valid = root != 0;
+    struct adytumfs_superblock super;
+    u64 data_inode = 0;
+    u64 other_inode = 0;
+    struct adytumfs_inode in;
+    struct kernel_object *dev = 0;
+    struct kernel_object *point = 0;
+    u64 claimed_block = 0;
+    u64 record_block = 0;
+    u64 table = 0;
+    u64 leak = 0;
+    u32 record_at = 0;
+    u32 slot = 0;
+    int ok = 0;
+
+    // A forged extent into the metadata prefix would alias the superblock or
+    // the inode table through a regular file.
+    ok = !integrity_stage(root, &dev, &point, &super, &data_inode,
+                          &other_inode) &&
+        !adytumfs_inode_read(dev, &super, data_inode, &in) && in.blocks == 1;
+    if (ok) in.direct[0].start_block = 0;
+    ok = ok && !adytumfs_inode_write(dev, &super, data_inode, &in) &&
+        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+    valid = valid && ok;
+    integrity_cleanup(root, point, dev);
+
+    // The backup superblock block is never allocatable either.
+    ok = !integrity_stage(root, &dev, &point, &super, &data_inode,
+                          &other_inode) &&
+        !adytumfs_inode_read(dev, &super, data_inode, &in);
+    if (ok) in.direct[0].start_block = super.total_blocks - 1;
+    ok = ok && !adytumfs_inode_write(dev, &super, data_inode, &in) &&
+        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+    valid = valid && ok;
+    integrity_cleanup(root, point, dev);
+
+    // Two files sharing one block would write through one allocation behind
+    // each other's backs.
+    ok = !integrity_stage(root, &dev, &point, &super, &data_inode,
+                          &other_inode) &&
+        !adytumfs_inode_read(dev, &super, data_inode, &in);
+    if (ok) claimed_block = in.direct[0].start_block;
+    ok = ok && !adytumfs_inode_read(dev, &super, other_inode, &in);
+    if (ok) in.direct[0].start_block = claimed_block;
+    ok = ok && !adytumfs_inode_write(dev, &super, other_inode, &in) &&
+        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+    valid = valid && ok;
+    integrity_cleanup(root, point, dev);
+
+    // A claim on a bit the bitmap says is free means the allocator would hand
+    // that block to a second owner.
+    ok = !integrity_stage(root, &dev, &point, &super, &data_inode,
+                          &other_inode) &&
+        !adytumfs_inode_read(dev, &super, data_inode, &in) &&
+        !adytumfs_block_read(dev, super.block_bitmap_start,
+                             adytumfs_probe_block);
+    if (ok)
+        adytumfs_probe_block[in.direct[0].start_block / 8] &=
+            (u8)~(1u << (in.direct[0].start_block % 8));
+    ok = ok && !adytumfs_block_write(dev, super.block_bitmap_start,
+                                     adytumfs_probe_block) &&
+        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+    valid = valid && ok;
+    integrity_cleanup(root, point, dev);
+
+    // An allocated bit no extent owns is a leak the volume must not paper
+    // over.
+    ok = !integrity_stage(root, &dev, &point, &super, &data_inode,
+                          &other_inode) &&
+        !adytumfs_block_read(dev, super.block_bitmap_start,
+                             adytumfs_probe_block);
+    if (ok) {
+        for (leak = super.data_start; leak < super.total_blocks - 1; leak++)
+            if (!(adytumfs_probe_block[leak / 8] &
+                  (u8)(1u << (leak % 8))))
+                break;
+        ok = leak < super.total_blocks - 1;
+        if (ok)
+            adytumfs_probe_block[leak / 8] |= (u8)(1u << (leak % 8));
+    }
+    ok = ok && !adytumfs_block_write(dev, super.block_bitmap_start,
+                                     adytumfs_probe_block) &&
+        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+    valid = valid && ok;
+    integrity_cleanup(root, point, dev);
+
+    // The block count must equal the mapped extents, or reads clamp to a lie.
+    ok = !integrity_stage(root, &dev, &point, &super, &data_inode,
+                          &other_inode) &&
+        !adytumfs_inode_read(dev, &super, data_inode, &in);
+    if (ok) in.blocks = 2;
+    ok = ok && !adytumfs_inode_write(dev, &super, data_inode, &in) &&
+        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+    valid = valid && ok;
+    integrity_cleanup(root, point, dev);
+
+    // Extents are packed from the front; an entry behind the zero length
+    // terminator is a layout this format never writes.
+    ok = !integrity_stage(root, &dev, &point, &super, &data_inode,
+                          &other_inode) &&
+        !adytumfs_inode_read(dev, &super, data_inode, &in);
+    if (ok) {
+        in.direct[2].start_block = in.direct[0].start_block;
+        in.direct[2].length = 1;
+        in.blocks = 2;
+    }
+    ok = ok && !adytumfs_inode_write(dev, &super, data_inode, &in) &&
+        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+    valid = valid && ok;
+    integrity_cleanup(root, point, dev);
+
+    // The mount root is a directory; anything else would have file data
+    // parsed as directory records.
+    ok = !integrity_stage(root, &dev, &point, &super, &data_inode,
+                          &other_inode) &&
+        !adytumfs_inode_read(dev, &super, super.root_inode, &in);
+    if (ok) in.mode = ADYTUMFS_MODE_REG | 0755u;
+    ok = ok && !adytumfs_inode_write(dev, &super, super.root_inode, &in) &&
+        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+    valid = valid && ok;
+    integrity_cleanup(root, point, dev);
+
+    // The free block counter must state what a bitmap scan finds.
+    ok = !integrity_stage(root, &dev, &point, &super, &data_inode,
+                          &other_inode);
+    if (ok) super.free_blocks += 1;
+    if (ok) adytumfs_super_pack(adytumfs_probe_block, &super);
+    ok = ok && !adytumfs_block_write(dev, 0, adytumfs_probe_block) &&
+        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+    valid = valid && ok;
+    integrity_cleanup(root, point, dev);
+
+    // So must the free inode counter.
+    ok = !integrity_stage(root, &dev, &point, &super, &data_inode,
+                          &other_inode);
+    if (ok) super.free_inodes -= 1;
+    if (ok) adytumfs_super_pack(adytumfs_probe_block, &super);
+    ok = ok && !adytumfs_block_write(dev, 0, adytumfs_probe_block) &&
+        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+    valid = valid && ok;
+    integrity_cleanup(root, point, dev);
+
+    // A volume sized beyond the v1 table cap is one this format never wrote.
+    ok = !integrity_stage(root, &dev, &point, &super, &data_inode,
+                          &other_inode);
+    if (ok) {
+        super.inode_table_blocks = ADYTUMFS_INODE_TABLE_BLOCKS_MAX + 1;
+        super.inode_count =
+            super.inode_table_blocks * ADYTUMFS_INODES_PER_BLOCK;
+        super.data_start =
+            super.inode_table_start + super.inode_table_blocks;
+        adytumfs_super_pack(adytumfs_probe_block, &super);
+    }
+    ok = ok && !adytumfs_block_write(dev, 0, adytumfs_probe_block) &&
+        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+    valid = valid && ok;
+    integrity_cleanup(root, point, dev);
+
+    // An orphaned file still owns its blocks, so a consistent volume with an
+    // unreachable inode must keep mounting.
+    ok = !integrity_stage(root, &dev, &point, &super, &data_inode,
+                          &other_inode) &&
+        !policy_find_record(dev, &super, "data", 4, &record_block,
+                            &record_at);
+    if (ok) adytumfs_write_le64(adytumfs_probe_block + record_at, 0);
+    ok = ok && !policy_commit(dev, record_block) &&
+        !vfs_mount_adytumfs(point, dev);
+    struct kernel_object *disk = ok ? vfs_lookup(root, "integrity") : 0;
+    struct kernel_object *kept = disk ? vfs_lookup(disk, "other") : 0;
+    ok = ok && disk && kept && !vfs_lookup(disk, "data");
+    if (kept) object_release(kept);
+    if (disk) object_release(disk);
+    ok = ok && !vfs_unmount(point);
+    valid = valid && ok;
+    integrity_cleanup(root, point, dev);
+
+    // A used slot with a broken checksum means the table itself is lying,
+    // reachable or not.
+    ok = !integrity_stage(root, &dev, &point, &super, &data_inode,
+                          &other_inode) &&
+        !policy_find_record(dev, &super, "data", 4, &record_block,
+                            &record_at);
+    if (ok) adytumfs_write_le64(adytumfs_probe_block + record_at, 0);
+    table = super.inode_table_start + data_inode / ADYTUMFS_INODES_PER_BLOCK;
+    slot = (u32)(data_inode % ADYTUMFS_INODES_PER_BLOCK) *
+           ADYTUMFS_INODE_SIZE;
+    ok = ok && !adytumfs_block_write(dev, record_block,
+                                     adytumfs_probe_block) &&
+        !adytumfs_block_read(dev, table, adytumfs_probe_block);
+    if (ok) adytumfs_probe_block[slot + 100] ^= 0xffu;
+    ok = ok && !adytumfs_block_write(dev, table, adytumfs_probe_block) &&
+        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+    valid = valid && ok;
+    integrity_cleanup(root, point, dev);
+
+    if (root) object_release(root);
+    valid = valid && object_active_count() == objects &&
+        vfs_node_active_count() == nodes &&
+        vfs_file_active_count() == files &&
+        vfs_mount_active_count() == mounts &&
+        block_active_count() == devices;
+    return valid ? 0 : -1;
+}

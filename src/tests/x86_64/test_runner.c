@@ -123,6 +123,10 @@ int tests64_run(const struct test64_env *env) {
     if (test_report_record(TEST_ID_ADYTUMFS_REUSE, test_adytumfs_reuse64()))
         return -1;
     serial64_write("Mich test64: adytumfs slot reuse pass\n");
+    if (test_report_record(TEST_ID_ADYTUMFS_INTEGRITY,
+                           test_adytumfs_integrity64()))
+        return -1;
+    serial64_write("Mich test64: adytumfs mount integrity pass\n");
     if (test_report_record(TEST_ID_RESOURCE, test_resource64())) return -1;
     serial64_write("Mich test64: resource object layer pass\n");
     if (test_report_record(TEST_ID_PAGE, test_page64(env))) return -1;
