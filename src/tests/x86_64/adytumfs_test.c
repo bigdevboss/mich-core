@@ -2,8 +2,33 @@
 #include "object.h"
 #include "block.h"
 #include "adytumfs.h"
+#include "adytumfs_format.h"
 #include "vfs.h"
 #include "resource.h"
+
+// One staging block for raw device probes and on-disk edits; the test battery
+// is single-CPU, so reuse across probes is safe.
+static u8 adytumfs_probe_block[ADYTUMFS_BLOCK_SIZE];
+
+static int probe_name_equals(const char *name, const char *expect) {
+    u32 index = 0;
+    while (expect[index]) {
+        if (name[index] != expect[index]) return 0;
+        index++;
+    }
+    return !name[index];
+}
+
+// block_io moves one sector per call, so a raw 4 KiB block probe reads in
+// eight steps.
+static int probe_read_block(struct kernel_object *dev, u64 block, u8 *buffer) {
+    for (u32 sector = 0; sector < ADYTUMFS_SECTORS_PER_BLOCK; sector++)
+        if (block_io(dev, BLOCK_OP_READ,
+                     (u32)(block * ADYTUMFS_SECTORS_PER_BLOCK + sector), 1,
+                     buffer + sector * BLOCK_SECTOR_SIZE, BLOCK_SECTOR_SIZE))
+            return -1;
+    return 0;
+}
 
 int test_adytumfs64(void) {
     u32 objects = object_active_count();
@@ -69,6 +94,31 @@ int test_adytumfs64(void) {
         !vfs_stat(fresh_folder, &info) && info.mode == 0711 &&
         !vfs_stat(fresh_nested, &info) && info.mode == 0620 && reopened &&
         vfs_unmount(mnt) < 0;
+
+    // Ask the backend for the slot picture the way the mount scan does: the
+    // slot table carries the name and parent the walk rebuilt, the inode
+    // carries the type, mode, and the truncated size that reached the disk.
+    u32 mount_id = 0;
+    for (u32 probe = 1; probe < VFS_MOUNT_MAX; probe++)
+        if (adytumfs_inode_count(probe)) {
+            mount_id = probe;
+            break;
+        }
+    u32 used = 0, type = 0, size = 0, parent = 0, mode = 0;
+    char name[VFS_NAME_MAX];
+    valid = valid && mount_id &&
+        !adytumfs_inode_get(mount_id, 1, &used, &type, &size, &parent, &mode,
+                           name) &&
+        used == 1 && type == VFS_NODE_REGULAR && size == 4 && parent == 0 &&
+        mode == 0604 && probe_name_equals(name, "hello") &&
+        !adytumfs_inode_get(mount_id, 2, &used, &type, &size, &parent, &mode,
+                           name) &&
+        used == 1 && type == VFS_NODE_DIRECTORY && parent == 0 &&
+        mode == 0711 && probe_name_equals(name, "folder") &&
+        !adytumfs_inode_get(mount_id, 3, &used, &type, &size, &parent, &mode,
+                           name) &&
+        used == 1 && type == VFS_NODE_REGULAR && parent == 2 &&
+        mode == 0620 && probe_name_equals(name, "nested");
     if (reopened) {
         object_release(reopened);
         reopened = 0;
@@ -140,19 +190,58 @@ int test_adytumfs_pages64(void) {
             valid = 0;
     }
 
-    // Write-back: nothing reached the disk yet, so a raw sector read still
-    // sees the formatted zeroes.
-    u8 raw[BLOCK_SECTOR_SIZE];
-    for (u32 index = 0; index < sizeof(raw); index++) raw[index] = 0xFF;
-    u32 used = 0, type = 0, size = 0, parent = 0, mode = 0;
-    char name[32];
-    u32 mount_id = 0;
+    // Write-back: nothing reached the device yet. Parse the superblock off
+    // the raw device, resolve "wide" through the format layer, and read its
+    // inode slot raw: it must still be the formatted free slot.
+    u32 size = 0;
     struct vfs_node_info info;
-    valid = valid && !vfs_stat(opened, &info) && info.size == span;
-    (void)used; (void)type; (void)size; (void)parent; (void)mode;
-    (void)name; (void)mount_id;
+    struct adytumfs_superblock probe;
+    u64 wide_inode = 0;
+    valid = valid && !vfs_stat(opened, &info) && info.size == span &&
+        !probe_read_block(dev, 0, adytumfs_probe_block) &&
+        !adytumfs_super_unpack(&probe, adytumfs_probe_block) &&
+        probe.format_version == ADYTUMFS_FORMAT_VERSION &&
+        probe.total_blocks == 320u / ADYTUMFS_SECTORS_PER_BLOCK &&
+        probe.root_inode == ADYTUMFS_ROOT_INODE &&
+        !adytumfs_dir_lookup(dev, &probe, probe.root_inode, "wide", 4,
+                             &wide_inode) &&
+        wide_inode;
+    // Inode numbers index the table directly and slot 0 stays unused, so
+    // inode 1 (the root) is the first byte offset that exists.
+    u64 table_block = probe.inode_table_start +
+        wide_inode / ADYTUMFS_INODES_PER_BLOCK;
+    u32 table_slot = (u32)((wide_inode % ADYTUMFS_INODES_PER_BLOCK) *
+                           ADYTUMFS_INODE_SIZE);
+    struct adytumfs_inode probe_inode;
+    valid = valid &&
+        !probe_read_block(dev, table_block, adytumfs_probe_block) &&
+        !adytumfs_inode_unpack(&probe_inode,
+                               adytumfs_probe_block + table_slot) &&
+        probe_inode.mode == 0;
 
     valid = valid && !vfs_sync(opened);
+
+    // The flush landed: the raw slot now describes the grown file, and the
+    // extent blocks on the device hold the written pattern.
+    valid = valid &&
+        !probe_read_block(dev, table_block, adytumfs_probe_block) &&
+        !adytumfs_inode_unpack(&probe_inode,
+                               adytumfs_probe_block + table_slot) &&
+        (probe_inode.mode & ADYTUMFS_MODE_REG) &&
+        probe_inode.size == span &&
+        probe_inode.blocks == span / ADYTUMFS_BLOCK_SIZE;
+    for (u64 logical = 0; logical < span / ADYTUMFS_BLOCK_SIZE && valid;
+         logical++) {
+        u64 physical = 0;
+        valid = !adytumfs_inode_map(&probe_inode, logical, &physical) &&
+            !probe_read_block(dev, physical, adytumfs_probe_block);
+        for (u32 sector = 0;
+             sector < ADYTUMFS_SECTORS_PER_BLOCK && valid; sector++)
+            for (u32 index = 0; index < BLOCK_SECTOR_SIZE && valid; index++)
+                if (adytumfs_probe_block[sector * BLOCK_SECTOR_SIZE + index] !=
+                    (u8)(logical * ADYTUMFS_SECTORS_PER_BLOCK + sector + index))
+                    valid = 0;
+    }
 
     // Read it all back through a fresh cache after the remount below.
     u8 got[512];
