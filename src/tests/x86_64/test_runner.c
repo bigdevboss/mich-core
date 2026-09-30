@@ -100,6 +100,9 @@ int tests64_run(const struct test64_env *env) {
     if (test_report_record(TEST_ID_ADYTUMFS_DIR, test_adytumfs_dir64()))
         return -1;
     serial64_write("Mich test64: adytumfs directories pass\n");
+    if (test_report_record(TEST_ID_ADYTUMFS_DIRITER, test_adytumfs_diriter64()))
+        return -1;
+    serial64_write("Mich test64: adytumfs directory iteration pass\n");
     if (test_report_record(TEST_ID_ADYTUMFS_FILE, test_adytumfs_file64()))
         return -1;
     serial64_write("Mich test64: adytumfs file read write pass\n");
