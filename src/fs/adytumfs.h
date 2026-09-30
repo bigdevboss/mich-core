@@ -3,13 +3,10 @@
 
 #include "types.h"
 #include "object.h"
-#include "block_abi.h"
 
-#define ADYTUMFS_MAGIC 0x3146484Du
 #define ADYTUMFS_INODE_MAX 16
-#define ADYTUMFS_FILE_SECTORS 128
-#define ADYTUMFS_FILE_SIZE_MAX (ADYTUMFS_FILE_SECTORS * BLOCK_SECTOR_SIZE)
-#define ADYTUMFS_FILE_PAGES (ADYTUMFS_FILE_SIZE_MAX / 4096u)
+#define ADYTUMFS_FILE_PAGES 16
+#define ADYTUMFS_FILE_SIZE_MAX (ADYTUMFS_FILE_PAGES * 4096u)
 
 int adytumfs_format(struct kernel_object *device);
 int adytumfs_attach(u32 mount, struct kernel_object *device);
