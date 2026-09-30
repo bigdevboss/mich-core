@@ -14,6 +14,21 @@ int adytumfs_block_write(struct kernel_object *device, u64 block,
                              buffer, ADYTUMFS_SECTORS_PER_BLOCK);
 }
 
+// Zero source for newly allocated blocks; it is written to the device and
+// never modified, so the bss zero it boots with is all it ever needs.
+static u8 adytumfs_zero_block[ADYTUMFS_BLOCK_SIZE];
+
+int adytumfs_block_zero(struct kernel_object *device, u64 block) {
+    u32 lba = (u32)(block * ADYTUMFS_SECTORS_PER_BLOCK);
+    block_cache_invalidate(device, lba, ADYTUMFS_SECTORS_PER_BLOCK);
+    for (u32 sector = 0; sector < ADYTUMFS_SECTORS_PER_BLOCK; sector++)
+        if (block_io(device, BLOCK_OP_WRITE, lba + sector, 1,
+                     adytumfs_zero_block + sector * BLOCK_SECTOR_SIZE,
+                     BLOCK_SECTOR_SIZE))
+            return -1;
+    return 0;
+}
+
 int adytumfs_make(struct kernel_object *device) {
     struct block_info info;
     if (!device || block_info(device, &info) ||

@@ -122,6 +122,11 @@ struct kernel_object;
 int adytumfs_block_read(struct kernel_object *device, u64 block, u8 *buffer);
 int adytumfs_block_write(struct kernel_object *device, u64 block,
                          const u8 *buffer);
+// Zero one 4 KiB block with direct device I/O, bypassing the cache, and drop
+// any cached copy first. File data moves through direct page transfers, so a
+// cached zero would be flushed over the real bytes later, and a reallocated
+// block must not resurrect its previous owner's cached content either.
+int adytumfs_block_zero(struct kernel_object *device, u64 block);
 // Format a device: lay out the regions and write the superblock (and its
 // backup), the block bitmap, and an empty root directory.
 int adytumfs_make(struct kernel_object *device);
