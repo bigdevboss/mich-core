@@ -38,7 +38,12 @@ int adytumfs_make(struct kernel_object *device) {
     u64 total_blocks = info.sector_count / ADYTUMFS_SECTORS_PER_BLOCK;
     const u64 bits_per_block = (u64)ADYTUMFS_BLOCK_SIZE * 8;
     u64 bitmap_blocks = (total_blocks + bits_per_block - 1) / bits_per_block;
+    // The table is bounded: the VFS mounts at most sixteen files, so a table
+    // for a few hundred inodes is generous headroom, and the cap keeps the
+    // format cost proportional on large volumes instead of zeroing a full
+    // thirty-second of the device through the block cache.
     u64 inode_table_blocks = total_blocks / 32;
+    if (inode_table_blocks > 16) inode_table_blocks = 16;
     if (inode_table_blocks == 0) inode_table_blocks = 1;
     u64 inode_table_start = 1 + bitmap_blocks;
     u64 data_start = inode_table_start + inode_table_blocks;
