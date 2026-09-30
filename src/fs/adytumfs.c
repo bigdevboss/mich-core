@@ -15,6 +15,7 @@
 // VFS mount scan asks for, which the on-disk inode does not store.
 struct adytumfs_slot {
     u64 inode;
+    u64 generation;
     u32 parent;
     char name[VFS_NAME_MAX];
 };
@@ -46,6 +47,20 @@ static struct adytumfs_mount *mount_at(u32 mount) {
     return m->active ? m : 0;
 }
 
+// A slot id is reused once its file is unlinked, while a node that was
+// unlinked with an open handle keeps calling into the backend. Every entry
+// point that addresses a slot must therefore also see the generation the
+// caller captured when the node was scanned or created, and a mismatch is a
+// stale handle: fail closed rather than touch the new owner of the slot.
+static struct adytumfs_mount *slot_mount(u32 mount, u32 inode,
+                                         u64 generation) {
+    struct adytumfs_mount *m = mount_at(mount);
+    if (!m || inode >= ADYTUMFS_INODE_MAX || !m->slots[inode].inode ||
+        m->slots[inode].generation != generation)
+        return 0;
+    return m;
+}
+
 static u32 slot_name_len(const struct adytumfs_slot *slot) {
     u32 length = 0;
     while (length < VFS_NAME_MAX && slot->name[length]) length++;
@@ -74,7 +89,11 @@ static u32 slot_type(const struct adytumfs_inode *inode) {
 // before it is queued, and a parent always owns a lower slot than its
 // children, so the table cannot express a cycle.
 static int walk_tree(struct adytumfs_mount *m) {
+    struct adytumfs_inode root;
+    if (adytumfs_inode_read(m->device, &m->super, m->super.root_inode, &root))
+        return -1;
     m->slots[0].inode = m->super.root_inode;
+    m->slots[0].generation = root.generation;
     m->slots[0].parent = 0;
     for (u32 byte = 0; byte < VFS_NAME_MAX; byte++) m->slots[0].name[byte] = 0;
     u64 queue_inode[ADYTUMFS_INODE_MAX];
@@ -115,6 +134,7 @@ static int walk_tree(struct adytumfs_mount *m) {
             if (used >= ADYTUMFS_INODE_MAX) return -1;
             u32 slot = used++;
             m->slots[slot].inode = target;
+            m->slots[slot].generation = child.generation;
             m->slots[slot].parent = dir_slot;
             for (u32 byte = 0; byte < VFS_NAME_MAX; byte++)
                 m->slots[slot].name[byte] = 0;
@@ -217,10 +237,10 @@ static int page_transfer(struct adytumfs_mount *m, struct adytumfs_cache *slot,
     return result;
 }
 
-int adytumfs_pages_attach(u32 mount, u32 inode, struct kernel_object *pages) {
-    struct adytumfs_mount *m = mount_at(mount);
-    if (!m || !pages || inode >= ADYTUMFS_INODE_MAX ||
-        m->cache[inode].active)
+int adytumfs_pages_attach(u32 mount, u32 inode, u64 generation,
+                          struct kernel_object *pages) {
+    struct adytumfs_mount *m = slot_mount(mount, inode, generation);
+    if (!m || !pages || m->cache[inode].active)
         return -1;
     struct adytumfs_inode in;
     if (slot_inode_read(m, inode, &in) || (in.mode & ADYTUMFS_MODE_REG) == 0)
@@ -235,8 +255,8 @@ int adytumfs_pages_attach(u32 mount, u32 inode, struct kernel_object *pages) {
     return 0;
 }
 
-int adytumfs_pages_fault(u32 mount, u32 inode, u32 page) {
-    struct adytumfs_mount *m = mount_at(mount);
+int adytumfs_pages_fault(u32 mount, u32 inode, u64 generation, u32 page) {
+    struct adytumfs_mount *m = slot_mount(mount, inode, generation);
     struct adytumfs_cache *slot = cache_slot(m, inode);
     struct adytumfs_inode in;
     if (!slot || page >= ADYTUMFS_FILE_PAGES ||
@@ -263,8 +283,9 @@ int adytumfs_pages_fault(u32 mount, u32 inode, u32 page) {
     return 0;
 }
 
-int adytumfs_pages_dirty(u32 mount, u32 inode, u32 page, u32 size) {
-    struct adytumfs_mount *m = mount_at(mount);
+int adytumfs_pages_dirty(u32 mount, u32 inode, u64 generation, u32 page,
+                         u32 size) {
+    struct adytumfs_mount *m = slot_mount(mount, inode, generation);
     struct adytumfs_cache *slot = cache_slot(m, inode);
     struct adytumfs_inode in;
     if (!slot || page >= ADYTUMFS_FILE_PAGES || size > ADYTUMFS_FILE_SIZE_MAX ||
@@ -281,9 +302,10 @@ int adytumfs_pages_dirty(u32 mount, u32 inode, u32 page, u32 size) {
     return 0;
 }
 
-int adytumfs_pages_sync(u32 mount, u32 inode) {
-    struct adytumfs_mount *m = mount_at(mount);
+int adytumfs_pages_sync(u32 mount, u32 inode, u64 generation) {
+    struct adytumfs_mount *m = slot_mount(mount, inode, generation);
     struct adytumfs_cache *slot = cache_slot(m, inode);
+    if (!m) return -1;
     if (!slot) return 0;
     struct adytumfs_inode in;
     if (slot_inode_read(m, inode, &in) || (in.mode & ADYTUMFS_MODE_REG) == 0)
@@ -332,9 +354,9 @@ int adytumfs_pages_sync(u32 mount, u32 inode) {
     return block_cache_flush(m->device);
 }
 
-void adytumfs_pages_detach(u32 mount, u32 inode) {
-    struct adytumfs_mount *m = mount_at(mount);
-    if (!m || inode >= ADYTUMFS_INODE_MAX) return;
+void adytumfs_pages_detach(u32 mount, u32 inode, u64 generation) {
+    struct adytumfs_mount *m = slot_mount(mount, inode, generation);
+    if (!m) return;
     struct adytumfs_cache *slot = &m->cache[inode];
     slot->pages = 0;
     slot->present = 0;
@@ -366,6 +388,7 @@ int adytumfs_attach(u32 mount, struct kernel_object *device) {
     struct adytumfs_mount *m = &mounts[mount];
     for (u32 slot = 0; slot < ADYTUMFS_INODE_MAX; slot++) {
         m->slots[slot].inode = 0;
+        m->slots[slot].generation = 0;
         m->slots[slot].parent = 0;
         for (u32 byte = 0; byte < VFS_NAME_MAX; byte++)
             m->slots[slot].name[byte] = 0;
@@ -391,8 +414,8 @@ void adytumfs_detach(u32 mount) {
     if (m->device) {
         for (u32 inode = 0; inode < ADYTUMFS_INODE_MAX; inode++) {
             if (!m->cache[inode].active) continue;
-            adytumfs_pages_sync(mount, inode);
-            adytumfs_pages_detach(mount, inode);
+            adytumfs_pages_sync(mount, inode, m->slots[inode].generation);
+            adytumfs_pages_detach(mount, inode, m->slots[inode].generation);
         }
         block_cache_flush(m->device);
         object_release(m->device);
@@ -409,7 +432,7 @@ u32 adytumfs_inode_count(u32 mount) {
 }
 
 int adytumfs_inode_get(u32 mount, u32 inode, u32 *used, u32 *type, u32 *size,
-                      u32 *parent, u32 *mode, char *name) {
+                      u32 *parent, u32 *mode, char *name, u64 *generation) {
     struct adytumfs_mount *m = mount_at(mount);
     if (!m || inode >= ADYTUMFS_INODE_MAX) return -1;
     if (!m->slots[inode].inode) {
@@ -418,6 +441,7 @@ int adytumfs_inode_get(u32 mount, u32 inode, u32 *used, u32 *type, u32 *size,
         if (size) *size = 0;
         if (parent) *parent = 0;
         if (mode) *mode = 0;
+        if (generation) *generation = 0;
         if (name)
             for (u32 byte = 0; byte < VFS_NAME_MAX; byte++) name[byte] = 0;
         return 0;
@@ -433,6 +457,7 @@ int adytumfs_inode_get(u32 mount, u32 inode, u32 *used, u32 *type, u32 *size,
     if (size) *size = (u32)(in.size < bound ? in.size : bound);
     if (parent) *parent = m->slots[inode].parent;
     if (mode) *mode = in.mode & VFS_MODE_MASK;
+    if (generation) *generation = m->slots[inode].generation;
     if (name)
         for (u32 byte = 0; byte < VFS_NAME_MAX; byte++)
             name[byte] = m->slots[inode].name[byte];
@@ -440,7 +465,7 @@ int adytumfs_inode_get(u32 mount, u32 inode, u32 *used, u32 *type, u32 *size,
 }
 
 int adytumfs_inode_create(u32 mount, const char *name, u32 parent, u32 type,
-                         u32 mode, u32 *inode) {
+                         u32 mode, u32 *inode, u64 *generation) {
     struct adytumfs_mount *m = mount_at(mount);
     if (!m || !name || !name[0] || !inode || parent >= ADYTUMFS_INODE_MAX ||
         (type != VFS_NODE_REGULAR && type != VFS_NODE_DIRECTORY) ||
@@ -467,13 +492,20 @@ int adytumfs_inode_create(u32 mount, const char *name, u32 parent, u32 type,
     if (adytumfs_create_at(m->device, &m->super, m->slots[parent].inode, name,
                            name_len, disk_mode, &target))
         return -1;
+    // The allocator stamps a fresh generation into the on-disk inode, and the
+    // slot table must carry the same value the caller will be told to present
+    // on every later backend call.
+    struct adytumfs_inode fresh;
+    if (adytumfs_inode_read(m->device, &m->super, target, &fresh)) return -1;
     m->slots[slot].inode = target;
+    m->slots[slot].generation = fresh.generation;
     m->slots[slot].parent = parent;
     for (u32 byte = 0; byte < VFS_NAME_MAX; byte++)
         m->slots[slot].name[byte] = 0;
     for (u32 byte = 0; byte < name_len; byte++)
         m->slots[slot].name[byte] = name[byte];
     *inode = slot;
+    if (generation) *generation = fresh.generation;
     return 0;
 }
 
@@ -498,7 +530,7 @@ int adytumfs_inode_remove(u32 mount, u32 inode) {
                               &cursor, name, &name_len, &target, &type) != 1)
             return -1;
     }
-    adytumfs_pages_detach(mount, inode);
+    adytumfs_pages_detach(mount, inode, m->slots[inode].generation);
     u32 parent = m->slots[inode].parent;
     u64 real = m->slots[inode].inode;
     // Reclaim the data and persist the emptied inode before the name and the
@@ -519,8 +551,9 @@ int adytumfs_inode_remove(u32 mount, u32 inode) {
     return 0;
 }
 
-int adytumfs_truncate(u32 mount, u32 inode, u32 size, u32 *new_size) {
-    struct adytumfs_mount *m = mount_at(mount);
+int adytumfs_truncate(u32 mount, u32 inode, u64 generation, u32 size,
+                     u32 *new_size) {
+    struct adytumfs_mount *m = slot_mount(mount, inode, generation);
     if (!m || !new_size || size > ADYTUMFS_FILE_SIZE_MAX) return -1;
     struct adytumfs_inode in;
     if (slot_inode_read(m, inode, &in) || (in.mode & ADYTUMFS_MODE_REG) == 0)

@@ -161,15 +161,15 @@ int test_adytumfs64(void) {
     char name[VFS_NAME_MAX];
     valid = valid && mount_id &&
         !adytumfs_inode_get(mount_id, 1, &used, &type, &size, &parent, &mode,
-                           name) &&
+                           name, 0) &&
         used == 1 && type == VFS_NODE_REGULAR && size == 4 && parent == 0 &&
         mode == 0604 && probe_name_equals(name, "hello") &&
         !adytumfs_inode_get(mount_id, 2, &used, &type, &size, &parent, &mode,
-                           name) &&
+                           name, 0) &&
         used == 1 && type == VFS_NODE_DIRECTORY && parent == 0 &&
         mode == 0711 && probe_name_equals(name, "folder") &&
         !adytumfs_inode_get(mount_id, 3, &used, &type, &size, &parent, &mode,
-                           name) &&
+                           name, 0) &&
         used == 1 && type == VFS_NODE_REGULAR && parent == 2 &&
         mode == 0620 && probe_name_equals(name, "nested");
     if (reopened) {

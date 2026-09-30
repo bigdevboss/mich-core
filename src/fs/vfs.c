@@ -21,6 +21,7 @@ struct vfs_node_state {
     u32 special;
     u32 linked;
     u32 fs_id;
+    u64 fs_generation;
     u32 active;
 };
 
@@ -147,8 +148,10 @@ static void node_destroy(struct kernel_object *object) {
         // The adytumfs cache slot borrows this resource, so it must be dropped
         // before the last reference goes away.
         if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) {
-            adytumfs_pages_sync(node->mount, node->fs_id);
-            adytumfs_pages_detach(node->mount, node->fs_id);
+            adytumfs_pages_sync(node->mount, node->fs_id,
+                                node->fs_generation);
+            adytumfs_pages_detach(node->mount, node->fs_id,
+                                  node->fs_generation);
         }
         object_release(node->pages);
         node->pages = 0;
@@ -165,6 +168,7 @@ static void node_destroy(struct kernel_object *object) {
     node->special = VFS_SPECIAL_NONE;
     node->linked = 0;
     node->fs_id = 0;
+    node->fs_generation = 0;
     node->active = 0;
     node->generation++;
     if (!node->generation) node->generation = 1;
@@ -416,13 +420,14 @@ int vfs_mount_adytumfs(struct kernel_object *directory,
     u32 parents[ADYTUMFS_INODE_MAX];
     u32 modes[ADYTUMFS_INODE_MAX];
     char names[ADYTUMFS_INODE_MAX][VFS_NAME_MAX];
+    u64 generations[ADYTUMFS_INODE_MAX];
     u32 inode_item[ADYTUMFS_INODE_MAX];
     u32 count = 0;
     for (u32 inode = 0; inode < inode_count; inode++) {
         inode_item[inode] = VFS_NODE_MAX;
         if (adytumfs_inode_get(mount_index, inode, &used[inode], &types[inode],
                               &sizes[inode], &parents[inode], &modes[inode],
-                              names[inode])) {
+                              names[inode], &generations[inode])) {
             adytumfs_detach(mount_index);
             return -1;
         }
@@ -490,6 +495,7 @@ int vfs_mount_adytumfs(struct kernel_object *directory,
              VFS_MODE_REGULAR_DEFAULT);
         node->linked = 1;
         node->fs_id = inode;
+        node->fs_generation = generations[inode];
         node->active = 1;
         const char *name = inode ? names[inode] : point->name;
         for (u32 byte = 0; byte < VFS_NAME_MAX; byte++) node->name[byte] = 0;
@@ -566,12 +572,13 @@ struct kernel_object *vfs_create_mode(struct kernel_object *directory,
         node->special = VFS_SPECIAL_NONE;
         node->linked = 1;
         node->fs_id = 0;
+        node->fs_generation = 0;
         node->active = 1;
         for (u32 byte = 0; byte < VFS_NAME_MAX; byte++) node->name[byte] = 0;
         for (u32 byte = 0; name[byte]; byte++) node->name[byte] = name[byte];
         if (parent->filesystem == VFS_FILESYSTEM_ADYTUMFS &&
             adytumfs_inode_create(parent->mount, name, parent->fs_id, type,
-                                 mode, &node->fs_id)) {
+                                 mode, &node->fs_id, &node->fs_generation)) {
             node->linked = 0;
             node->active = 0;
             return 0;
@@ -868,7 +875,8 @@ static int adytumfs_pages_ready(struct vfs_node_state *node, u32 end) {
     if (!node->pages) {
         node->pages = page_resource_create();
         if (!node->pages) return -1;
-        if (adytumfs_pages_attach(node->mount, node->fs_id, node->pages)) {
+        if (adytumfs_pages_attach(node->mount, node->fs_id,
+                                  node->fs_generation, node->pages)) {
             object_release(node->pages);
             node->pages = 0;
             return -1;
@@ -881,7 +889,9 @@ static int adytumfs_pages_ready(struct vfs_node_state *node, u32 end) {
         page_resource_grow(node->pages, needed))
         return -1;
     for (u32 page = 0; page < needed; page++)
-        if (adytumfs_pages_fault(node->mount, node->fs_id, page)) return -1;
+        if (adytumfs_pages_fault(node->mount, node->fs_id, node->fs_generation,
+                                 page))
+            return -1;
     return 0;
 }
 
@@ -987,7 +997,8 @@ static int write_node(struct vfs_node_state *node, u32 offset,
                 for (u32 index = 0; index < chunk; index++)
                     target[within + index] = ((const u8 *)buffer)[done + index];
                 if (adytumfs_pages_dirty(node->mount, node->fs_id,
-                                        position / 4096, size))
+                                        node->fs_generation, position / 4096,
+                                        size))
                     return -1;
                 done += chunk;
             }
@@ -1054,11 +1065,14 @@ static int truncate_node(struct vfs_node_state *node, u32 size) {
         return -1;
     if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) {
         u32 new_size = 0;
-        if (adytumfs_pages_sync(node->mount, node->fs_id)) return -1;
-        int result = adytumfs_truncate(node->mount, node->fs_id, size,
-                                      &new_size);
+        if (adytumfs_pages_sync(node->mount, node->fs_id,
+                                node->fs_generation))
+            return -1;
+        int result = adytumfs_truncate(node->mount, node->fs_id,
+                                      node->fs_generation, size, &new_size);
         if (!result && node->pages) {
-            adytumfs_pages_detach(node->mount, node->fs_id);
+            adytumfs_pages_detach(node->mount, node->fs_id,
+                                  node->fs_generation);
             object_release(node->pages);
             node->pages = 0;
         }
@@ -1089,7 +1103,8 @@ int vfs_sync(struct kernel_object *object) {
     if (!node || !node_backing_live(node)) return -1;
     if (node->filesystem != VFS_FILESYSTEM_ADYTUMFS) return 0;
     spin_lock(&vfs_write_lock);
-    int result = adytumfs_pages_sync(node->mount, node->fs_id);
+    int result = adytumfs_pages_sync(node->mount, node->fs_id,
+                                     node->fs_generation);
     spin_unlock(&vfs_write_lock);
     return result;
 }
