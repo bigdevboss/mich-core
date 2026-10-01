@@ -493,7 +493,13 @@ int test_adytumfs_policy64(void) {
         ok = ok && !policy_super(dev, &super) &&
             !policy_find_record(dev, &super, "b", 1, &block, &at);
         if (ok) adytumfs_write_le64(adytumfs_probe_block + at, 0);
-        ok = ok && !policy_commit(dev, block) &&
+        // The tombstone is meant to be a valid on-disk state, so it has to
+        // seal the new dirent image like the format layer would; the
+        // corruption scenarios deliberately skip the seal and fail on the
+        // stale checksum instead.
+        ok = ok && !adytumfs_data_seal(dev, &super, block,
+                                       adytumfs_probe_block) &&
+            !policy_commit(dev, block) &&
             !vfs_mount_adytumfs(point, dev);
         struct kernel_object *fresh = ok ? vfs_lookup(root, "policy") : 0;
         struct kernel_object *kept = fresh ? vfs_lookup(fresh, "a") : 0;
@@ -604,6 +610,13 @@ int test_adytumfs_policy64(void) {
 static void reuse_fill(u8 *buffer, u32 length, u8 base) {
     for (u32 index = 0; index < length; index++)
         buffer[index] = (u8)(base + index);
+}
+
+// A grown hole reads back as zeroes, which a ramp comparison cannot express.
+static int checksum_zeroes(const u8 *buffer, u32 length) {
+    for (u32 index = 0; index < length; index++)
+        if (buffer[index]) return 0;
+    return 1;
 }
 
 static int reuse_matches(const u8 *buffer, u32 length, u8 base) {
@@ -820,7 +833,8 @@ static int integrity_stage(struct kernel_object *root,
     if (data) object_release(data);
     if (other) object_release(other);
     if (disk) object_release(disk);
-    ok = ok && point && !vfs_unmount(point) && !policy_super(dev, super) &&
+    ok = ok && point && !vfs_unmount(point);
+    ok = ok && !policy_super(dev, super) &&
         !adytumfs_dir_lookup(dev, super, super->root_inode, "data", 4,
                              data_inode) && *data_inode &&
         !adytumfs_dir_lookup(dev, super, super->root_inode, "other", 5,
@@ -1023,7 +1037,11 @@ int test_adytumfs_integrity64(void) {
         !policy_find_record(dev, &super, "data", 4, &record_block,
                             &record_at);
     if (ok) adytumfs_write_le64(adytumfs_probe_block + record_at, 0);
-    ok = ok && !policy_commit(dev, record_block) &&
+    // The tombstone is a valid on-disk state, so it is sealed like the
+    // format layer would; the volume below must mount despite the orphan.
+    ok = ok && !adytumfs_data_seal(dev, &super, record_block,
+                                   adytumfs_probe_block) &&
+        !policy_commit(dev, record_block) &&
         !vfs_mount_adytumfs(point, dev);
     struct kernel_object *disk = ok ? vfs_lookup(root, "integrity") : 0;
     struct kernel_object *kept = disk ? vfs_lookup(disk, "other") : 0;
@@ -1044,8 +1062,13 @@ int test_adytumfs_integrity64(void) {
     table = super.inode_table_start + data_inode / ADYTUMFS_INODES_PER_BLOCK;
     slot = (u32)(data_inode % ADYTUMFS_INODES_PER_BLOCK) *
            ADYTUMFS_INODE_SIZE;
-    ok = ok && !adytumfs_block_write(dev, record_block,
-                                     adytumfs_probe_block) &&
+    // Seal the tombstone so the walk reads the directory cleanly and the
+    // failure lands on the broken inode slot, which is what this scenario
+    // is about.
+    ok = ok && !adytumfs_data_seal(dev, &super, record_block,
+                                   adytumfs_probe_block) &&
+        !adytumfs_block_write(dev, record_block,
+                              adytumfs_probe_block) &&
         !adytumfs_block_read(dev, table, adytumfs_probe_block);
     if (ok) adytumfs_probe_block[slot + 100] ^= 0xffu;
     ok = ok && !adytumfs_block_write(dev, table, adytumfs_probe_block) &&
@@ -1053,6 +1076,151 @@ int test_adytumfs_integrity64(void) {
     valid = valid && ok;
     integrity_cleanup(root, point, dev);
 
+    if (root) object_release(root);
+    valid = valid && object_active_count() == objects &&
+        vfs_node_active_count() == nodes &&
+        vfs_file_active_count() == files &&
+        vfs_mount_active_count() == mounts &&
+        block_active_count() == devices;
+    return valid ? 0 : -1;
+}
+
+int test_adytumfs_checksum64(void) {
+    u32 objects = object_active_count();
+    u32 nodes = vfs_node_active_count();
+    u32 files = vfs_file_active_count();
+    u32 mounts = vfs_mount_active_count();
+    u32 devices = block_active_count();
+    struct kernel_object *root = vfs_root();
+    struct kernel_object *dev = 0;
+    struct kernel_object *point = 0;
+    struct adytumfs_superblock super;
+    u64 data_inode = 0;
+    u64 other_inode = 0;
+    int valid = !integrity_stage(root, &dev, &point, &super, &data_inode,
+                                 &other_inode);
+    u8 payload[16];
+    u8 received[32];
+    u64 moved = 0;
+
+    // A clean volume reads back through the verified path: both staged files
+    // hand their bytes over with the region vouching for every block.
+    valid = valid && !adytumfs_file_read(dev, &super, data_inode, 0, received,
+                                         16, &moved) &&
+        moved == 16 && reuse_matches(received, 16, 0x60) &&
+        !adytumfs_file_read(dev, &super, other_inode, 0, received, 16,
+                            &moved) &&
+        moved == 16 && reuse_matches(received, 16, 0x60);
+
+    // Flip one data byte behind the filesystem's back: the mount still
+    // succeeds (the metadata views agree), but the read must refuse the
+    // bytes rather than serve silent corruption.
+    struct adytumfs_inode in;
+    u64 physical = 0;
+    valid = valid && !adytumfs_inode_read(dev, &super, data_inode, &in) &&
+        !adytumfs_inode_map(&in, 0, &physical) &&
+        !adytumfs_block_read(dev, physical, adytumfs_probe_block);
+    if (valid) adytumfs_probe_block[8] ^= 0xffu;
+    valid = valid && !adytumfs_block_write(dev, physical,
+                                           adytumfs_probe_block) &&
+        !integrity_commit(dev) &&
+        adytumfs_file_read(dev, &super, data_inode, 0, received, 16,
+                           &moved) < 0;
+    if (valid) adytumfs_probe_block[8] ^= 0xffu;
+    valid = valid && !adytumfs_block_write(dev, physical,
+                                           adytumfs_probe_block) &&
+        !integrity_commit(dev) &&
+        !adytumfs_file_read(dev, &super, data_inode, 0, received, 16,
+                            &moved);
+
+    // Flip the region entry instead: the data is intact, but the region no
+    // longer vouches for it, so the read fails the same way.
+    u64 index = physical - super.data_start;
+    u64 region_block = super.data_checksum_region +
+        index / ADYTUMFS_CHECKSUMS_PER_BLOCK;
+    u32 entry = (u32)(index % ADYTUMFS_CHECKSUMS_PER_BLOCK) * 4u;
+    valid = valid && !adytumfs_block_read(dev, region_block,
+                                          adytumfs_probe_block);
+    if (valid) adytumfs_probe_block[entry] ^= 0x1u;
+    valid = valid && !adytumfs_block_write(dev, region_block,
+                                           adytumfs_probe_block) &&
+        !integrity_commit(dev) &&
+        adytumfs_file_read(dev, &super, data_inode, 0, received, 16,
+                           &moved) < 0;
+    if (valid) adytumfs_probe_block[entry] ^= 0x1u;
+    valid = valid && !adytumfs_block_write(dev, region_block,
+                                           adytumfs_probe_block) &&
+        !integrity_commit(dev);
+
+    // The write paths seal what they write: an overwrite through the file
+    // path, a partial block read-modify-write, and a grow whose fresh blocks
+    // must read back as zeroed holes with their own sealed entries.
+    reuse_fill(payload, sizeof(payload), 0xa0);
+    valid = valid && !adytumfs_file_write(dev, &super, data_inode, 0, payload,
+                                          sizeof(payload), &moved) &&
+        moved == sizeof(payload) &&
+        !adytumfs_file_read(dev, &super, data_inode, 0, received, 16, &moved) &&
+        moved == 16 && reuse_matches(received, 16, 0xa0);
+    reuse_fill(payload, sizeof(payload), 0xb0);
+    valid = valid && !adytumfs_file_write(dev, &super, data_inode, 4, payload,
+                                          8, &moved) &&
+        moved == 8 &&
+        !adytumfs_file_read(dev, &super, data_inode, 0, received, 16, &moved) &&
+        moved == 16 && received[0] == 0xa0u && received[3] == 0xa3u &&
+        received[4] == 0xb0u && received[11] == 0xb7u && received[12] == 0xacu;
+    reuse_fill(payload, sizeof(payload), 0xc0);
+    valid = valid && !adytumfs_file_write(dev, &super, data_inode, 8192,
+                                          payload, sizeof(payload), &moved) &&
+        moved == sizeof(payload) &&
+        !adytumfs_file_read(dev, &super, data_inode, 4096, received, 16,
+                           &moved) &&
+        moved == 16 && checksum_zeroes(received, 16) &&
+        !adytumfs_file_read(dev, &super, data_inode, 8192, received, 16,
+                           &moved) &&
+        moved == 16 && reuse_matches(received, 16, 0xc0);
+    valid = valid && !integrity_commit(dev);
+
+    // The page path and the mount walk go through the same region: a VFS
+    // mount, open, read, and clean unmount of the grown file must work with
+    // every block still verified.
+    valid = valid && !vfs_mount_adytumfs(point, dev);
+    struct kernel_object *disk = valid ? vfs_lookup(root, "integrity") : 0;
+    struct kernel_object *node = disk ? vfs_lookup(disk, "data") : 0;
+    struct kernel_object *opened = node ? vfs_open(node) : 0;
+    u32 transferred = 0;
+    valid = valid && opened &&
+        !vfs_read(opened, 0, received, 16, &transferred) &&
+        transferred == 16 && received[0] == 0xa0u && received[3] == 0xa3u &&
+        received[4] == 0xb0u && received[11] == 0xb7u && received[12] == 0xacu;
+    if (opened) {
+        object_release(opened);
+        opened = 0;
+    }
+    if (node) {
+        object_release(node);
+        node = 0;
+    }
+    if (disk) {
+        object_release(disk);
+        disk = 0;
+    }
+    valid = valid && point && !vfs_unmount(point);
+
+    // A flipped dirent byte must fail the mount itself: the walk reads
+    // directory blocks through the verified path too.
+    valid = valid && !adytumfs_inode_read(dev, &super, super.root_inode, &in) &&
+        !adytumfs_inode_map(&in, 0, &physical) &&
+        !adytumfs_block_read(dev, physical, adytumfs_probe_block);
+    if (valid) adytumfs_probe_block[20] ^= 0x80u;
+    valid = valid && !adytumfs_block_write(dev, physical,
+                                           adytumfs_probe_block) &&
+        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+    if (valid) adytumfs_probe_block[20] ^= 0x80u;
+    valid = valid && !adytumfs_block_write(dev, physical,
+                                           adytumfs_probe_block) &&
+        !integrity_commit(dev);
+
+    integrity_cleanup(root, point, dev);
     if (root) object_release(root);
     valid = valid && object_active_count() == objects &&
         vfs_node_active_count() == nodes &&

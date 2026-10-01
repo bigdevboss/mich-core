@@ -173,7 +173,7 @@ int adytumfs_inode_grow(struct kernel_object *device,
     // file data with direct transfers, and a cached zero would be flushed
     // over the real bytes later.
     for (u64 block = start; block < start + add; block++)
-        if (adytumfs_block_zero(device, block)) return -1;
+        if (adytumfs_block_zero(device, super, block)) return -1;
     return 0;
 }
 

@@ -282,6 +282,9 @@ int adytumfs_pages_fault(u32 mount, u32 inode, u64 generation, u32 page) {
     if (page_transfer(m, slot, (u32)(physical * ADYTUMFS_SECTORS_PER_BLOCK),
                       page, 1, BLOCK_OP_READ))
         return -1;
+    // The transfer filled the page from the device, so the region must vouch
+    // for those bytes exactly like the read path demands.
+    if (adytumfs_data_check(m->device, &m->super, physical, bytes)) return -1;
     slot->present |= 1ull << page;
     return 0;
 }
@@ -350,6 +353,18 @@ int adytumfs_pages_sync(u32 mount, u32 inode, u64 generation) {
                           (u32)(physical * ADYTUMFS_SECTORS_PER_BLOCK), page,
                           count, BLOCK_OP_WRITE))
             return -1;
+        // The pages reached the device through a direct transfer, so the new
+        // bytes are sealed into the checksum region here rather than through
+        // a staging block.
+        struct page_resource *resource = page_resource_get(slot->pages);
+        if (!resource) return -1;
+        for (u32 index = 0; index < count; index++) {
+            u8 *bytes = (u8 *)(uptr_t)resource->physical[page + index];
+            if (!bytes ||
+                adytumfs_data_seal(m->device, &m->super, physical + index,
+                                   bytes))
+                return -1;
+        }
         for (u32 index = 0; index < count; index++)
             slot->dirty &= ~(1ull << (page + index));
         page += count;
@@ -575,13 +590,14 @@ int adytumfs_truncate(u32 mount, u32 inode, u64 generation, u32 size,
         // bytes past the new size inside the kept tail block read as zeroes.
         u64 physical = 0;
         if (adytumfs_inode_map(&in, blocks - 1, &physical)) return -1;
-        if (adytumfs_block_read(m->device, physical, adytumfs_backend_scratch))
+        if (adytumfs_data_read(m->device, &m->super, physical,
+                               adytumfs_backend_scratch))
             return -1;
         for (u32 index = size % ADYTUMFS_BLOCK_SIZE;
              index < ADYTUMFS_BLOCK_SIZE; index++)
             adytumfs_backend_scratch[index] = 0;
-        if (adytumfs_block_write(m->device, physical,
-                                 adytumfs_backend_scratch))
+        if (adytumfs_data_write(m->device, &m->super, physical,
+                                adytumfs_backend_scratch))
             return -1;
     }
     in.size = size;

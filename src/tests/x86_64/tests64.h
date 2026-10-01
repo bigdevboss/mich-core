@@ -61,6 +61,7 @@ int test_adytumfs_pages64(void);
 int test_adytumfs_policy64(void);
 int test_adytumfs_reuse64(void);
 int test_adytumfs_integrity64(void);
+int test_adytumfs_checksum64(void);
 int test_nvme64(const struct test64_env *env);
 int test_object64(struct task *owner, struct task *target);
 int test_resource64(void);

@@ -43,12 +43,21 @@ static inline void adytumfs_write_le64(u8 *p, u64 value) {
 #define ADYTUMFS_NAME_MAX 255u
 #define ADYTUMFS_EXTENT_SIZE 16u
 #define ADYTUMFS_DIRECT_EXTENTS 10u
-#define ADYTUMFS_FORMAT_VERSION 1u
+#define ADYTUMFS_FORMAT_VERSION 2u
 #define ADYTUMFS_ROOT_INODE 1u
 // v1 bounds the inode table at sixteen blocks (256 inodes at sixteen per
 // block); the formatter caps at the same value, so a bigger table is a volume
 // this format never wrote.
 #define ADYTUMFS_INODE_TABLE_BLOCKS_MAX 16u
+// One u32 crc32c per data block lives in the checksum region, so a 4 KiB
+// region block covers 1024 data blocks.
+#define ADYTUMFS_CHECKSUMS_PER_BLOCK (ADYTUMFS_BLOCK_SIZE / 4u)
+// The whole v2 layout is one incompatible package: the data checksum region
+// plus the shadow metadata tail (a second superblock, bitmap, and inode table
+// reserved at the end of the volume for the durability work). An exact mask
+// match is required, so a volume with bits this build never wrote is refused
+// rather than half interpreted.
+#define ADYTUMFS_FEATURE_INCOMPAT_V2 0x1u
 
 // The superblock lives in block 0 (a backup copy in the last block). Its
 // checksum is the last field and covers every byte before it, so it never has
@@ -57,6 +66,16 @@ static inline void adytumfs_write_le64(u8 *p, u64 value) {
 #define ADYTUMFS_SIGNATURE_SIZE 8u
 #define ADYTUMFS_SUPER_CHECKSUM_OFFSET 4092u
 
+// v2 volume layout. The prefix grows as in v1: superblock, block bitmap,
+// inode table, then the data region. The tail grows backwards from the last
+// block: the shadow superblock, the shadow bitmap, the shadow inode table,
+// then the data checksum region, which ends exactly where the data region
+// ends. Every block from the region start to the end of the volume is
+// metadata: the allocator hands out nothing at or past data_checksum_region.
+//
+// The shadow tail is reserved and initialised by mkfs but not yet committed
+// through; the durability work turns the two superblocks into a generation
+// pair whose active copy names the bitmap and table to read.
 struct adytumfs_superblock {
     u32 format_version;
     u32 block_size;
@@ -136,15 +155,39 @@ int adytumfs_block_write(struct kernel_object *device, u64 block,
 // Zero one 4 KiB block with direct device I/O, bypassing the cache, and drop
 // any cached copy first. File data moves through direct page transfers, so a
 // cached zero would be flushed over the real bytes later, and a reallocated
-// block must not resurrect its previous owner's cached content either.
-int adytumfs_block_zero(struct kernel_object *device, u64 block);
+// block must not resurrect its previous owner's cached content either. The
+// zero image is sealed into the checksum region, because a grown hole must
+// read back as zeroes through the verified path too.
+int adytumfs_block_zero(struct kernel_object *device,
+                        const struct adytumfs_superblock *super, u64 block);
+// Read or write one data block through its checksum region entry: a read
+// hands back only bytes the region vouches for, and a write seals the new
+// crc32c alongside the data. Metadata blocks (super, bitmap, table, and the
+// region itself) go through the raw block calls above.
+int adytumfs_data_read(struct kernel_object *device,
+                       const struct adytumfs_superblock *super,
+                       u64 block, u8 *buffer);
+int adytumfs_data_write(struct kernel_object *device,
+                        const struct adytumfs_superblock *super,
+                        u64 block, const u8 *buffer);
+// Compare a data block's bytes against its region entry, or seal new bytes
+// into it. The page-cache paths move file data with direct transfers into
+// pages, so they verify and seal without a staging block.
+int adytumfs_data_check(struct kernel_object *device,
+                        const struct adytumfs_superblock *super,
+                        u64 block, const u8 *bytes);
+int adytumfs_data_seal(struct kernel_object *device,
+                       const struct adytumfs_superblock *super,
+                       u64 block, const u8 *bytes);
 // Format a device: lay out the regions and write the superblock (and its
 // backup), the block bitmap, and an empty root directory.
 int adytumfs_make(struct kernel_object *device);
 
 // Allocate a contiguous run of length data blocks (first-fit) and return its
-// start block, or free a previously allocated run. The bitmap is the source of
-// truth; super->free_blocks is kept up to date in memory.
+// start block, or free a previously allocated run. Data blocks live in
+// [data_start, data_checksum_region); the metadata prefix and tail are never
+// handed out. The bitmap is the source of truth; super->free_blocks is kept
+// up to date in memory.
 int adytumfs_alloc_run(struct kernel_object *device,
                        struct adytumfs_superblock *super,
                        u64 length, u64 *start);
