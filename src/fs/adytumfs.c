@@ -401,7 +401,9 @@ int adytumfs_pages_sync(u32 mount, u32 inode, u64 generation) {
             slot->dirty &= ~(1ull << (page + index));
         page += count;
     }
-    return block_cache_flush(m->device);
+    // Sync is the agreed commit boundary: the redirected pages and the
+    // staged metadata land together or not at all.
+    return adytumfs_commit(m->device, &m->super);
 }
 
 void adytumfs_pages_detach(u32 mount, u32 inode, u64 generation) {
@@ -423,14 +425,23 @@ int adytumfs_format(struct kernel_object *device) {
 int adytumfs_attach(u32 mount, struct kernel_object *device) {
     if (!mount || mount >= ADYTUMFS_MOUNT_MAX || mount_at(mount) || !device)
         return -1;
-    struct block_info info;
-    if (block_info(device, &info)) return -1;
-    if (adytumfs_block_read(device, 0, adytumfs_backend_scratch)) return -1;
+    // One active mount per device: a second window on the same volume would
+    // stage metadata against a superblock copy the first mount is already
+    // committing past.
+    for (u32 scan = 0; scan < ADYTUMFS_MOUNT_MAX; scan++)
+        if (mounts[scan].device == device) return -1;
+    // The window is keyed by device pointer, and a released device object
+    // can hand that pointer to a new volume: every read below passes
+    // through the staging, so the stale window has to go before them.
+    adytumfs_window_discard(device);
     struct adytumfs_superblock super;
-    if (adytumfs_super_unpack(&super, adytumfs_backend_scratch)) return -1;
-    if (adytumfs_super_valid(&super,
-                             info.sector_count / ADYTUMFS_SECTORS_PER_BLOCK))
-        return -1;
+    if (adytumfs_super_read(device, &super)) return -1;
+    // A structurally valid superblock whose tree does not verify is post
+    // commit corruption, not a torn commit: the commit order lands data and
+    // metadata before the superblock flip, so a torn flip fails the checksum
+    // above and only rot gets this far. Falling back to the older generation
+    // here would roll the volume back over the damage; the mount fails
+    // instead, leaving both generations for an explicit repair pass.
     // v1 defines no ro-compat features; an image asking for one would need a
     // read-only mount, which the VFS contract cannot express.
     if (super.feature_ro_compat) return -1;
@@ -468,7 +479,9 @@ void adytumfs_detach(u32 mount) {
             adytumfs_pages_sync(mount, inode, m->slots[inode].generation);
             adytumfs_pages_detach(mount, inode, m->slots[inode].generation);
         }
-        block_cache_flush(m->device);
+        // Unmount is the other commit boundary; pages_sync already committed
+        // per file, so this lands windows that only touched raw metadata.
+        adytumfs_commit(m->device, &m->super);
         object_release(m->device);
     }
     m->device = 0;
@@ -636,7 +649,7 @@ int adytumfs_truncate(u32 mount, u32 inode, u64 generation, u32 size,
     in.size = size;
     if (adytumfs_inode_write(m->device, &m->super, m->slots[inode].inode,
                              &in) ||
-        block_cache_flush(m->device))
+        adytumfs_commit(m->device, &m->super))
         return -1;
     *new_size = size;
     return 0;

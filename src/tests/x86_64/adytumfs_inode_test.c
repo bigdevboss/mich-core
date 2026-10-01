@@ -57,8 +57,12 @@ int test_adytumfs_inode64(void) {
         adytumfs_inode_read(dev, &super, reused, &fresh) == 0 &&
         fresh.generation == generation + 1;
 
-    // A flipped byte in an in-use inode slot is caught by its checksum.
-    u64 table = super.inode_table_start + reused / ADYTUMFS_INODES_PER_BLOCK;
+    // A flipped byte in an in-use inode slot is caught by its checksum. The
+    // commit lands the window's staged table first, so the flip targets the
+    // live generation's copy instead of being masked by the staging.
+    valid = valid && adytumfs_commit(dev, &super) == 0;
+    u64 table = adytumfs_table_block(
+        &super, (u32)(reused / ADYTUMFS_INODES_PER_BLOCK));
     u32 slot = (u32)(reused % ADYTUMFS_INODES_PER_BLOCK) * ADYTUMFS_INODE_SIZE;
     struct adytumfs_inode corrupt;
     valid = valid && adytumfs_block_read(dev, table, block) == 0;
@@ -70,6 +74,7 @@ int test_adytumfs_inode64(void) {
     valid = valid && adytumfs_inode_read(dev, &super, 0, &corrupt) != 0 &&
         adytumfs_inode_read(dev, &super, super.inode_count, &corrupt) != 0;
 
+    adytumfs_window_discard(dev);
     if (dev) object_release(dev);
     valid = valid && object_active_count() == objects &&
         block_active_count() == devices;

@@ -67,6 +67,7 @@ int test_adytumfs_file64(void) {
         adytumfs_file_read(dev, &super, num, total, window, 5, &transferred) == 0 &&
         transferred == 0;
 
+    adytumfs_window_discard(dev);
     if (dev) object_release(dev);
     valid = valid && object_active_count() == objects &&
         block_active_count() == devices;

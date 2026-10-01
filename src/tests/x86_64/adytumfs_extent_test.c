@@ -60,22 +60,32 @@ int test_adytumfs_extent64(void) {
         adytumfs_inode_map(&a, 8, &physical) != 0;
 
     // Truncate to six: the second extent keeps one block, two are reclaimed.
+    // The commit lands the window before the bitmap is read back, and the
+    // live generation's copy is the one the flip named.
     u64 free_before = super.free_blocks;
     valid = valid && adytumfs_inode_truncate(dev, &super, &a, 6) == 0 &&
         a.blocks == 6 && a.direct[1].length == 1 &&
         super.free_blocks == free_before + 2 &&
         adytumfs_inode_map(&a, 5, &physical) == 0 && physical == data + 6 &&
         adytumfs_inode_map(&a, 6, &physical) != 0 &&
-        adytumfs_block_read(dev, super.block_bitmap_start, block) == 0 &&
+        adytumfs_commit(dev, &super) == 0;
+    // The live generation's bitmap is the copy the flip named.
+    valid = valid && adytumfs_block_read(
+                dev, adytumfs_bitmap_block(&super, 0), block) == 0 &&
         bitmap_used(block, data + 6) && !bitmap_used(block, data + 7) &&
         !bitmap_used(block, data + 8);
 
-    // Truncate to zero frees everything the file still held.
+    // Truncate to zero frees everything the file still held. The commit
+    // ping-pongs the active set back to the primary, so the live bitmap
+    // location moves again.
     valid = valid && adytumfs_inode_truncate(dev, &super, &a, 0) == 0 &&
         a.blocks == 0 && a.direct[0].length == 0 &&
-        adytumfs_block_read(dev, super.block_bitmap_start, block) == 0 &&
+        adytumfs_commit(dev, &super) == 0;
+    valid = valid && adytumfs_block_read(
+                dev, adytumfs_bitmap_block(&super, 0), block) == 0 &&
         !bitmap_used(block, data) && !bitmap_used(block, data + 6);
 
+    adytumfs_window_discard(dev);
     if (dev) object_release(dev);
     valid = valid && object_active_count() == objects &&
         block_active_count() == devices;

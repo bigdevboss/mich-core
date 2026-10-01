@@ -54,8 +54,9 @@ int adytumfs_inode_unpack(struct adytumfs_inode *inode, const u8 *slot) {
     return 0;
 }
 
-// One staging block for the inode table; the single-CPU filesystem reads,
-// modifies, and writes it in place, and the block cache keeps repeats cheap.
+// One staging block for the inode table read-modify-write; the single-CPU
+// filesystem owns it for the duration of one call, and the block cache keeps
+// repeats cheap.
 static u8 adytumfs_inode_scratch[ADYTUMFS_BLOCK_SIZE];
 
 int adytumfs_inode_read(struct kernel_object *device,
@@ -63,9 +64,10 @@ int adytumfs_inode_read(struct kernel_object *device,
                         u64 inode_num, struct adytumfs_inode *out) {
     if (!super || !out || inode_num == 0 || inode_num >= super->inode_count)
         return -1;
-    u64 block = super->inode_table_start + inode_num / ADYTUMFS_INODES_PER_BLOCK;
+    u32 block = (u32)(inode_num / ADYTUMFS_INODES_PER_BLOCK);
     u32 slot = (u32)(inode_num % ADYTUMFS_INODES_PER_BLOCK) * ADYTUMFS_INODE_SIZE;
-    if (adytumfs_block_read(device, block, adytumfs_inode_scratch)) return -1;
+    if (adytumfs_table_read(device, super, block, adytumfs_inode_scratch))
+        return -1;
     return adytumfs_inode_unpack(out, adytumfs_inode_scratch + slot);
 }
 
@@ -74,12 +76,15 @@ int adytumfs_inode_write(struct kernel_object *device,
                          u64 inode_num, const struct adytumfs_inode *in) {
     if (!super || !in || inode_num == 0 || inode_num >= super->inode_count)
         return -1;
-    u64 block = super->inode_table_start + inode_num / ADYTUMFS_INODES_PER_BLOCK;
+    u32 block = (u32)(inode_num / ADYTUMFS_INODES_PER_BLOCK);
     u32 slot = (u32)(inode_num % ADYTUMFS_INODES_PER_BLOCK) * ADYTUMFS_INODE_SIZE;
-    // Read-modify-write: the other fifteen inodes in this block must survive.
-    if (adytumfs_block_read(device, block, adytumfs_inode_scratch)) return -1;
+    // Read-modify-write: the other fifteen inodes in this block must survive,
+    // and the merged image lands in the window staging rather than on the
+    // device, so the committed table stays whole until the commit.
+    if (adytumfs_table_read(device, super, block, adytumfs_inode_scratch))
+        return -1;
     adytumfs_inode_pack(adytumfs_inode_scratch + slot, in);
-    return adytumfs_block_write(device, block, adytumfs_inode_scratch);
+    return adytumfs_table_stage(device, super, block, adytumfs_inode_scratch);
 }
 
 int adytumfs_inode_alloc(struct kernel_object *device,
@@ -99,7 +104,7 @@ int adytumfs_inode_alloc(struct kernel_object *device,
         if (adytumfs_inode_write(device, super, candidate, &fresh)) return -1;
         super->free_inodes--;
         *inode_num = candidate;
-        return adytumfs_super_sync(device, super);
+        return 0;
     }
     return -1;
 }
@@ -113,7 +118,7 @@ int adytumfs_inode_free(struct kernel_object *device,
     inode.mode = 0;
     if (adytumfs_inode_write(device, super, inode_num, &inode)) return -1;
     super->free_inodes++;
-    return adytumfs_super_sync(device, super);
+    return 0;
 }
 
 int adytumfs_inode_map(const struct adytumfs_inode *inode, u64 logical_block,

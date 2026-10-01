@@ -209,6 +209,136 @@ int adytumfs_make(struct kernel_object *device) {
 // staging block rather than holding the whole bitmap in memory.
 static u8 adytumfs_bitmap_scratch[ADYTUMFS_BLOCK_SIZE];
 
+// The staged image of a bitmap block the allocator compares against the
+// committed image of the same block: a block the window freed reads free in
+// the staging but allocated in the committed bitmap, and that difference is
+// exactly the pending-free set the allocator must skip.
+static u8 adytumfs_committed_scratch[ADYTUMFS_BLOCK_SIZE];
+
+// One staged metadata block of an open window. Entries are keyed by device so
+// several mounted volumes can hold windows side by side, and by block index
+// within the set rather than by device location, because which set is active
+// changes at every commit while the image content is what the window owns.
+// The pool always holds a volume's complete inode table (the format caps it
+// at sixteen blocks) plus every bitmap block the window has touched;
+// exhaustion means a window more fragmented than that, which the format
+// layer refuses rather than half-staging.
+#define ADYTUMFS_STAGING_POOL 32u
+
+struct adytumfs_staged {
+    struct kernel_object *device;
+    u8 is_table;
+    u8 index;
+    u8 image[ADYTUMFS_BLOCK_SIZE];
+};
+
+static struct adytumfs_staged adytumfs_staging[ADYTUMFS_STAGING_POOL];
+
+// Both metadata sets are addressed slot-relative: the active slot names the
+// set the window reads through, the inactive slot the set the commit writes.
+static u64 superblock_slot(u64 total_blocks, u8 slot) {
+    return slot ? total_blocks - 1 : 0;
+}
+
+static u64 bitmap_slot_base(const struct adytumfs_superblock *super, u8 slot) {
+    if (!slot) return super->block_bitmap_start;
+    return super->total_blocks - 1 - super->block_bitmap_blocks;
+}
+
+static u64 table_slot_base(const struct adytumfs_superblock *super, u8 slot) {
+    if (!slot) return super->inode_table_start;
+    return super->total_blocks - 1 - super->block_bitmap_blocks -
+           super->inode_table_blocks;
+}
+
+// The device location of one bitmap or table block of the ACTIVE set: the
+// mount, the verify pass, and device-level tests all address the generation
+// that currently won, never a fixed copy.
+u64 adytumfs_superblock_block(const struct adytumfs_superblock *super) {
+    return superblock_slot(super->total_blocks, super->active_slot);
+}
+
+u64 adytumfs_bitmap_block(const struct adytumfs_superblock *super, u32 index) {
+    return bitmap_slot_base(super, super->active_slot) + index;
+}
+
+u64 adytumfs_table_block(const struct adytumfs_superblock *super, u32 index) {
+    return table_slot_base(super, super->active_slot) + index;
+}
+
+static struct adytumfs_staged *staging_find(struct kernel_object *device,
+                                            int is_table, u32 index) {
+    for (u32 entry = 0; entry < ADYTUMFS_STAGING_POOL; entry++)
+        if (adytumfs_staging[entry].device == device &&
+            adytumfs_staging[entry].is_table == (u8)is_table &&
+            adytumfs_staging[entry].index == (u8)index)
+            return &adytumfs_staging[entry];
+    return 0;
+}
+
+// Claim a staging entry for a metadata block, seeding it with the committed
+// image so the caller can read-modify-write it. Fails closed when the pool is
+// full or the device read fails.
+static struct adytumfs_staged *staging_claim(struct kernel_object *device,
+                                             const struct adytumfs_superblock
+                                                 *super,
+                                             int is_table, u32 index) {
+    // The index travels in a byte; a bitmap block count beyond that belongs
+    // to a volume larger than any device this kernel drives.
+    if (index > 255u) return 0;
+    struct adytumfs_staged *entry = staging_find(device, is_table, index);
+    if (entry) return entry;
+    for (u32 scan = 0; scan < ADYTUMFS_STAGING_POOL; scan++) {
+        entry = &adytumfs_staging[scan];
+        if (entry->device) continue;
+        u64 block = is_table
+                        ? table_slot_base(super, super->active_slot) + index
+                        : bitmap_slot_base(super, super->active_slot) + index;
+        if (adytumfs_block_read(device, block, entry->image)) return 0;
+        entry->device = device;
+        entry->is_table = (u8)is_table;
+        entry->index = (u8)index;
+        return entry;
+    }
+    return 0;
+}
+
+void adytumfs_window_discard(struct kernel_object *device) {
+    for (u32 entry = 0; entry < ADYTUMFS_STAGING_POOL; entry++)
+        if (adytumfs_staging[entry].device == device)
+            adytumfs_staging[entry].device = 0;
+}
+
+// Read one metadata block of the active set through the staging: a staged
+// block answers from the window's image, anything else from the device.
+int adytumfs_table_read(struct kernel_object *device,
+                        const struct adytumfs_superblock *super,
+                        u32 index, u8 *buffer) {
+    struct adytumfs_staged *entry = staging_find(device, 1, index);
+    if (entry) {
+        for (u32 byte = 0; byte < ADYTUMFS_BLOCK_SIZE; byte++)
+            buffer[byte] = entry->image[byte];
+        return 0;
+    }
+    return adytumfs_block_read(device, table_slot_base(super,
+                                                       super->active_slot) +
+                                          index,
+                               buffer);
+}
+
+// Write one inode table block into the staging. The device copy belongs to
+// the committed generation and is only replaced whole, by the commit.
+int adytumfs_table_stage(struct kernel_object *device,
+                         const struct adytumfs_superblock *super,
+                         u32 index, const u8 *buffer) {
+    struct adytumfs_staged *entry = staging_claim(device, super, 1, index);
+    if (!entry) return -1;
+    for (u32 byte = 0; byte < ADYTUMFS_BLOCK_SIZE; byte++)
+        entry->image[byte] = buffer[byte];
+    return 0;
+}
+
+// Read one allocation bit through the staging (see adytumfs_table_read).
 static int adytumfs_bit_test(struct kernel_object *device,
                              const struct adytumfs_superblock *super,
                              u64 block) {
@@ -216,12 +346,39 @@ static int adytumfs_bit_test(struct kernel_object *device,
     u64 bitmap = block / bits_per_block;
     u64 offset = block % bits_per_block;
     if (bitmap >= super->block_bitmap_blocks) return -1;
-    if (adytumfs_block_read(device, super->block_bitmap_start + bitmap,
+    struct adytumfs_staged *entry = staging_find(device, 0, (u32)bitmap);
+    if (entry) {
+        return (entry->image[offset / 8] >> (offset % 8)) & 1;
+    }
+    if (adytumfs_block_read(device, bitmap_slot_base(super,
+                                                     super->active_slot) +
+                                            bitmap,
                             adytumfs_bitmap_scratch))
         return -1;
     return (adytumfs_bitmap_scratch[offset / 8] >> (offset % 8)) & 1;
 }
 
+// Read one allocation bit from the committed bitmap on the device, ignoring
+// the staging. The allocator uses this to tell a block freed by the open
+// window (staged free, committed allocated) from one the last committed
+// generation already released.
+static int adytumfs_bit_committed(struct kernel_object *device,
+                                  const struct adytumfs_superblock *super,
+                                  u64 block) {
+    const u64 bits_per_block = (u64)ADYTUMFS_BLOCK_SIZE * 8;
+    u64 bitmap = block / bits_per_block;
+    u64 offset = block % bits_per_block;
+    if (bitmap >= super->block_bitmap_blocks) return -1;
+    if (adytumfs_block_read(device, bitmap_slot_base(super,
+                                                     super->active_slot) +
+                                            bitmap,
+                            adytumfs_committed_scratch))
+        return -1;
+    return (adytumfs_committed_scratch[offset / 8] >> (offset % 8)) & 1;
+}
+
+// Stage one allocation bit edit. Nothing touches the device: the committed
+// bitmap is part of the generation the flip replaces wholesale.
 static int adytumfs_bit_write(struct kernel_object *device,
                               const struct adytumfs_superblock *super,
                               u64 block, int used) {
@@ -229,15 +386,14 @@ static int adytumfs_bit_write(struct kernel_object *device,
     u64 bitmap = block / bits_per_block;
     u64 offset = block % bits_per_block;
     if (bitmap >= super->block_bitmap_blocks) return -1;
-    if (adytumfs_block_read(device, super->block_bitmap_start + bitmap,
-                            adytumfs_bitmap_scratch))
-        return -1;
+    struct adytumfs_staged *entry =
+        staging_claim(device, super, 0, (u32)bitmap);
+    if (!entry) return -1;
     if (used)
-        adytumfs_bitmap_scratch[offset / 8] |= (u8)(1u << (offset % 8));
+        entry->image[offset / 8] |= (u8)(1u << (offset % 8));
     else
-        adytumfs_bitmap_scratch[offset / 8] &= (u8)~(1u << (offset % 8));
-    return adytumfs_block_write(device, super->block_bitmap_start + bitmap,
-                                adytumfs_bitmap_scratch);
+        entry->image[offset / 8] &= (u8)~(1u << (offset % 8));
+    return 0;
 }
 
 int adytumfs_alloc_run(struct kernel_object *device,
@@ -257,6 +413,18 @@ int adytumfs_alloc_run(struct kernel_object *device,
             run = 0;
             continue;
         }
+        // The staging may have freed this block within the window while the
+        // committed generation on the device still references its old image,
+        // so only a block the committed bitmap released as well is reusable.
+        if (staging_find(device, 0,
+                         (u32)(block / ((u64)ADYTUMFS_BLOCK_SIZE * 8)))) {
+            int committed = adytumfs_bit_committed(device, super, block);
+            if (committed < 0) return -1;
+            if (committed) {
+                run = 0;
+                continue;
+            }
+        }
         if (run == 0) run_start = block;
         run++;
         if (run == length) {
@@ -264,7 +432,7 @@ int adytumfs_alloc_run(struct kernel_object *device,
                 if (adytumfs_bit_write(device, super, mark, 1)) return -1;
             super->free_blocks -= length;
             *start = run_start;
-            return adytumfs_super_sync(device, super);
+            return 0;
         }
     }
     return -1;
@@ -282,5 +450,46 @@ int adytumfs_free_run(struct kernel_object *device,
     for (u64 block = start; block < start + length; block++)
         if (adytumfs_bit_write(device, super, block, 0)) return -1;
     super->free_blocks += length;
-    return adytumfs_super_sync(device, super);
+    return 0;
+}
+
+int adytumfs_commit(struct kernel_object *device,
+                    struct adytumfs_superblock *super) {
+    if (!device || !super) return -1;
+    u8 inactive = super->active_slot ? 0 : 1;
+    int staged = 0;
+    for (u32 entry = 0; entry < ADYTUMFS_STAGING_POOL; entry++)
+        if (adytumfs_staging[entry].device == device) staged = 1;
+    // A window that staged nothing has nothing to land: skipping the flip
+    // keeps read-only mounts from bumping the generation on their way out.
+    if (!staged) return 0;
+    // The staged blocks are the next generation's metadata set; the active
+    // set on the device stays untouched so the current generation survives
+    // every crash point below.
+    for (u32 entry = 0; entry < ADYTUMFS_STAGING_POOL; entry++) {
+        struct adytumfs_staged *slot = &adytumfs_staging[entry];
+        if (slot->device != device) continue;
+        u64 block = slot->is_table
+                        ? table_slot_base(super, inactive) + slot->index
+                        : bitmap_slot_base(super, inactive) + slot->index;
+        if (adytumfs_block_write(device, block, slot->image)) return -1;
+    }
+    // The superblock write is the flip: it lands last, carries generation
+    // plus one, and names the set just written. A torn write fails the
+    // superblock checksum and the mount picker falls back to the old one.
+    struct adytumfs_superblock next = *super;
+    next.generation++;
+    next.active_slot = inactive;
+    // A 4 KiB staging block is too large for a modest stack, and the commit
+    // path is single threaded like the rest of the format layer.
+    static u8 block[ADYTUMFS_BLOCK_SIZE];
+    adytumfs_super_pack(block, &next);
+    if (adytumfs_block_write(device, superblock_slot(super->total_blocks,
+                                                     inactive),
+                             block))
+        return -1;
+    if (block_cache_flush(device)) return -1;
+    *super = next;
+    adytumfs_window_discard(device);
+    return 0;
 }

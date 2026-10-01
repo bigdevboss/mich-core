@@ -33,7 +33,8 @@ static int verify_bit(struct kernel_object *device,
     u64 window = block / ((u64)ADYTUMFS_BLOCK_SIZE * 8u);
     if (window >= super->block_bitmap_blocks) return -1;
     if (window != verify_bitmap_window) {
-        if (adytumfs_block_read(device, super->block_bitmap_start + window,
+        if (adytumfs_block_read(device,
+                                adytumfs_bitmap_block(super, (u32)window),
                                 verify_bitmap))
             return -1;
         verify_bitmap_window = window;

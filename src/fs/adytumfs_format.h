@@ -73,9 +73,13 @@ static inline void adytumfs_write_le64(u8 *p, u64 value) {
 // ends. Every block from the region start to the end of the volume is
 // metadata: the allocator hands out nothing at or past data_checksum_region.
 //
-// The shadow tail is reserved and initialised by mkfs but not yet committed
-// through; the durability work turns the two superblocks into a generation
-// pair whose active copy names the bitmap and table to read.
+// The shadow tail is a full second copy of the metadata (superblock, bitmap,
+// inode table) that the commit protocol writes while the active copy stays
+// untouched: a window stages its bitmap and table edits in memory, the commit
+// lands them in the inactive set, and the inactive superblock, written last
+// with generation plus one, names the set the next mount reads. A crash can
+// therefore leave either the old generation or the new one on the device, but
+// never a mix of both under one superblock.
 struct adytumfs_superblock {
     u32 format_version;
     u32 block_size;
@@ -94,6 +98,11 @@ struct adytumfs_superblock {
     u64 feature_incompat;
     u64 feature_ro_compat;
     u64 data_checksum_region;
+    // Which superblock slot this copy came from: 0 is block 0, 1 is the tail
+    // copy in the last block. Runtime state only, never serialised; the
+    // reader defaults it to the primary slot and the mount picker overrides
+    // it when the tail copy wins on generation.
+    u8 active_slot;
 };
 
 // Serialise a superblock into a 4 KiB block (little-endian, checksum computed).
@@ -140,12 +149,26 @@ int adytumfs_inode_unpack(struct adytumfs_inode *inode, const u8 *slot);
 
 struct kernel_object;
 
-// Rewrite the primary superblock (block 0) from the in-memory copy, checksum
-// included, so the allocation counters on disk track what the allocator has
-// handed out. The backup copy stays a format time snapshot until the
-// durability work turns both copies into a generation pair.
-int adytumfs_super_sync(struct kernel_object *device,
-                        const struct adytumfs_superblock *super);
+// Pick the newest structurally valid superblock of the generation pair and
+// set its runtime slot. This reads without judging the tree: the mount adds
+// the verify pass, and repair tooling may want to see a broken winner.
+int adytumfs_super_read(struct kernel_object *device,
+                        struct adytumfs_superblock *super);
+
+// Land the open window: copy the staged bitmap and inode table blocks into
+// the inactive metadata set, flush, then write the inactive superblock with
+// generation plus one and flush again. The superblock write is the flip, so
+// a crash before it leaves the old generation intact and a crash during it
+// leaves a checksum-failed superblock the mount picker refuses. On failure
+// the staging and the in-memory superblock stay untouched, so the commit can
+// simply be retried. A window with nothing staged commits nothing.
+int adytumfs_commit(struct kernel_object *device,
+                    struct adytumfs_superblock *super);
+// Drop the staged metadata for a device without landing it, the in-memory
+// equivalent of a crash inside the window: the device keeps the last
+// committed generation. The mount path calls this defensively before it reads,
+// and crash-recovery tooling uses it to simulate a torn window.
+void adytumfs_window_discard(struct kernel_object *device);
 
 // Read or write one 4 KiB filesystem block (eight device sectors) by block
 // number, through the block cache.
@@ -183,11 +206,31 @@ int adytumfs_data_seal(struct kernel_object *device,
 // backup), the block bitmap, and an empty root directory.
 int adytumfs_make(struct kernel_object *device);
 
+// The device location of one bitmap or inode table block of the active
+// metadata set, so callers never hardcode the primary prefix against a
+// generation pair that may have flipped to the tail copy.
+u64 adytumfs_superblock_block(const struct adytumfs_superblock *super);
+u64 adytumfs_bitmap_block(const struct adytumfs_superblock *super, u32 index);
+u64 adytumfs_table_block(const struct adytumfs_superblock *super, u32 index);
+// Read one inode table block of the active metadata set, passing through the
+// open window's staging, or stage one into the window. The device copy of a
+// staged table block belongs to the committed generation until the commit
+// replaces the whole set.
+int adytumfs_table_read(struct kernel_object *device,
+                        const struct adytumfs_superblock *super,
+                        u32 index, u8 *buffer);
+int adytumfs_table_stage(struct kernel_object *device,
+                         const struct adytumfs_superblock *super,
+                         u32 index, const u8 *buffer);
+
 // Allocate a contiguous run of length data blocks (first-fit) and return its
 // start block, or free a previously allocated run. Data blocks live in
 // [data_start, data_checksum_region); the metadata prefix and tail are never
-// handed out. The bitmap is the source of truth; super->free_blocks is kept
-// up to date in memory.
+// handed out. Bitmap edits stage in the open window: the committed generation
+// on the device keeps every block the current window freed, so the allocator
+// skips a block that reads free in the staging but allocated in the committed
+// bitmap. super->free_blocks is kept up to date in memory and lands on the
+// device at commit.
 int adytumfs_alloc_run(struct kernel_object *device,
                        struct adytumfs_superblock *super,
                        u64 length, u64 *start);
@@ -195,8 +238,10 @@ int adytumfs_free_run(struct kernel_object *device,
                       struct adytumfs_superblock *super,
                       u64 start, u64 length);
 
-// Read or write one inode by number from the inode table (pack/unpack plus a
-// read-modify-write of its 4 KiB table block so siblings are preserved).
+// Read or write one inode by number from the inode table. Reads pass through
+// the open window's staging first; writes read-modify-write the 4 KiB table
+// block into the staging, so the committed table on the device is only ever
+// replaced by the whole committed generation at commit time.
 int adytumfs_inode_read(struct kernel_object *device,
                         const struct adytumfs_superblock *super,
                         u64 inode_num, struct adytumfs_inode *out);

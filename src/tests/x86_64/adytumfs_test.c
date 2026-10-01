@@ -33,10 +33,11 @@ static int probe_read_block(struct kernel_object *dev, u64 block, u8 *buffer) {
 
 // Parse the volume superblock through the block cache, which the corruption
 // scenarios below also write their edits through.
+// Read the live generation of the pair, the same pick a mount would make,
+// so device-side assertions target the set that is actually current.
 static int policy_super(struct kernel_object *dev,
                         struct adytumfs_superblock *super) {
-    if (adytumfs_block_read(dev, 0, adytumfs_probe_block)) return -1;
-    return adytumfs_super_unpack(super, adytumfs_probe_block);
+    return adytumfs_super_read(dev, super);
 }
 
 // Locate a root directory record by name and leave its data block in the
@@ -275,7 +276,11 @@ int test_adytumfs_pages64(void) {
     valid = valid && !vfs_sync(opened);
 
     // The flush landed: the raw slot now describes the grown file, and the
-    // extent blocks on the device hold the written pattern.
+    // extent blocks on the device hold the written pattern. The sync also
+    // commits, so the live table is whichever set the flip named.
+    valid = valid && !adytumfs_super_read(dev, &probe);
+    table_block = adytumfs_table_block(
+        &probe, (u32)(wide_inode / ADYTUMFS_INODES_PER_BLOCK));
     valid = valid &&
         !probe_read_block(dev, table_block, adytumfs_probe_block) &&
         !adytumfs_inode_unpack(&probe_inode,
@@ -384,12 +389,12 @@ int test_adytumfs_policy64(void) {
         ok = ok && !vfs_unmount(point);
         struct adytumfs_superblock super;
         u64 target = 0;
-        ok = ok && !policy_super(dev, &super) &&
-            !adytumfs_dir_lookup(dev, &super, super.root_inode, "hello", 5,
-                                 &target) &&
-            target;
-        u64 table = super.inode_table_start +
-            target / ADYTUMFS_INODES_PER_BLOCK;
+        int sr = policy_super(dev, &super);
+        int dl = sr ? -1 : adytumfs_dir_lookup(dev, &super, super.root_inode,
+                                               "hello", 5, &target);
+        ok = ok && !sr && !dl && target;
+        u64 table = adytumfs_table_block(
+            &super, (u32)(target / ADYTUMFS_INODES_PER_BLOCK));
         u32 slot = (u32)((target % ADYTUMFS_INODES_PER_BLOCK) *
                          ADYTUMFS_INODE_SIZE);
         ok = ok && !adytumfs_block_read(dev, table, adytumfs_probe_block);
@@ -546,13 +551,15 @@ int test_adytumfs_policy64(void) {
         ok = ok && point && !vfs_unmount(point);
         struct adytumfs_superblock super;
         u64 extra = 0;
-        ok = ok && !policy_super(dev, &super) &&
+        ok = ok && !policy_super(dev, &super);
+        ok = ok &&
             !adytumfs_inode_alloc(dev, &super,
                                   (u16)(ADYTUMFS_MODE_REG | 0644u), &extra) &&
-            extra &&
+            extra;
+        ok = ok &&
             !adytumfs_dir_add(dev, &super, super.root_inode, "extra", 5,
-                              extra, ADYTUMFS_DTYPE_REG) &&
-            !block_cache_flush(dev);
+                              extra, ADYTUMFS_DTYPE_REG);
+        ok = ok && !adytumfs_commit(dev, &super);
         if (dev) block_cache_drop_device((u32)dev->value);
         ok = ok && vfs_mount_adytumfs(point, dev) < 0;
         valid = valid && ok;
@@ -587,7 +594,7 @@ int test_adytumfs_policy64(void) {
             !adytumfs_dir_add(dev, &super, super.root_inode, long_name,
                               sizeof(long_name) - 1, target,
                               ADYTUMFS_DTYPE_REG) &&
-            !block_cache_flush(dev);
+            !adytumfs_commit(dev, &super);
         if (dev) block_cache_drop_device((u32)dev->value);
         ok = ok && vfs_mount_adytumfs(point, dev) < 0;
         valid = valid && ok;
@@ -641,8 +648,8 @@ int test_adytumfs_reuse64(void) {
         struct kernel_object *dev = block_create(320, 0);
         struct kernel_object *point = root ?
             vfs_create(root, "reuse", VFS_NODE_DIRECTORY) : 0;
-        int ok = dev && point && !adytumfs_format(dev) &&
-            !vfs_mount_adytumfs(point, dev);
+        int ok = dev && point && !adytumfs_format(dev);
+        ok = ok && !vfs_mount_adytumfs(point, dev);
         struct kernel_object *disk = ok ? vfs_lookup(root, "reuse") : 0;
         u32 mount_id = 0;
         for (u32 probe = 1; probe < VFS_MOUNT_MAX; probe++)
@@ -669,24 +676,29 @@ int test_adytumfs_reuse64(void) {
             !adytumfs_inode_get(mount_id, 1, &used, &type, &size, &parent,
                                &mode, name, &first_generation) &&
             used == 1 && probe_name_equals(name, "first") &&
-            first_generation &&
+            first_generation;
+        ok = ok &&
             !vfs_write(first_file, 0, payload, sizeof(payload), &moved) &&
-            moved == sizeof(payload) &&
-            !vfs_unlink(disk, "first");
+            moved == sizeof(payload);
+        ok = ok && !vfs_unlink(disk, "first");
         struct kernel_object *second = disk ?
             vfs_create(disk, "second", VFS_NODE_REGULAR) : 0;
         struct kernel_object *second_file = second ? vfs_open(second) : 0;
         reuse_fill(payload, sizeof(payload), 0x20);
-        ok = ok && second && second_file &&
+        ok = ok && second && second_file;
+        ok = ok &&
             !adytumfs_inode_get(mount_id, 1, &used, &type, &size, &parent,
                                &mode, name, &second_generation) &&
             used == 1 && probe_name_equals(name, "second") &&
-            second_generation && second_generation != first_generation &&
+            second_generation && second_generation != first_generation;
+        ok = ok &&
             !vfs_write(second_file, 0, payload, sizeof(payload), &moved) &&
-            moved == sizeof(payload) &&
-            !vfs_sync(second_file) &&
+            moved == sizeof(payload);
+        ok = ok && !vfs_sync(second_file);
+        ok = ok &&
             vfs_read(first_file, 0, received, sizeof(received), &moved) < 0 &&
-            vfs_write(first_file, 0, payload, sizeof(payload), &moved) < 0 &&
+            vfs_write(first_file, 0, payload, sizeof(payload), &moved) < 0;
+        ok = ok &&
             !vfs_read(second_file, 0, received, sizeof(received), &moved) &&
             moved == sizeof(received) &&
             reuse_matches(received, sizeof(received), 0x20);
@@ -825,8 +837,8 @@ static int integrity_stage(struct kernel_object *root,
     reuse_fill(payload, sizeof(payload), 0x60);
     ok = ok && data && other && data_file && other_file &&
         !vfs_write(data_file, 0, payload, sizeof(payload), &moved) &&
-        moved == sizeof(payload) && !vfs_sync(data_file) &&
-        !vfs_write(other_file, 0, payload, sizeof(payload), &moved) &&
+        moved == sizeof(payload) && !vfs_sync(data_file);
+    ok = ok && !vfs_write(other_file, 0, payload, sizeof(payload), &moved) &&
         moved == sizeof(payload) && !vfs_sync(other_file);
     if (data_file) object_release(data_file);
     if (other_file) object_release(other_file);
@@ -834,9 +846,11 @@ static int integrity_stage(struct kernel_object *root,
     if (other) object_release(other);
     if (disk) object_release(disk);
     ok = ok && point && !vfs_unmount(point);
-    ok = ok && !policy_super(dev, super) &&
+    ok = ok && !policy_super(dev, super);
+    ok = ok &&
         !adytumfs_dir_lookup(dev, super, super->root_inode, "data", 4,
-                             data_inode) && *data_inode &&
+                             data_inode) && *data_inode;
+    ok = ok &&
         !adytumfs_dir_lookup(dev, super, super->root_inode, "other", 5,
                              other_inode) && *other_inode;
     if (!ok) {
@@ -849,10 +863,14 @@ static int integrity_stage(struct kernel_object *root,
     return 0;
 }
 
-// Land the staged edits and drop the cached copies, so the next mount reads
-// the bytes the way a fresh boot would.
-static int integrity_commit(struct kernel_object *dev) {
-    if (block_cache_flush(dev)) return -1;
+// Land the open window through the commit protocol and drop the cached
+// copies, so the next mount reads the bytes the way a fresh boot would.
+static int integrity_commit(struct kernel_object *dev,
+                            struct adytumfs_superblock *super) {
+    // The commit lands the window and skips itself when nothing staged, so
+    // the flush after it is what carries raw device edits to the platter
+    // before the drop throws the cached copies away.
+    if (adytumfs_commit(dev, super) || block_cache_flush(dev)) return -1;
     block_cache_drop_device((u32)dev->value);
     return 0;
 }
@@ -862,6 +880,9 @@ static void integrity_cleanup(struct kernel_object *root,
                               struct kernel_object *dev) {
     if (point) object_release(point);
     if (root) vfs_unlink(root, "integrity");
+    // Drop any window still open, so a later device object that reuses this
+    // address cannot inherit its staging.
+    adytumfs_window_discard(dev);
     if (dev) object_release(dev);
 }
 
@@ -894,7 +915,7 @@ int test_adytumfs_integrity64(void) {
         !adytumfs_inode_read(dev, &super, data_inode, &in) && in.blocks == 1;
     if (ok) in.direct[0].start_block = 0;
     ok = ok && !adytumfs_inode_write(dev, &super, data_inode, &in) &&
-        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+        !integrity_commit(dev, &super) && vfs_mount_adytumfs(point, dev) < 0;
     valid = valid && ok;
     integrity_cleanup(root, point, dev);
 
@@ -904,7 +925,7 @@ int test_adytumfs_integrity64(void) {
         !adytumfs_inode_read(dev, &super, data_inode, &in);
     if (ok) in.direct[0].start_block = super.total_blocks - 1;
     ok = ok && !adytumfs_inode_write(dev, &super, data_inode, &in) &&
-        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+        !integrity_commit(dev, &super) && vfs_mount_adytumfs(point, dev) < 0;
     valid = valid && ok;
     integrity_cleanup(root, point, dev);
 
@@ -917,7 +938,7 @@ int test_adytumfs_integrity64(void) {
     ok = ok && !adytumfs_inode_read(dev, &super, other_inode, &in);
     if (ok) in.direct[0].start_block = claimed_block;
     ok = ok && !adytumfs_inode_write(dev, &super, other_inode, &in) &&
-        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+        !integrity_commit(dev, &super) && vfs_mount_adytumfs(point, dev) < 0;
     valid = valid && ok;
     integrity_cleanup(root, point, dev);
 
@@ -926,14 +947,14 @@ int test_adytumfs_integrity64(void) {
     ok = !integrity_stage(root, &dev, &point, &super, &data_inode,
                           &other_inode) &&
         !adytumfs_inode_read(dev, &super, data_inode, &in) &&
-        !adytumfs_block_read(dev, super.block_bitmap_start,
+        !adytumfs_block_read(dev, adytumfs_bitmap_block(&super, 0),
                              adytumfs_probe_block);
     if (ok)
         adytumfs_probe_block[in.direct[0].start_block / 8] &=
             (u8)~(1u << (in.direct[0].start_block % 8));
-    ok = ok && !adytumfs_block_write(dev, super.block_bitmap_start,
+    ok = ok && !adytumfs_block_write(dev, adytumfs_bitmap_block(&super, 0),
                                      adytumfs_probe_block) &&
-        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+        !integrity_commit(dev, &super) && vfs_mount_adytumfs(point, dev) < 0;
     valid = valid && ok;
     integrity_cleanup(root, point, dev);
 
@@ -941,7 +962,7 @@ int test_adytumfs_integrity64(void) {
     // over.
     ok = !integrity_stage(root, &dev, &point, &super, &data_inode,
                           &other_inode) &&
-        !adytumfs_block_read(dev, super.block_bitmap_start,
+        !adytumfs_block_read(dev, adytumfs_bitmap_block(&super, 0),
                              adytumfs_probe_block);
     if (ok) {
         for (leak = super.data_start; leak < super.total_blocks - 1; leak++)
@@ -952,9 +973,9 @@ int test_adytumfs_integrity64(void) {
         if (ok)
             adytumfs_probe_block[leak / 8] |= (u8)(1u << (leak % 8));
     }
-    ok = ok && !adytumfs_block_write(dev, super.block_bitmap_start,
+    ok = ok && !adytumfs_block_write(dev, adytumfs_bitmap_block(&super, 0),
                                      adytumfs_probe_block) &&
-        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+        !integrity_commit(dev, &super) && vfs_mount_adytumfs(point, dev) < 0;
     valid = valid && ok;
     integrity_cleanup(root, point, dev);
 
@@ -964,7 +985,7 @@ int test_adytumfs_integrity64(void) {
         !adytumfs_inode_read(dev, &super, data_inode, &in);
     if (ok) in.blocks = 2;
     ok = ok && !adytumfs_inode_write(dev, &super, data_inode, &in) &&
-        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+        !integrity_commit(dev, &super) && vfs_mount_adytumfs(point, dev) < 0;
     valid = valid && ok;
     integrity_cleanup(root, point, dev);
 
@@ -979,7 +1000,7 @@ int test_adytumfs_integrity64(void) {
         in.blocks = 2;
     }
     ok = ok && !adytumfs_inode_write(dev, &super, data_inode, &in) &&
-        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+        !integrity_commit(dev, &super) && vfs_mount_adytumfs(point, dev) < 0;
     valid = valid && ok;
     integrity_cleanup(root, point, dev);
 
@@ -990,7 +1011,7 @@ int test_adytumfs_integrity64(void) {
         !adytumfs_inode_read(dev, &super, super.root_inode, &in);
     if (ok) in.mode = ADYTUMFS_MODE_REG | 0755u;
     ok = ok && !adytumfs_inode_write(dev, &super, super.root_inode, &in) &&
-        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+        !integrity_commit(dev, &super) && vfs_mount_adytumfs(point, dev) < 0;
     valid = valid && ok;
     integrity_cleanup(root, point, dev);
 
@@ -999,8 +1020,9 @@ int test_adytumfs_integrity64(void) {
                           &other_inode);
     if (ok) super.free_blocks += 1;
     if (ok) adytumfs_super_pack(adytumfs_probe_block, &super);
-    ok = ok && !adytumfs_block_write(dev, 0, adytumfs_probe_block) &&
-        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+    ok = ok && !adytumfs_block_write(dev, adytumfs_superblock_block(&super),
+                                     adytumfs_probe_block) &&
+        !integrity_commit(dev, &super) && vfs_mount_adytumfs(point, dev) < 0;
     valid = valid && ok;
     integrity_cleanup(root, point, dev);
 
@@ -1009,8 +1031,9 @@ int test_adytumfs_integrity64(void) {
                           &other_inode);
     if (ok) super.free_inodes -= 1;
     if (ok) adytumfs_super_pack(adytumfs_probe_block, &super);
-    ok = ok && !adytumfs_block_write(dev, 0, adytumfs_probe_block) &&
-        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+    ok = ok && !adytumfs_block_write(dev, adytumfs_superblock_block(&super),
+                                     adytumfs_probe_block) &&
+        !integrity_commit(dev, &super) && vfs_mount_adytumfs(point, dev) < 0;
     valid = valid && ok;
     integrity_cleanup(root, point, dev);
 
@@ -1025,8 +1048,9 @@ int test_adytumfs_integrity64(void) {
             super.inode_table_start + super.inode_table_blocks;
         adytumfs_super_pack(adytumfs_probe_block, &super);
     }
-    ok = ok && !adytumfs_block_write(dev, 0, adytumfs_probe_block) &&
-        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+    ok = ok && !adytumfs_block_write(dev, adytumfs_superblock_block(&super),
+                                     adytumfs_probe_block) &&
+        !integrity_commit(dev, &super) && vfs_mount_adytumfs(point, dev) < 0;
     valid = valid && ok;
     integrity_cleanup(root, point, dev);
 
@@ -1059,7 +1083,8 @@ int test_adytumfs_integrity64(void) {
         !policy_find_record(dev, &super, "data", 4, &record_block,
                             &record_at);
     if (ok) adytumfs_write_le64(adytumfs_probe_block + record_at, 0);
-    table = super.inode_table_start + data_inode / ADYTUMFS_INODES_PER_BLOCK;
+    table = adytumfs_table_block(
+        &super, (u32)(data_inode / ADYTUMFS_INODES_PER_BLOCK));
     slot = (u32)(data_inode % ADYTUMFS_INODES_PER_BLOCK) *
            ADYTUMFS_INODE_SIZE;
     // Seal the tombstone so the walk reads the directory cleanly and the
@@ -1072,11 +1097,21 @@ int test_adytumfs_integrity64(void) {
         !adytumfs_block_read(dev, table, adytumfs_probe_block);
     if (ok) adytumfs_probe_block[slot + 100] ^= 0xffu;
     ok = ok && !adytumfs_block_write(dev, table, adytumfs_probe_block) &&
-        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+        !integrity_commit(dev, &super) && vfs_mount_adytumfs(point, dev) < 0;
     valid = valid && ok;
     integrity_cleanup(root, point, dev);
 
     if (root) object_release(root);
+    if (object_active_count() != objects) {
+    }
+    if (vfs_node_active_count() != nodes) {
+    }
+    if (vfs_file_active_count() != files) {
+    }
+    if (vfs_mount_active_count() != mounts) {
+    }
+    if (block_active_count() != devices) {
+    }
     valid = valid && object_active_count() == objects &&
         vfs_node_active_count() == nodes &&
         vfs_file_active_count() == files &&
@@ -1123,13 +1158,13 @@ int test_adytumfs_checksum64(void) {
     if (valid) adytumfs_probe_block[8] ^= 0xffu;
     valid = valid && !adytumfs_block_write(dev, physical,
                                            adytumfs_probe_block) &&
-        !integrity_commit(dev) &&
+        !integrity_commit(dev, &super) &&
         adytumfs_file_read(dev, &super, data_inode, 0, received, 16,
                            &moved) < 0;
     if (valid) adytumfs_probe_block[8] ^= 0xffu;
     valid = valid && !adytumfs_block_write(dev, physical,
                                            adytumfs_probe_block) &&
-        !integrity_commit(dev) &&
+        !integrity_commit(dev, &super) &&
         !adytumfs_file_read(dev, &super, data_inode, 0, received, 16,
                             &moved);
 
@@ -1144,13 +1179,13 @@ int test_adytumfs_checksum64(void) {
     if (valid) adytumfs_probe_block[entry] ^= 0x1u;
     valid = valid && !adytumfs_block_write(dev, region_block,
                                            adytumfs_probe_block) &&
-        !integrity_commit(dev) &&
+        !integrity_commit(dev, &super) &&
         adytumfs_file_read(dev, &super, data_inode, 0, received, 16,
                            &moved) < 0;
     if (valid) adytumfs_probe_block[entry] ^= 0x1u;
     valid = valid && !adytumfs_block_write(dev, region_block,
                                            adytumfs_probe_block) &&
-        !integrity_commit(dev);
+        !integrity_commit(dev, &super);
 
     // The write paths seal what they write: an overwrite through the file
     // path, a partial block read-modify-write, and a grow whose fresh blocks
@@ -1178,7 +1213,7 @@ int test_adytumfs_checksum64(void) {
         !adytumfs_file_read(dev, &super, data_inode, 8192, received, 16,
                            &moved) &&
         moved == 16 && reuse_matches(received, 16, 0xc0);
-    valid = valid && !integrity_commit(dev);
+    valid = valid && !integrity_commit(dev, &super);
 
     // The page path and the mount walk go through the same region: a VFS
     // mount, open, read, and clean unmount of the grown file must work with
@@ -1214,11 +1249,11 @@ int test_adytumfs_checksum64(void) {
     if (valid) adytumfs_probe_block[20] ^= 0x80u;
     valid = valid && !adytumfs_block_write(dev, physical,
                                            adytumfs_probe_block) &&
-        !integrity_commit(dev) && vfs_mount_adytumfs(point, dev) < 0;
+        !integrity_commit(dev, &super) && vfs_mount_adytumfs(point, dev) < 0;
     if (valid) adytumfs_probe_block[20] ^= 0x80u;
     valid = valid && !adytumfs_block_write(dev, physical,
                                            adytumfs_probe_block) &&
-        !integrity_commit(dev);
+        !integrity_commit(dev, &super);
 
     integrity_cleanup(root, point, dev);
     if (root) object_release(root);
@@ -1274,12 +1309,12 @@ int test_adytumfs_cow64(void) {
         !adytumfs_file_read(dev, &super, data_inode, 0, received, 16, &moved) &&
         moved == 16 && reuse_matches(received, 16, 0xa0) &&
         !policy_super(dev, &probe_super) &&
-        probe_super.free_blocks == free_before;
+        super.free_blocks == free_before;
 
     // A partial block read-modify-write redirects the same way: the previous
     // image survives at the old physical block and the merge reads back.
     // The probes below read the raw device, so the cache has to land first.
-    valid = valid && !integrity_commit(dev) &&
+    valid = valid && !integrity_commit(dev, &super) &&
         !adytumfs_inode_map(&in, 0, &physical) &&
         !probe_read_block(dev, physical, adytumfs_probe_block) &&
         reuse_matches(adytumfs_probe_block, 16, 0xa0);
@@ -1287,7 +1322,7 @@ int test_adytumfs_cow64(void) {
     valid = valid && !adytumfs_file_write(dev, &super, data_inode, 4, payload,
                                           8, &moved) &&
         moved == 8 &&
-        !integrity_commit(dev) &&
+        !integrity_commit(dev, &super) &&
         !probe_read_block(dev, physical, adytumfs_probe_block) &&
         reuse_matches(adytumfs_probe_block, 16, 0xa0) &&
         !adytumfs_file_read(dev, &super, data_inode, 0, received, 16, &moved) &&
@@ -1308,7 +1343,7 @@ int test_adytumfs_cow64(void) {
         ramp_base = (u8)(ramp_base + 0x10u);
     }
     valid = valid && !policy_super(dev, &probe_super) &&
-        probe_super.free_blocks == free_before;
+        super.free_blocks == free_before;
 
     // Redirecting the middle block of a multi-block extent splits it; the
     // untouched neighbours must keep reading their images through the split.
@@ -1326,7 +1361,7 @@ int test_adytumfs_cow64(void) {
     reuse_fill(payload, sizeof(payload), 0xe0);
     valid = valid && !adytumfs_file_write(dev, &super, data_inode, 4096,
                                           payload, sizeof(payload), &moved) &&
-        moved == sizeof(payload) && !integrity_commit(dev) &&
+        moved == sizeof(payload) && !integrity_commit(dev, &super) &&
         !probe_read_block(dev, physical, adytumfs_probe_block) &&
         reuse_matches(adytumfs_probe_block, 16, 0xd1) &&
         !adytumfs_file_read(dev, &super, data_inode, 4096, received, 32,
@@ -1382,11 +1417,13 @@ int test_adytumfs_cow64(void) {
     valid = valid && point && !vfs_unmount(point);
 
     // A dirent edit redirects the directory block: the old block keeps the
-    // original records while the new one carries the tombstone.
+    // original records while the new one carries the tombstone. The sync and
+    // unmount above committed, so the raw super copy has to follow the flip
+    // before this window stages against it.
     u64 record_block = 0;
     u32 record_at = 0;
     u8 record_keep[32];
-    valid = valid && !policy_super(dev, &super) &&
+    valid = valid && !adytumfs_super_read(dev, &super) &&
         !policy_find_record(dev, &super, "data", 4, &record_block,
                             &record_at);
     for (u32 index = 0; valid && index < sizeof(record_keep); index++)
@@ -1405,7 +1442,7 @@ int test_adytumfs_cow64(void) {
 
     // The steady state must still verify: the remount walks and audits the
     // whole volume, so a leaked or lost block fails here.
-    valid = valid && !integrity_commit(dev) && !vfs_mount_adytumfs(point, dev);
+    valid = valid && !integrity_commit(dev, &super) && !vfs_mount_adytumfs(point, dev);
     {
         struct kernel_object *disk = valid ? vfs_lookup(root, "integrity") : 0;
         struct kernel_object *kept = disk ? vfs_lookup(disk, "other") : 0;
