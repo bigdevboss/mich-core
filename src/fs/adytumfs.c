@@ -4,6 +4,7 @@
 #include "block.h"
 #include "cache.h"
 #include "resource.h"
+#include "rtc64.h"
 
 #define ADYTUMFS_MOUNT_MAX 8
 
@@ -528,6 +529,48 @@ int adytumfs_inode_get(u32 mount, u32 inode, u32 *used, u32 *type, u32 *size,
     return 0;
 }
 
+int adytumfs_touch(u32 mount, u32 inode, u64 generation, u32 flags) {
+    struct adytumfs_mount *m = slot_mount(mount, inode, generation);
+    if (!m || !flags) return -1;
+    struct adytumfs_inode in;
+    if (slot_inode_read(m, inode, &in)) return -1;
+    u32 changed = 0;
+    u64 now = rtc64_wall_clock();
+    // Relatime-lite: a read only refreshes atime while it still trails the
+    // last data change, so steady-state reads never dirty the inode.
+    if ((flags & ADYTUMFS_TOUCH_ATIME) && in.atime < in.mtime) {
+        in.atime = now;
+        changed = 1;
+    }
+    if (flags & ADYTUMFS_TOUCH_MTIME) {
+        in.mtime = now;
+        changed = 1;
+    }
+    if (flags & ADYTUMFS_TOUCH_CTIME) {
+        in.ctime = now;
+        changed = 1;
+    }
+    if (!changed) return 0;
+    return adytumfs_inode_write(m->device, &m->super, m->slots[inode].inode,
+                                &in);
+}
+
+int adytumfs_inode_meta(u32 mount, u32 inode, u64 generation, u16 *links,
+                        u32 *uid, u32 *gid, u64 *atime, u64 *mtime,
+                        u64 *ctime) {
+    struct adytumfs_mount *m = slot_mount(mount, inode, generation);
+    if (!m) return -1;
+    struct adytumfs_inode in;
+    if (slot_inode_read(m, inode, &in)) return -1;
+    if (links) *links = in.links;
+    if (uid) *uid = in.uid;
+    if (gid) *gid = in.gid;
+    if (atime) *atime = in.atime;
+    if (mtime) *mtime = in.mtime;
+    if (ctime) *ctime = in.ctime;
+    return 0;
+}
+
 int adytumfs_inode_create(u32 mount, const char *name, u32 parent, u32 type,
                          u32 mode, u32 *inode, u64 *generation) {
     struct adytumfs_mount *m = mount_at(mount);
@@ -646,6 +689,10 @@ int adytumfs_truncate(u32 mount, u32 inode, u64 generation, u32 size,
                                  adytumfs_backend_scratch))
             return -1;
     }
+    // Truncation changes the data, so mtime and ctime move with the new size.
+    u64 now = rtc64_wall_clock();
+    in.mtime = now;
+    in.ctime = now;
     in.size = size;
     if (adytumfs_inode_write(m->device, &m->super, m->slots[inode].inode,
                              &in) ||

@@ -1,8 +1,18 @@
 #include "adytumfs_format.h"
+#include "rtc64.h"
 
 // One staging block for directory data; the single-CPU filesystem reads,
 // modifies, and writes it in place.
 static u8 adytumfs_dir_scratch[ADYTUMFS_BLOCK_SIZE];
+
+// Inserting or removing an entry is a metadata change to the directory
+// itself, so every path that lands an edit stamps the parent's mtime and
+// ctime right before the remap or write that persists the inode.
+static void adytumfs_dir_touch(struct adytumfs_inode *dir) {
+    u64 now = rtc64_wall_clock();
+    dir->mtime = now;
+    dir->ctime = now;
+}
 
 static int adytumfs_name_equal(const u8 *stored, const char *name, u32 length) {
     for (u32 index = 0; index < length; index++)
@@ -97,9 +107,11 @@ int adytumfs_dir_add(struct kernel_object *device,
         if (adytumfs_data_read(device, super, physical, adytumfs_dir_scratch))
             return -1;
         if (adytumfs_dir_place(adytumfs_dir_scratch, name, name_len,
-                               target_inode, type, needed) == 0)
+                               target_inode, type, needed) == 0) {
+            adytumfs_dir_touch(&dir);
             return adytumfs_inode_remap(device, super, &dir, dir_inode,
                                         logical, adytumfs_dir_scratch);
+        }
     }
 
     // No room in any existing block, so grow by one and seed it with a single
@@ -116,6 +128,7 @@ int adytumfs_dir_add(struct kernel_object *device,
     if (adytumfs_data_write(device, super, physical, adytumfs_dir_scratch))
         return -1;
     dir.size = dir.blocks * ADYTUMFS_BLOCK_SIZE;
+    adytumfs_dir_touch(&dir);
     return adytumfs_inode_write(device, super, dir_inode, &dir);
 }
 
@@ -144,6 +157,7 @@ int adytumfs_dir_remove(struct kernel_object *device,
                                     name_len)) {
                 // Tombstone: a zero inode makes the record free for reuse.
                 adytumfs_write_le64(adytumfs_dir_scratch + offset, 0);
+                adytumfs_dir_touch(&dir);
                 return adytumfs_inode_remap(device, super, &dir, dir_inode,
                                             logical, adytumfs_dir_scratch);
             }

@@ -142,8 +142,12 @@ static void posix_stat_record(const struct vfs_node_info *info,
     stat->st_mode = info->mode | (info->type == VFS_NODE_DIRECTORY ?
         0040000u : 0100000u);
     stat->st_size = info->size;
-    stat->st_nlink = info->type == VFS_NODE_DIRECTORY ? info->child_count + 2 : 1;
-    stat->st_reserved = 0;
+    stat->st_nlink = info->links;
+    stat->st_uid = info->uid;
+    stat->st_gid = info->gid;
+    stat->st_atime = info->atime;
+    stat->st_mtime = info->mtime;
+    stat->st_ctime = info->ctime;
 }
 
 static int posix_fd_error(struct task *task, int descriptor, u32 access) {

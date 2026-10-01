@@ -1,4 +1,5 @@
 #include "adytumfs_format.h"
+#include "rtc64.h"
 
 // One staging block for partial-block read-modify-write; single-CPU filesystem.
 static u8 adytumfs_file_scratch[ADYTUMFS_BLOCK_SIZE];
@@ -86,6 +87,12 @@ int adytumfs_file_write(struct kernel_object *device,
         done += chunk;
     }
     if (end > inode.size) inode.size = end;
+    // The inode is persisted at the end of this write anyway, so the time
+    // stamp for the data change rides along. The read path makes no inode
+    // write and deliberately stamps nothing; atime policy lives in the VFS.
+    u64 now = rtc64_wall_clock();
+    inode.mtime = now;
+    inode.ctime = now;
     if (adytumfs_inode_write(device, super, inode_num, &inode)) return -1;
     *out_written = done;
     return 0;

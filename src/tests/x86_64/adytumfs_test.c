@@ -144,8 +144,11 @@ int test_adytumfs64(void) {
     struct kernel_object *reopened = fresh ? vfs_open(fresh) : 0;
     valid = valid && first_unmount && remounted && fresh_directory && fresh &&
         fresh_folder && fresh_nested && !vfs_stat(fresh, &info) &&
-        info.mode == 0604 && info.size == 4 &&
+        info.mode == 0604 && info.size == 4 && info.links == 1 &&
+        info.uid == 0 && info.gid == 0 && info.atime && info.mtime &&
+        info.ctime &&
         !vfs_stat(fresh_folder, &info) && info.mode == 0711 &&
+        info.links == 2 &&
         !vfs_stat(fresh_nested, &info) && info.mode == 0620 && reopened &&
         vfs_unmount(mnt) < 0;
 

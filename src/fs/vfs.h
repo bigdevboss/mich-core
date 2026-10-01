@@ -43,6 +43,12 @@ struct vfs_node_info {
     u32 filesystem;
     u32 readonly;
     u32 mode;
+    u32 links;
+    u32 uid;
+    u32 gid;
+    u64 atime;
+    u64 mtime;
+    u64 ctime;
     char name[VFS_NAME_MAX];
 };
 

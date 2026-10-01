@@ -80,7 +80,11 @@ struct posix_stat_record {
     u32 st_mode;
     u32 st_size;
     u32 st_nlink;
-    u32 st_reserved;
+    u32 st_uid;
+    u32 st_gid;
+    u64 st_atime;
+    u64 st_mtime;
+    u64 st_ctime;
 };
 
 struct posix_stat_path_request {
