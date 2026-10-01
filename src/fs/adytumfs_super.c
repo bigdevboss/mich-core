@@ -1,5 +1,6 @@
 #include "adytumfs_format.h"
 #include "crc32c.h"
+#include "block.h"
 
 void adytumfs_super_pack(u8 *block, const struct adytumfs_superblock *super) {
     for (u32 index = 0; index < ADYTUMFS_BLOCK_SIZE; index++) block[index] = 0;
@@ -54,6 +55,10 @@ int adytumfs_super_unpack(struct adytumfs_superblock *super, const u8 *block) {
     super->feature_incompat = adytumfs_read_le64(block + 112);
     super->feature_ro_compat = adytumfs_read_le64(block + 120);
     super->data_checksum_region = adytumfs_read_le64(block + 128);
+    // The slot is runtime state, not on-disk state: the primary superblock is
+    // the default guess, and the mount picker overrides it when the tail copy
+    // wins on generation.
+    super->active_slot = 0;
     return 0;
 }
 
@@ -119,16 +124,49 @@ int adytumfs_super_valid(const struct adytumfs_superblock *super,
     return 0;
 }
 
-// Rewrite the primary superblock from the in-memory copy so the allocation
-// counters on disk match what the allocator has handed out. The backup copy
-// stays a format time snapshot until the durability work turns both copies
-// into a generation pair.
-int adytumfs_super_sync(struct kernel_object *device,
-                        const struct adytumfs_superblock *super) {
+
+// Read the newest sound superblock of the generation pair: the primary in
+// block 0 and the backup in the last block of the volume. The backup
+// position is only known from a readable primary when the volume is smaller
+// than its device, so an unreadable primary falls back to the last device
+// block. Sound means the checksum verified, so the generation field can be
+// trusted: a torn flip fails the checksum here and the older generation is
+// the one picked. A sound copy that still fails structural validation is
+// different: the volume was committed past that point, so falling back to
+// the older generation would roll the mount back over the damage. The mount
+// fails instead, leaving both generations for an explicit repair pass.
+int adytumfs_super_read(struct kernel_object *device,
+                        struct adytumfs_superblock *super) {
     if (!device || !super) return -1;
-    // A 4 KiB staging block is too large for a modest stack, and the allocator
-    // paths are single threaded, so the staging is static.
+    struct block_info info;
+    if (block_info(device, &info)) return -1;
+    u64 device_blocks = info.sector_count / ADYTUMFS_SECTORS_PER_BLOCK;
+    if (device_blocks < 1) return -1;
+    // A 4 KiB staging block is too large for a modest stack, and the read
+    // path is single threaded.
     static u8 block[ADYTUMFS_BLOCK_SIZE];
-    adytumfs_super_pack(block, super);
-    return adytumfs_block_write(device, 0, block);
+    struct adytumfs_superblock pair[2];
+    u8 sound[2] = {0, 0};
+    u8 valid[2] = {0, 0};
+    if (!adytumfs_block_read(device, 0, block) &&
+        !adytumfs_super_unpack(&pair[0], block)) {
+        sound[0] = 1;
+        valid[0] = !adytumfs_super_valid(&pair[0], device_blocks);
+    }
+    u64 backup = valid[0] ? pair[0].total_blocks - 1 : device_blocks - 1;
+    if (backup > 0 &&
+        !adytumfs_block_read(device, backup, block) &&
+        !adytumfs_super_unpack(&pair[1], block)) {
+        sound[1] = 1;
+        valid[1] = !adytumfs_super_valid(&pair[1], device_blocks);
+    }
+    // A tie means format time twins; the primary wins so a fresh volume has
+    // one deterministic answer.
+    u8 pick = 0;
+    if (sound[1] && (!sound[0] || pair[1].generation > pair[0].generation))
+        pick = 1;
+    if (!sound[pick] || !valid[pick]) return -1;
+    *super = pair[pick];
+    super->active_slot = pick;
+    return 0;
 }

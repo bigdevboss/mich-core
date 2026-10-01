@@ -65,6 +65,7 @@ int test_adytumfs_ops64(void) {
         // Unlinking a directory through this path is refused.
         adytumfs_unlink_at(dev, &super, root, "etc", 3) != 0;
 
+    adytumfs_window_discard(dev);
     if (dev) object_release(dev);
     valid = valid && object_active_count() == objects &&
         block_active_count() == devices;

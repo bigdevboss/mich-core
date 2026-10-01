@@ -45,6 +45,7 @@ int test_adytumfs_volume64(void) {
             block + ADYTUMFS_ROOT_INODE * ADYTUMFS_INODE_SIZE) == 0 &&
         (root.mode & ADYTUMFS_MODE_DIR) && root.size == 0;
 
+    adytumfs_window_discard(dev);
     if (dev) object_release(dev);
     valid = valid && object_active_count() == objects &&
         block_active_count() == devices;

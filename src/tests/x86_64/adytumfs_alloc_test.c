@@ -23,30 +23,38 @@ int test_adytumfs_alloc64(void) {
     u64 free0 = super.free_blocks;
     u64 first = 0;
     u64 second = 0;
+    u64 moved = 0;
     u64 reused = 0;
 
     // First-fit places the first run at the start of the data region and the
-    // second immediately after it.
+    // second immediately after it. The edits stage in the open window, so the
+    // counters move in memory while the device bitmap waits for the commit.
     valid = valid && adytumfs_alloc_run(dev, &super, 3, &first) == 0 &&
         first == super.data_start &&
         adytumfs_alloc_run(dev, &super, 2, &second) == 0 &&
         second == first + 3 &&
         super.free_blocks == free0 - 5;
 
-    valid = valid &&
-        adytumfs_block_read(dev, super.block_bitmap_start, block) == 0 &&
+    // The commit lands the staged bitmap in the inactive set and flips the
+    // generation, so the bits read back from the tail copy the flip named.
+    valid = valid && adytumfs_commit(dev, &super) == 0 &&
+        super.active_slot == 1 && super.generation == 2 &&
+        adytumfs_block_read(dev, super.total_blocks - 1 -
+                            super.block_bitmap_blocks, block) == 0 &&
         bitmap_used(block, first) && bitmap_used(block, first + 2) &&
         bitmap_used(block, second) && bitmap_used(block, second + 1) &&
         !bitmap_used(block, second + 2);
 
-    // Freeing the first run returns its blocks, and the next allocation reuses
-    // exactly that hole.
+    // A free inside the window does not hand the blocks back: the committed
+    // generation still references their old images, so the next run moves
+    // past the hole until the commit lands the free and the hole returns.
     valid = valid && adytumfs_free_run(dev, &super, first, 3) == 0 &&
         super.free_blocks == free0 - 2 &&
-        adytumfs_block_read(dev, super.block_bitmap_start, block) == 0 &&
-        !bitmap_used(block, first) &&
+        adytumfs_alloc_run(dev, &super, 3, &moved) == 0 &&
+        moved == second + 2 &&
+        adytumfs_commit(dev, &super) == 0 &&
         adytumfs_alloc_run(dev, &super, 3, &reused) == 0 &&
-        reused == first && super.free_blocks == free0 - 5;
+        reused == first && super.free_blocks == free0 - 8;
 
     // A run larger than the free space fails, and metadata blocks cannot be
     // freed.
@@ -55,6 +63,7 @@ int test_adytumfs_alloc64(void) {
         adytumfs_alloc_run(dev, &super, super.total_blocks, &overflow) != 0 &&
         adytumfs_free_run(dev, &super, 0, 1) != 0;
 
+    adytumfs_window_discard(dev);
     if (dev) object_release(dev);
     valid = valid && object_active_count() == objects &&
         block_active_count() == devices;

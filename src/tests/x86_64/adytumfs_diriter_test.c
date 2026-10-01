@@ -67,6 +67,7 @@ int test_adytumfs_diriter64(void) {
         count++;
     valid = valid && result == 1 && count == 40;
 
+    adytumfs_window_discard(dev);
     if (dev) object_release(dev);
     valid = valid && object_active_count() == objects &&
         block_active_count() == devices;

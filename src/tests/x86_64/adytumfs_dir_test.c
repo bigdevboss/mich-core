@@ -61,6 +61,7 @@ int test_adytumfs_dir64(void) {
         adytumfs_dir_lookup(dev, &super, dirnum, (const char *)longname,
                             sizeof(longname), &got) == 0 && got == 1020;
 
+    adytumfs_window_discard(dev);
     if (dev) object_release(dev);
     valid = valid && object_active_count() == objects &&
         block_active_count() == devices;
