@@ -126,6 +126,37 @@ int test_adytumfs64(void) {
         if (vfs_unlink(disk, stretched_name)) valid = 0;
         object_release(stretched);
     }
+    // List the mount root: hello and folder survive, the unlinked long name
+    // does not, and the entry types and inode numbers are real.
+    struct kernel_object *listing = disk ? vfs_open(disk) : 0;
+    u64 listing_cursor = 0;
+    char listing_name[VFS_NAME_MAX + 1];
+    u32 listing_hello = 0;
+    u32 listing_folder = 0;
+    while (listing) {
+        u32 listing_len = 0;
+        u64 listing_inode = 0;
+        u32 listing_type = 0;
+        int step = vfs_read_dir(listing, &listing_cursor, listing_name,
+                                &listing_len, &listing_inode, &listing_type);
+        if (step < 0) {
+            valid = 0;
+            break;
+        }
+        if (step > 0) break;
+        if (probe_name_equals(listing_name, "hello")) {
+            listing_hello++;
+            if (listing_type != VFS_NODE_REGULAR || !listing_inode) valid = 0;
+        } else if (probe_name_equals(listing_name, "folder")) {
+            listing_folder++;
+            if (listing_type != VFS_NODE_DIRECTORY || !listing_inode)
+                valid = 0;
+        } else {
+            valid = 0;
+        }
+    }
+    valid = valid && listing && listing_hello == 1 && listing_folder == 1;
+    if (listing) object_release(listing);
     struct kernel_object *opened = node ? vfs_open(node) : 0;
     struct vfs_node_info info;
     valid = valid && disk && node && folder && nested && opened &&

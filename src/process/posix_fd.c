@@ -2,6 +2,8 @@
 #include "task.h"
 #include "object.h"
 #include "vfs.h"
+#include "posix_vfs.h"
+#include "posix_abi.h"
 #include "spinlock.h"
 
 struct posix_ofd {
@@ -337,6 +339,77 @@ int posix_fd_seek(struct task *task, int descriptor, i64 offset, u32 whence,
     spin_unlock(&ofd->lock);
     release_ofd(ofd);
     return result;
+}
+
+// Pack one getdents record: 8-byte inode, 8-byte next-record offset,
+// 4-byte record length, 4-byte POSIX_DT_* type, then the NUL-terminated
+// name padded to an 8-byte boundary. Returns the padded record length.
+static u32 dirent_pack(u8 *record, u64 inode, u64 next, u32 type,
+                       const char *name, u32 name_len) {
+    u32 length = 24 + name_len + 1;
+    length = (length + 7) & ~7;
+    for (u32 index = 0; index < 8; index++)
+        record[index] = (u8)(inode >> (index * 8));
+    for (u32 index = 0; index < 8; index++)
+        record[8 + index] = (u8)(next >> (index * 8));
+    record[16] = (u8)length;
+    record[17] = (u8)(length >> 8);
+    record[18] = (u8)(length >> 16);
+    record[19] = (u8)(length >> 24);
+    record[20] = (u8)type;
+    record[21] = 0;
+    record[22] = 0;
+    record[23] = 0;
+    for (u32 index = 0; index < name_len; index++)
+        record[24 + index] = (u8)name[index];
+    for (u32 index = 24 + name_len; index < length; index++)
+        record[index] = 0;
+    return length;
+}
+
+int posix_fd_getdents(struct task *task, int descriptor, u8 *buffer,
+                      u32 length, u32 *transferred) {
+    if (!buffer || !transferred || !length || length > POSIX_IO_MAX)
+        return POSIX_VFS_EINVAL;
+    struct posix_ofd *ofd = retain_descriptor(task, descriptor,
+                                               POSIX_FD_ACCESS_READ);
+    if (!ofd) return POSIX_VFS_EBADF;
+    spin_lock(&ofd->lock);
+    u64 cursor = ofd->offset;
+    u64 packed = cursor;
+    u32 used = 0;
+    int failure = 0;
+    // Records pack until the next one would overflow the buffer; a buffer
+    // that cannot hold even one record is EINVAL, and the cursor only
+    // advances past entries that were actually packed.
+    while (!failure && used < length) {
+        char name[VFS_NAME_MAX + 1];
+        u32 name_len = 0;
+        u64 entry_inode = 0;
+        u32 type = 0;
+        int result = vfs_read_dir(ofd->file, &cursor, name, &name_len,
+                                  &entry_inode, &type);
+        if (result < 0) {
+            failure = POSIX_VFS_EIO;
+            break;
+        }
+        if (result > 0) break;
+        u32 record_length = 24 + name_len + 1;
+        record_length = (record_length + 7) & ~7;
+        if (used + record_length > length) {
+            if (!used) failure = POSIX_VFS_EINVAL;
+            break;
+        }
+        dirent_pack(buffer + used, entry_inode, cursor, type, name, name_len);
+        used += record_length;
+        packed = cursor;
+    }
+    if (!failure) ofd->offset = (u32)packed;
+    spin_unlock(&ofd->lock);
+    release_ofd(ofd);
+    if (failure) return failure;
+    *transferred = used;
+    return 0;
 }
 
 int posix_fd_truncate(struct task *task, int descriptor, u32 size) {

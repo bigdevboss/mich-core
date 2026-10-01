@@ -29,6 +29,12 @@ int adytumfs_touch(u32 mount, u32 inode, u64 generation, u32 flags);
 int adytumfs_inode_meta(u32 mount, u32 inode, u64 generation, u16 *links,
                         u32 *uid, u32 *gid, u64 *atime, u64 *mtime,
                         u64 *ctime);
+// One used on-disk directory entry per call, mirroring vfs_read_dir: the
+// cursor is a byte offset in the directory blocks and the returned inode is
+// the on-disk number.
+int adytumfs_dir_read(u32 mount, u32 inode, u64 generation, u64 *cursor,
+                      char *name, u32 *name_len, u64 *entry_inode,
+                      u32 *type);
 int adytumfs_truncate(u32 mount, u32 inode, u64 generation, u32 size,
                      u32 *new_size);
 int adytumfs_pages_attach(u32 mount, u32 inode, u64 generation,

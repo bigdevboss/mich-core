@@ -2072,7 +2072,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         object_release(object);
         return handle ? handle : (u64)-1;
     }
-    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_GETRANDOM) {
+    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_GETDENTS) {
         struct task *task = &task_pool[current_task_slot];
         if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
         if (number == POSIX_SYSCALL_OPEN) {
@@ -2172,6 +2172,25 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             return (u64)(i64)(posix_fd_set_cloexec(task, request.descriptor,
                                                     request.argument) ?
                 POSIX_VFS_EBADF : 0);
+        }
+        if (number == POSIX_SYSCALL_GETDENTS) {
+            struct posix_getdents_request request;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+                vm64_copy_from(task->page_dir, &request, arg0,
+                               sizeof(request)) ||
+                !request.length || request.length > POSIX_IO_MAX)
+                return (u64)(i64)POSIX_VFS_EINVAL;
+            int error = posix_fd_error(task, request.descriptor,
+                                       POSIX_FD_ACCESS_READ);
+            if (error) return (u64)(i64)error;
+            // getdents reports its own errno values: a buffer too small for
+            // even one record is EINVAL, not a generic I/O failure.
+            error = posix_fd_getdents(task, request.descriptor, request.data,
+                                      request.length, &request.transferred);
+            if (error) return (u64)(i64)error;
+            return vm64_copy_to(task->page_dir, arg0, &request,
+                                sizeof(request)) ?
+                (u64)(i64)POSIX_VFS_EIO : (u64)(i64)request.transferred;
         }
         if (number == POSIX_SYSCALL_STAT) {
             struct posix_stat_path_request request;

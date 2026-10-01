@@ -571,6 +571,30 @@ int adytumfs_inode_meta(u32 mount, u32 inode, u64 generation, u16 *links,
     return 0;
 }
 
+int adytumfs_dir_read(u32 mount, u32 inode, u64 generation, u64 *cursor,
+                      char *name, u32 *name_len, u64 *entry_inode,
+                      u32 *type) {
+    struct adytumfs_mount *m = slot_mount(mount, inode, generation);
+    if (!m || !cursor || !name || !name_len || !entry_inode || !type)
+        return -1;
+    u64 target = 0;
+    u8 disk_type = 0;
+    int result = adytumfs_dir_iter(m->device, &m->super,
+                                   m->slots[inode].inode, cursor, name,
+                                   name_len, &target, &disk_type);
+    if (result) return result;
+    if (disk_type == ADYTUMFS_DTYPE_REG) {
+        *type = VFS_NODE_REGULAR;
+    } else if (disk_type == ADYTUMFS_DTYPE_DIR) {
+        *type = VFS_NODE_DIRECTORY;
+    } else {
+        // A type this build never writes is corruption, not a listing.
+        return -1;
+    }
+    *entry_inode = target;
+    return 0;
+}
+
 int adytumfs_inode_create(u32 mount, const char *name, u32 parent, u32 type,
                          u32 mode, u32 *inode, u64 *generation) {
     struct adytumfs_mount *m = mount_at(mount);
