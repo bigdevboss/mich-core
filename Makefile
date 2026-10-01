@@ -66,6 +66,7 @@ DISK64_HARDWARE_CIRCUIT = $(BIN64)/disk-hardware-circuit.img
 DISK64_HARDWARE_RECOVERY = $(BIN64)/disk-hardware-recovery.img
 RECOVERY_STABILITY_RUNS ?= 3
 DISK64_PANIC = $(BIN64)/disk-panic.img
+DISK64_CRASH = $(BIN64)/disk-crash.img
 UEFI64_OBJ = $(OBJ64)/uefi.o
 UEFI64_EFI = $(BIN64)/BOOTX64.EFI
 USER64_DIR = $(BIN64)/user
@@ -112,7 +113,7 @@ GEN64_DIR = $(BIN64)/generated
 VIRTIO_NET_RECOVERY_RIP_H = $(GEN64_DIR)/virtio_net_recovery_rip.h
 VIRTIO_NET_SAFE64_ELF = $(USER64_DIR)/virtio-net-safe.elf
 OBJS64 = $(OBJ64)/boot.o $(OBJ64)/kernel.o $(OBJ64)/task_core.o $(OBJ64)/posix_fd_core.o $(OBJ64)/posix_profile_core.o $(OBJ64)/posix_vfs_core.o $(OBJ64)/posix_process_core.o $(OBJ64)/scheduler_core.o $(OBJ64)/service_core.o $(OBJ64)/object_core.o $(OBJ64)/resource_core.o $(OBJ64)/iommu_core.o $(OBJ64)/driver_core.o $(OBJ64)/driver_supervisor_core.o $(OBJ64)/driver_manager_core.o $(OBJ64)/ring_core.o $(OBJ64)/completion_core.o $(OBJ64)/timer_object_core.o $(OBJ64)/net_buffer_core.o $(OBJ64)/vnic_core.o $(OBJ64)/vnic_benchmark.o $(OBJ64)/net_interface_core.o $(OBJ64)/ethernet_core.o $(OBJ64)/arp_core.o $(OBJ64)/ipv4_core.o $(OBJ64)/ipv6_core.o $(OBJ64)/icmp_core.o $(OBJ64)/icmpv6_core.o $(OBJ64)/loopback_core.o $(OBJ64)/udp_core.o $(OBJ64)/udpv6_core.o $(OBJ64)/tcp_core.o $(OBJ64)/tcp_cc_core.o $(OBJ64)/pmtu_core.o $(OBJ64)/route_core.o $(OBJ64)/socket_core.o $(OBJ64)/dns_message_core.o $(OBJ64)/tls_keys_core.o $(OBJ64)/tls_record_core.o $(OBJ64)/tls_handshake_core.o $(OBJ64)/vfs_core.o $(OBJ64)/crc32c_core.o $(OBJ64)/adytumfs_super_core.o $(OBJ64)/adytumfs_inode_core.o $(OBJ64)/adytumfs_volume_core.o $(OBJ64)/adytumfs_verify_core.o $(OBJ64)/adytumfs_dir_core.o $(OBJ64)/adytumfs_file_core.o $(OBJ64)/adytumfs_ops_core.o $(OBJ64)/adytumfs_core.o $(OBJ64)/block_core.o $(OBJ64)/cache_core.o $(OBJ64)/firmware_core.o $(OBJ64)/event_core.o $(OBJ64)/endpoint_core.o $(OBJ64)/bridge_core.o $(OBJ64)/pmm_core.o $(OBJ64)/mem_core.o $(OBJ64)/sha256_core.o $(OBJ64)/siphash_core.o $(OBJ64)/crypto_core.o $(OBJ64)/aes_core.o $(OBJ64)/gcm_core.o $(OBJ64)/x25519_core.o $(OBJ64)/p256_core.o $(OBJ64)/rsa_core.o $(OBJ64)/der_core.o $(OBJ64)/x509_core.o $(OBJ64)/x509_chain_core.o $(OBJ64)/entropy_core.o $(OBJ64)/ipc64.o $(OBJ64)/acpi64.o $(OBJ64)/rtc64.o $(OBJ64)/vtd64.o $(OBJ64)/amd_iommu64.o $(OBJ64)/pci64.o $(OBJ64)/nvme.o $(OBJ64)/apic64.o $(OBJ64)/ioapic64.o $(OBJ64)/smp64.o $(OBJ64)/smp_tramp.o $(OBJ64)/vector64.o $(OBJ64)/msi64.o $(OBJ64)/msix64.o $(OBJ64)/panic64.o $(OBJ64)/gdt_asm.o $(OBJ64)/gdt.o $(OBJ64)/exceptions.o $(OBJ64)/interrupt.o $(OBJ64)/idt.o $(OBJ64)/vm.o $(OBJ64)/elf64.o $(OBJ64)/platform.o $(OBJ64)/serial.o $(OBJ64)/syscall_dispatch.o $(OBJ64)/syscall.o
-TEST64_OBJS = $(OBJ64)/test_runner64.o $(OBJ64)/test_object64.o $(OBJ64)/test_resource64.o $(OBJ64)/test_async64.o $(OBJ64)/test_fpu64.o $(OBJ64)/test_smp64.o $(OBJ64)/test_driver64.o $(OBJ64)/test_hardware64.o $(OBJ64)/test_network_runner64.o $(OBJ64)/test_net_support64.o $(OBJ64)/test_net_foundation64.o $(OBJ64)/test_ipv4_64.o $(OBJ64)/test_ipv6_64.o $(OBJ64)/test_tcp64.o $(OBJ64)/test_udp_socket64.o $(OBJ64)/test_dns64.o $(OBJ64)/test_net_interface64.o $(OBJ64)/test_vfs64.o $(OBJ64)/test_posix_fd64.o $(OBJ64)/test_posix_profile64.o $(OBJ64)/test_posix_vfs64.o $(OBJ64)/test_posix_process64.o $(OBJ64)/test_block64.o $(OBJ64)/test_cache64.o $(OBJ64)/test_entropy64.o $(OBJ64)/test_sha256_64.o $(OBJ64)/test_siphash64.o $(OBJ64)/test_aes_gcm64.o $(OBJ64)/test_x25519_64.o $(OBJ64)/test_p256_64.o $(OBJ64)/test_rsa64.o $(OBJ64)/test_x509_64.o $(OBJ64)/test_x509_chain64.o $(OBJ64)/test_tls_records64.o $(OBJ64)/test_tls_handshake64.o $(OBJ64)/test_rtc64.o $(OBJ64)/test_crc32c64.o $(OBJ64)/test_adytumfs_super64.o $(OBJ64)/test_adytumfs_volume64.o $(OBJ64)/test_adytumfs_alloc64.o $(OBJ64)/test_adytumfs_inode64.o $(OBJ64)/test_adytumfs_extent64.o $(OBJ64)/test_adytumfs_dir64.o $(OBJ64)/test_adytumfs_diriter64.o $(OBJ64)/test_adytumfs_file64.o $(OBJ64)/test_adytumfs_ops64.o $(OBJ64)/test_adytumfs64.o $(OBJ64)/test_adytumfs_crash64.o $(OBJ64)/test_nvme64.o $(OBJ64)/test_net_bench64.o $(OBJ64)/test_report64.o
+TEST64_OBJS = $(OBJ64)/test_runner64.o $(OBJ64)/test_object64.o $(OBJ64)/test_resource64.o $(OBJ64)/test_async64.o $(OBJ64)/test_fpu64.o $(OBJ64)/test_smp64.o $(OBJ64)/test_driver64.o $(OBJ64)/test_hardware64.o $(OBJ64)/test_network_runner64.o $(OBJ64)/test_net_support64.o $(OBJ64)/test_net_foundation64.o $(OBJ64)/test_ipv4_64.o $(OBJ64)/test_ipv6_64.o $(OBJ64)/test_tcp64.o $(OBJ64)/test_udp_socket64.o $(OBJ64)/test_dns64.o $(OBJ64)/test_net_interface64.o $(OBJ64)/test_vfs64.o $(OBJ64)/test_posix_fd64.o $(OBJ64)/test_posix_profile64.o $(OBJ64)/test_posix_vfs64.o $(OBJ64)/test_posix_process64.o $(OBJ64)/test_block64.o $(OBJ64)/test_cache64.o $(OBJ64)/test_entropy64.o $(OBJ64)/test_sha256_64.o $(OBJ64)/test_siphash64.o $(OBJ64)/test_aes_gcm64.o $(OBJ64)/test_x25519_64.o $(OBJ64)/test_p256_64.o $(OBJ64)/test_rsa64.o $(OBJ64)/test_x509_64.o $(OBJ64)/test_x509_chain64.o $(OBJ64)/test_tls_records64.o $(OBJ64)/test_tls_handshake64.o $(OBJ64)/test_rtc64.o $(OBJ64)/test_crc32c64.o $(OBJ64)/test_adytumfs_super64.o $(OBJ64)/test_adytumfs_volume64.o $(OBJ64)/test_adytumfs_alloc64.o $(OBJ64)/test_adytumfs_inode64.o $(OBJ64)/test_adytumfs_extent64.o $(OBJ64)/test_adytumfs_dir64.o $(OBJ64)/test_adytumfs_diriter64.o $(OBJ64)/test_adytumfs_file64.o $(OBJ64)/test_adytumfs_ops64.o $(OBJ64)/test_adytumfs64.o $(OBJ64)/test_adytumfs_crash64.o $(OBJ64)/test_crash_boot64.o $(OBJ64)/test_nvme64.o $(OBJ64)/test_net_bench64.o $(OBJ64)/test_report64.o
 OBJS64_TEST = $(OBJ64)/boot.o $(OBJ64)/kernel_test.o $(filter-out $(OBJ64)/boot.o $(OBJ64)/kernel.o,$(OBJS64)) $(TEST64_OBJS)
 PORTABLE64_DIR = $(BIN64)/portable
 PORTABLE64_NAMES = task posix_fd posix_profile posix_vfs posix_process service object resource driver driver_supervisor driver_manager ring completion timer_object net_buffer vnic net_interface ethernet arp ipv4 ipv6 icmp icmpv6 loopback udp udpv6 tcp tcp_cc pmtu route socket vfs crc32c adytumfs_super adytumfs_inode adytumfs_volume adytumfs_verify adytumfs_dir adytumfs_file adytumfs_ops adytumfs block cache firmware event endpoint bridge pmm
@@ -468,6 +469,9 @@ $(OBJ64)/test_adytumfs64.o: $(TEST64)/adytumfs_test.c $(TEST64)/tests64.h $(FS)/
 $(OBJ64)/test_adytumfs_crash64.o: $(TEST64)/adytumfs_crash_test.c $(TEST64)/tests64.h $(FS)/adytumfs_format.h $(FS)/adytumfs.h $(FS)/vfs.h $(BLOCK)/block.h $(BLOCK)/cache.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
+$(OBJ64)/test_crash_boot64.o: $(TEST64)/crash_boot.c $(TEST64)/tests64.h $(FS)/adytumfs_format.h $(FS)/adytumfs.h $(FS)/vfs.h $(ARCH64_PLATFORM)/pci64.h $(ARCH64_DRIVERS)/nvme.h $(ARCH64_KERNEL)/kernel64_internal.h | $(OBJ64)
+	$(CC) $(CFLAGS64) -Werror -c $< -o $@
+
 $(OBJ64)/test_nvme64.o: $(TEST64)/nvme_test.c $(TEST64)/tests64.h $(ARCH64_DRIVERS)/nvme.h $(BLOCK)/block.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
@@ -804,6 +808,10 @@ $(DISK64_PANIC): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
 		--efi $(UEFI64_EFI) $@ init64:0x800000C9=$(INIT64_ELF)
 
+$(DISK64_CRASH): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF)
+	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
+		--efi $(UEFI64_EFI) $@ init64:0xC9=$(INIT64_ELF) crash64:0=$(INIT64_ELF)
+
 run64: $(DISK64)
 	sh ./scripts/qemu-run64.sh $(DISK64)
 
@@ -881,6 +889,9 @@ test64-amd-iommu: $(DISK64_TEST)
 test64-panic: $(DISK64_PANIC)
 	sh ./scripts/qemu-panic64.sh $(DISK64_PANIC)
 
+test64-crash: $(DISK64_CRASH)
+	sh ./scripts/qemu-crash64.sh $(DISK64_CRASH) 128M
+
 release-check:
 	$(MAKE) clean
 	$(MAKE) all
@@ -908,4 +919,4 @@ DEPFILES = $(OBJS64:.o=.d) $(OBJS64_TEST:.o=.d) $(PORTABLE64_OBJS:.o=.d) \
 clean:
 	rm -rf $(BIN_DIR)
 
-.PHONY: all user64-virtio-blk test64-virtio-blk user64-nvme test64-nvme run64 test64 test64-prod test64-unit test64-highmem test-https-real test64-tls test64-dns test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-msi-restart-stability test64-msi-circuit-stability test64-msi-recovery-stability test64-pcie test64-panic release-check clean
+.PHONY: all user64-virtio-blk test64-virtio-blk user64-nvme test64-nvme run64 test64 test64-prod test64-crash test64-unit test64-highmem test-https-real test64-tls test64-dns test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-msi-restart-stability test64-msi-circuit-stability test64-msi-recovery-stability test64-pcie test64-panic release-check clean
