@@ -12,8 +12,6 @@ if [ "$profile" = "dns" ]; then qemu_timeout=150; fi
 if [ "$profile" = "netbench" ]; then qemu_timeout=300; fi
 if [ "$profile" = "virtio-blk" ]; then qemu_timeout=120; fi
 if [ "$profile" = "nvme" ]; then qemu_timeout=300; fi
-if [ "$profile" = "tls" ]; then qemu_timeout=200; fi
-if [ "$profile" = "tls-real" ]; then qemu_timeout=200; fi
 if [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ] ||
    [ "$profile" = "msi-recovery" ]; then
     qemu_timeout=360
@@ -39,8 +37,6 @@ passive_expected=0
 active_result=""
 recovery_guestfwd=""
 dns_guestfwd=""
-tls_server_pid=""
-tls_server_log=""
 netbench_peer_pid=""
 netbench_peer_bin=""
 netbench_peer_log=""
@@ -53,58 +49,6 @@ case "$profile" in
         want_nic_none=0
         set -- -netdev user,id=michnet,guestfwd=tcp:10.0.2.4:8080-cmd:/bin/cat,hostfwd=tcp:127.0.0.1:10080-10.0.2.15:8082 -device virtio-net-pci,netdev=michnet
         ;;
-    tls)
-        want_nic_none=0
-        tls_server_log="$(mktemp)"
-        # A real TLS server, not a stand-in: the certificate branch and the
-        # record reassembly have never met a peer this code did not write.
-        openssl s_server -accept 127.0.0.1:4433 -cert scripts/tls-test/server-test-only.pem \
-            -key scripts/tls-test/server-test-only.key -tls1_3 \
-            -ciphersuites TLS_AES_128_GCM_SHA256 -www -quiet \
-            >"$tls_server_log" 2>&1 &
-        tls_server_pid=$!
-        # Give it a moment to bind before QEMU tries to reach it.
-        sleep 3
-        set -- -netdev user,id=michnet,guestfwd=tcp:10.0.2.4:443-tcp:127.0.0.1:4433 -device virtio-net-pci,netdev=michnet
-        ;;
-    tls-real)
-        want_nic_none=0
-        # Optional, internet-dependent: reach a real public HTTPS server. No
-        # stand-in and no test anchors -- the guest validates the server's
-        # genuine certificate chain against the CAs compiled into its image.
-        #
-        # The guest connects to the same fixed 10.0.2.4:443 the local test
-        # uses; slirp bridges that to the real host resolved here. If there is
-        # no internet the test is skipped rather than failed, so it is safe to
-        # run on a train.
-        real_host="${MICH_TLS_REAL_HOST:-www.google.com}"
-        real_ip="$(python3 -c 'import socket, sys
-try:
-    print(socket.getaddrinfo(sys.argv[1], 443, socket.AF_INET, socket.SOCK_STREAM)[0][4][0])
-except Exception:
-    pass' "$real_host")"
-        if [ -z "$real_ip" ]; then
-            echo "qemu-smoke64: SKIP tls-real ($real_host did not resolve; no internet)"
-            exit 0
-        fi
-        # A quick reachability probe so an outbound-blocked host also skips
-        # cleanly instead of reporting a handshake failure that is not the
-        # code's fault.
-        if ! python3 -c 'import socket, sys
-s = socket.socket()
-s.settimeout(5)
-try:
-    s.connect((sys.argv[1], 443))
-except Exception:
-    sys.exit(1)
-finally:
-    s.close()' "$real_ip"; then
-            echo "qemu-smoke64: SKIP tls-real ($real_host:443 unreachable; no internet)"
-            exit 0
-        fi
-        echo "qemu-smoke64: tls-real bridging guest 10.0.2.4:443 -> $real_host ($real_ip):443"
-        set -- -netdev "user,id=michnet,guestfwd=tcp:10.0.2.4:443-tcp:$real_ip:443" -device virtio-net-pci,netdev=michnet
-        ;;
     dns)
         want_nic_none=0
         dns_guestfwd="$(mktemp)"
@@ -115,7 +59,7 @@ finally:
         # The benchmark runs its loopback pass first, then dials the host peer
         # over virtio-net for the wire pass. The peer is the same C program the
         # host-side self-test uses; slirp bridges the guest's fixed 10.0.2.4:4500
-        # target to it, exactly as the tls profile bridges its test server.
+        # target to it, the way the dns profile bridges its resolver.
         netbench_peer_bin="$(mktemp)"
         netbench_peer_log="$(mktemp)"
         cc -O2 -o "$netbench_peer_bin" scripts/net-bench/peer.c
@@ -370,7 +314,7 @@ mich_uefi_firmware
 if [ "$want_nic_none" -eq 1 ]; then
     set -- "$@" -nic none
 fi
-trap 'if [ -n "$keep_log" ] && [ -f "$log" ]; then cp "$log" "$keep_log" 2>/dev/null || true; fi; if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; if [ -n "$tls_server_pid" ]; then kill "$tls_server_pid" 2>/dev/null || true; fi; if [ -n "$netbench_peer_pid" ]; then kill "$netbench_peer_pid" 2>/dev/null || true; fi; rm -f "$tls_server_log" "$netbench_peer_bin" "$netbench_peer_log" "$log" "$qemu_diag" "$passive_result" "$active_result" "$recovery_guestfwd" "$dns_guestfwd" "$blk_img" "$nvme_img" "$uefi_vars"' EXIT
+trap 'if [ -n "$keep_log" ] && [ -f "$log" ]; then cp "$log" "$keep_log" 2>/dev/null || true; fi; if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; if [ -n "$netbench_peer_pid" ]; then kill "$netbench_peer_pid" 2>/dev/null || true; fi; rm -f "$netbench_peer_bin" "$netbench_peer_log" "$log" "$qemu_diag" "$passive_result" "$active_result" "$recovery_guestfwd" "$dns_guestfwd" "$blk_img" "$nvme_img" "$uefi_vars"' EXIT
 set +e
 timeout "${qemu_timeout}s" qemu-system-x86_64 \
     -machine q35 \
@@ -557,15 +501,6 @@ for marker in \
     "Mich test64: block bounds and revoke pass" \
     "Mich test64: ChaCha20 DRBG pass" \
     "Mich test64: RTC civil date conversion pass" \
-    "Mich test64: SHA-256, HMAC and HKDF pass" \
-    "Mich test64: AES-128-GCM pass" \
-    "Mich test64: X25519 pass" \
-    "Mich test64: ECDSA P-256 verify pass" \
-    "Mich test64: RSA PKCS1 and PSS verify pass" \
-    "Mich test64: DER and X.509 parsing pass" \
-    "Mich test64: X.509 chain to a real anchor pass" \
-    "Mich test64: TLS 1.3 key schedule and records pass" \
-    "Mich test64: TLS 1.3 client handshake pass" \
     "Mich x86_64: wall clock anchored" \
     "Mich test64: crc32c and little-endian helpers pass" \
     "Mich test64: adytumfs superblock pass" \
@@ -812,7 +747,7 @@ fi
 # markers can never appear there. Asking for them made those profiles fail on
 # something the image was never built to do.
 case "$profile" in
-    hardware|msi|msi-restart|msi-circuit|msi-recovery|dns|tls|tls-real|netbench|virtio-blk|nvme)
+    hardware|msi|msi-restart|msi-circuit|msi-recovery|dns|netbench|virtio-blk|nvme)
         ;;
     *)
         for marker in \
@@ -916,38 +851,6 @@ if [ "$profile" = "netbench" ]; then
     grep -F "Mich netbench: loopback-udp" "$log" || true
     grep -F "Mich netbench: wire-rr" "$log" || true
     grep -F "Mich netbench: wire-tx" "$log" || true
-fi
-if [ "$profile" = "tls" ]; then
-    for marker in \
-        "Mich tlsprobe: entropy ready" \
-        "Mich tlsprobe: tcp connected" \
-        "Mich tlsprobe: ClientHello sent" \
-        "Mich tlsprobe: server certificate accepted" \
-        "Mich tlsprobe: server Finished verified" \
-        "Mich tlsprobe: handshake complete" \
-        "Mich tlsprobe: request sent" \
-        "Mich tlsprobe: HTTP response received" \
-        "Mich tlsprobe: https pass"
-    do
-        require_marker "$marker"
-    done
-fi
-if [ "$profile" = "tls-real" ]; then
-    for marker in \
-        "Mich tlsprobe: entropy ready" \
-        "Mich tlsprobe: tcp connected" \
-        "Mich tlsprobe: ClientHello sent" \
-        "Mich tlsprobe: server certificate accepted" \
-        "Mich tlsprobe: server Finished verified" \
-        "Mich tlsprobe: handshake complete" \
-        "Mich tlsprobe: request sent" \
-        "Mich tlsprobe: HTTP response received" \
-        "Mich tlsprobe: https pass"
-    do
-        require_marker "$marker"
-    done
-    # Surface the real status line the guest printed off the wire.
-    grep -F "Mich tlsprobe: HTTP/1." "$log" || true
 fi
 if [ "$profile" = "hardware" ] || [ "$profile" = "msi" ] ||
    [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ] ||

@@ -31,7 +31,6 @@ TEST64 = src/tests/x86_64
 # checksum copies. GCC's own include directory provides the SSE2 intrinsics
 # headers, which are self-contained under -nostdinc.
 GCC_INCLUDE = $(shell $(CC) -print-file-name=include)
-AESFLAGS = -maes -mpclmul -mssse3
 CFLAGS64 = -m64 -mno-red-zone -msse2 -mno-mmx -nostdlib -nostdinc -fno-builtin -fno-stack-protector -nostartfiles -nodefaultlibs -ffreestanding -fno-pie -fno-pic -fno-asynchronous-unwind-tables -MMD -MP -Wall -Wextra -O2 -Isrc -I$(GCC_INCLUDE) $(ARCH64_INCLUDES) $(PORTABLE_INCLUDES) -I$(TEST64)
 USER64_CFLAGS = $(CFLAGS64) -mcmodel=large -Isrc/user64/include -Isrc/user64/lib
 LDFLAGS64 = -m elf_x86_64 -T $(ARCH64_BOOT)/linker.ld
@@ -59,8 +58,6 @@ DISK64_DNS = $(BIN64)/disk-dns.img
 DISK64_NETBENCH = $(BIN64)/disk-netbench.img
 DISK64_VIRTIO_BLK = $(BIN64)/disk-virtio-blk.img
 DISK64_NVME = $(BIN64)/disk-nvme.img
-DISK64_TLS = $(BIN64)/disk-tls.img
-DISK64_TLS_REAL = $(BIN64)/disk-tls-real.img
 DISK64_HARDWARE_RESTART = $(BIN64)/disk-hardware-restart.img
 DISK64_HARDWARE_CIRCUIT = $(BIN64)/disk-hardware-circuit.img
 DISK64_HARDWARE_RECOVERY = $(BIN64)/disk-hardware-recovery.img
@@ -85,35 +82,18 @@ VIRTIO_NET_SAFE64_OBJ = $(USER64_OBJ_DIR)/virtio_net_safe.o
 VIRTIO_NET64_PROBES_OBJ = $(USER64_OBJ_DIR)/virtio_net_probes.o
 DNSPROBE64_OBJ = $(USER64_OBJ_DIR)/dnsprobe.o
 NETBENCH64_OBJ = $(USER64_OBJ_DIR)/netbench.o
-TLSPROBE64_OBJ = $(USER64_OBJ_DIR)/tlsprobe.o
-TLSPROBE_REAL64_OBJ = $(USER64_OBJ_DIR)/tlsprobe_real.o
 DNS64_OBJ = $(USER64_OBJ_DIR)/dns.o
 DNS_MESSAGE64_OBJ = $(USER64_OBJ_DIR)/dns_message.o
-TLS_KEYS64_OBJ = $(USER64_OBJ_DIR)/tls_keys.o
-TLS_RECORD64_OBJ = $(USER64_OBJ_DIR)/tls_record.o
-TLS_HANDSHAKE64_OBJ = $(USER64_OBJ_DIR)/tls_handshake.o
-X25519_64_OBJ = $(USER64_OBJ_DIR)/x25519.o
-P256_64_OBJ = $(USER64_OBJ_DIR)/p256.o
-RSA64_OBJ = $(USER64_OBJ_DIR)/rsa.o
-DER64_OBJ = $(USER64_OBJ_DIR)/der.o
-X509_64_OBJ = $(USER64_OBJ_DIR)/x509.o
-X509_CHAIN64_OBJ = $(USER64_OBJ_DIR)/x509_chain.o
-SHA256_64_OBJ = $(USER64_OBJ_DIR)/sha256.o
-AES64_OBJ = $(USER64_OBJ_DIR)/aes.o
-GCM64_OBJ = $(USER64_OBJ_DIR)/gcm.o
-CRYPTO64_OBJ = $(USER64_OBJ_DIR)/crypto.o
 VIRTIO_BLK64_ELF = $(USER64_DIR)/virtio-blk.elf
 NVME64_ELF = $(USER64_DIR)/nvme.elf
 VIRTIO_NET64_ELF = $(USER64_DIR)/virtio-net.elf
 DNSPROBE64_ELF = $(USER64_DIR)/dnsprobe.elf
 NETBENCH64_ELF = $(USER64_DIR)/netbench.elf
-TLSPROBE64_ELF = $(USER64_DIR)/tlsprobe.elf
-TLSPROBE_REAL64_ELF = $(USER64_DIR)/tlsprobe-real.elf
 GEN64_DIR = $(BIN64)/generated
 VIRTIO_NET_RECOVERY_RIP_H = $(GEN64_DIR)/virtio_net_recovery_rip.h
 VIRTIO_NET_SAFE64_ELF = $(USER64_DIR)/virtio-net-safe.elf
-OBJS64 = $(OBJ64)/boot.o $(OBJ64)/kernel.o $(OBJ64)/task_core.o $(OBJ64)/posix_fd_core.o $(OBJ64)/posix_profile_core.o $(OBJ64)/posix_vfs_core.o $(OBJ64)/posix_process_core.o $(OBJ64)/scheduler_core.o $(OBJ64)/service_core.o $(OBJ64)/object_core.o $(OBJ64)/resource_core.o $(OBJ64)/iommu_core.o $(OBJ64)/driver_core.o $(OBJ64)/driver_supervisor_core.o $(OBJ64)/driver_manager_core.o $(OBJ64)/ring_core.o $(OBJ64)/completion_core.o $(OBJ64)/timer_object_core.o $(OBJ64)/net_buffer_core.o $(OBJ64)/vnic_core.o $(OBJ64)/vnic_benchmark.o $(OBJ64)/net_interface_core.o $(OBJ64)/ethernet_core.o $(OBJ64)/arp_core.o $(OBJ64)/ipv4_core.o $(OBJ64)/ipv6_core.o $(OBJ64)/icmp_core.o $(OBJ64)/icmpv6_core.o $(OBJ64)/loopback_core.o $(OBJ64)/udp_core.o $(OBJ64)/udpv6_core.o $(OBJ64)/tcp_core.o $(OBJ64)/tcp_cc_core.o $(OBJ64)/pmtu_core.o $(OBJ64)/route_core.o $(OBJ64)/socket_core.o $(OBJ64)/dns_message_core.o $(OBJ64)/tls_keys_core.o $(OBJ64)/tls_record_core.o $(OBJ64)/tls_handshake_core.o $(OBJ64)/vfs_core.o $(OBJ64)/crc32c_core.o $(OBJ64)/adytumfs_super_core.o $(OBJ64)/adytumfs_inode_core.o $(OBJ64)/adytumfs_volume_core.o $(OBJ64)/adytumfs_verify_core.o $(OBJ64)/adytumfs_dir_core.o $(OBJ64)/adytumfs_file_core.o $(OBJ64)/adytumfs_ops_core.o $(OBJ64)/adytumfs_core.o $(OBJ64)/block_core.o $(OBJ64)/cache_core.o $(OBJ64)/firmware_core.o $(OBJ64)/event_core.o $(OBJ64)/endpoint_core.o $(OBJ64)/bridge_core.o $(OBJ64)/pmm_core.o $(OBJ64)/mem_core.o $(OBJ64)/sha256_core.o $(OBJ64)/siphash_core.o $(OBJ64)/crypto_core.o $(OBJ64)/aes_core.o $(OBJ64)/gcm_core.o $(OBJ64)/x25519_core.o $(OBJ64)/p256_core.o $(OBJ64)/rsa_core.o $(OBJ64)/der_core.o $(OBJ64)/x509_core.o $(OBJ64)/x509_chain_core.o $(OBJ64)/entropy_core.o $(OBJ64)/ipc64.o $(OBJ64)/acpi64.o $(OBJ64)/rtc64.o $(OBJ64)/vtd64.o $(OBJ64)/amd_iommu64.o $(OBJ64)/pci64.o $(OBJ64)/nvme.o $(OBJ64)/apic64.o $(OBJ64)/ioapic64.o $(OBJ64)/smp64.o $(OBJ64)/smp_tramp.o $(OBJ64)/vector64.o $(OBJ64)/msi64.o $(OBJ64)/msix64.o $(OBJ64)/panic64.o $(OBJ64)/gdt_asm.o $(OBJ64)/gdt.o $(OBJ64)/exceptions.o $(OBJ64)/interrupt.o $(OBJ64)/idt.o $(OBJ64)/vm.o $(OBJ64)/elf64.o $(OBJ64)/platform.o $(OBJ64)/serial.o $(OBJ64)/syscall_dispatch.o $(OBJ64)/syscall.o
-TEST64_OBJS = $(OBJ64)/test_runner64.o $(OBJ64)/test_object64.o $(OBJ64)/test_resource64.o $(OBJ64)/test_async64.o $(OBJ64)/test_fpu64.o $(OBJ64)/test_smp64.o $(OBJ64)/test_driver64.o $(OBJ64)/test_hardware64.o $(OBJ64)/test_network_runner64.o $(OBJ64)/test_net_support64.o $(OBJ64)/test_net_foundation64.o $(OBJ64)/test_ipv4_64.o $(OBJ64)/test_ipv6_64.o $(OBJ64)/test_tcp64.o $(OBJ64)/test_udp_socket64.o $(OBJ64)/test_dns64.o $(OBJ64)/test_net_interface64.o $(OBJ64)/test_vfs64.o $(OBJ64)/test_posix_fd64.o $(OBJ64)/test_posix_profile64.o $(OBJ64)/test_posix_vfs64.o $(OBJ64)/test_posix_process64.o $(OBJ64)/test_block64.o $(OBJ64)/test_cache64.o $(OBJ64)/test_entropy64.o $(OBJ64)/test_sha256_64.o $(OBJ64)/test_siphash64.o $(OBJ64)/test_aes_gcm64.o $(OBJ64)/test_x25519_64.o $(OBJ64)/test_p256_64.o $(OBJ64)/test_rsa64.o $(OBJ64)/test_x509_64.o $(OBJ64)/test_x509_chain64.o $(OBJ64)/test_tls_records64.o $(OBJ64)/test_tls_handshake64.o $(OBJ64)/test_rtc64.o $(OBJ64)/test_crc32c64.o $(OBJ64)/test_adytumfs_super64.o $(OBJ64)/test_adytumfs_volume64.o $(OBJ64)/test_adytumfs_alloc64.o $(OBJ64)/test_adytumfs_inode64.o $(OBJ64)/test_adytumfs_extent64.o $(OBJ64)/test_adytumfs_dir64.o $(OBJ64)/test_adytumfs_diriter64.o $(OBJ64)/test_adytumfs_file64.o $(OBJ64)/test_adytumfs_ops64.o $(OBJ64)/test_adytumfs64.o $(OBJ64)/test_adytumfs_crash64.o $(OBJ64)/test_crash_boot64.o $(OBJ64)/test_nvme64.o $(OBJ64)/test_net_bench64.o $(OBJ64)/test_report64.o
+OBJS64 = $(OBJ64)/boot.o $(OBJ64)/kernel.o $(OBJ64)/task_core.o $(OBJ64)/posix_fd_core.o $(OBJ64)/posix_profile_core.o $(OBJ64)/posix_vfs_core.o $(OBJ64)/posix_process_core.o $(OBJ64)/scheduler_core.o $(OBJ64)/service_core.o $(OBJ64)/object_core.o $(OBJ64)/resource_core.o $(OBJ64)/iommu_core.o $(OBJ64)/driver_core.o $(OBJ64)/driver_supervisor_core.o $(OBJ64)/driver_manager_core.o $(OBJ64)/ring_core.o $(OBJ64)/completion_core.o $(OBJ64)/timer_object_core.o $(OBJ64)/net_buffer_core.o $(OBJ64)/vnic_core.o $(OBJ64)/vnic_benchmark.o $(OBJ64)/net_interface_core.o $(OBJ64)/ethernet_core.o $(OBJ64)/arp_core.o $(OBJ64)/ipv4_core.o $(OBJ64)/ipv6_core.o $(OBJ64)/icmp_core.o $(OBJ64)/icmpv6_core.o $(OBJ64)/loopback_core.o $(OBJ64)/udp_core.o $(OBJ64)/udpv6_core.o $(OBJ64)/tcp_core.o $(OBJ64)/tcp_cc_core.o $(OBJ64)/pmtu_core.o $(OBJ64)/route_core.o $(OBJ64)/socket_core.o $(OBJ64)/dns_message_core.o $(OBJ64)/vfs_core.o $(OBJ64)/crc32c_core.o $(OBJ64)/adytumfs_super_core.o $(OBJ64)/adytumfs_inode_core.o $(OBJ64)/adytumfs_volume_core.o $(OBJ64)/adytumfs_verify_core.o $(OBJ64)/adytumfs_dir_core.o $(OBJ64)/adytumfs_file_core.o $(OBJ64)/adytumfs_ops_core.o $(OBJ64)/adytumfs_core.o $(OBJ64)/block_core.o $(OBJ64)/cache_core.o $(OBJ64)/firmware_core.o $(OBJ64)/event_core.o $(OBJ64)/endpoint_core.o $(OBJ64)/bridge_core.o $(OBJ64)/pmm_core.o $(OBJ64)/mem_core.o $(OBJ64)/siphash_core.o $(OBJ64)/crypto_core.o $(OBJ64)/entropy_core.o $(OBJ64)/ipc64.o $(OBJ64)/acpi64.o $(OBJ64)/rtc64.o $(OBJ64)/vtd64.o $(OBJ64)/amd_iommu64.o $(OBJ64)/pci64.o $(OBJ64)/nvme.o $(OBJ64)/apic64.o $(OBJ64)/ioapic64.o $(OBJ64)/smp64.o $(OBJ64)/smp_tramp.o $(OBJ64)/vector64.o $(OBJ64)/msi64.o $(OBJ64)/msix64.o $(OBJ64)/panic64.o $(OBJ64)/gdt_asm.o $(OBJ64)/gdt.o $(OBJ64)/exceptions.o $(OBJ64)/interrupt.o $(OBJ64)/idt.o $(OBJ64)/vm.o $(OBJ64)/elf64.o $(OBJ64)/platform.o $(OBJ64)/serial.o $(OBJ64)/syscall_dispatch.o $(OBJ64)/syscall.o
+TEST64_OBJS = $(OBJ64)/test_runner64.o $(OBJ64)/test_object64.o $(OBJ64)/test_resource64.o $(OBJ64)/test_async64.o $(OBJ64)/test_fpu64.o $(OBJ64)/test_smp64.o $(OBJ64)/test_driver64.o $(OBJ64)/test_hardware64.o $(OBJ64)/test_network_runner64.o $(OBJ64)/test_net_support64.o $(OBJ64)/test_net_foundation64.o $(OBJ64)/test_ipv4_64.o $(OBJ64)/test_ipv6_64.o $(OBJ64)/test_tcp64.o $(OBJ64)/test_udp_socket64.o $(OBJ64)/test_dns64.o $(OBJ64)/test_net_interface64.o $(OBJ64)/test_vfs64.o $(OBJ64)/test_posix_fd64.o $(OBJ64)/test_posix_profile64.o $(OBJ64)/test_posix_vfs64.o $(OBJ64)/test_posix_process64.o $(OBJ64)/test_block64.o $(OBJ64)/test_cache64.o $(OBJ64)/test_entropy64.o $(OBJ64)/test_siphash64.o $(OBJ64)/test_rtc64.o $(OBJ64)/test_crc32c64.o $(OBJ64)/test_adytumfs_super64.o $(OBJ64)/test_adytumfs_volume64.o $(OBJ64)/test_adytumfs_alloc64.o $(OBJ64)/test_adytumfs_inode64.o $(OBJ64)/test_adytumfs_extent64.o $(OBJ64)/test_adytumfs_dir64.o $(OBJ64)/test_adytumfs_diriter64.o $(OBJ64)/test_adytumfs_file64.o $(OBJ64)/test_adytumfs_ops64.o $(OBJ64)/test_adytumfs64.o $(OBJ64)/test_adytumfs_crash64.o $(OBJ64)/test_crash_boot64.o $(OBJ64)/test_nvme64.o $(OBJ64)/test_net_bench64.o $(OBJ64)/test_report64.o
 OBJS64_TEST = $(OBJ64)/boot.o $(OBJ64)/kernel_test.o $(filter-out $(OBJ64)/boot.o $(OBJ64)/kernel.o,$(OBJS64)) $(TEST64_OBJS)
 PORTABLE64_DIR = $(BIN64)/portable
 PORTABLE64_NAMES = task posix_fd posix_profile posix_vfs posix_process service object resource driver driver_supervisor driver_manager ring completion timer_object net_buffer vnic net_interface ethernet arp ipv4 ipv6 icmp icmpv6 loopback udp udpv6 tcp tcp_cc pmtu route socket vfs crc32c adytumfs_super adytumfs_inode adytumfs_volume adytumfs_verify adytumfs_dir adytumfs_file adytumfs_ops adytumfs block cache firmware event endpoint bridge pmm
@@ -262,15 +242,6 @@ $(OBJ64)/socket_core.o: $(NET)/socket.c $(NET)/socket.h $(NET)/udp.h $(NET)/rout
 $(OBJ64)/dns_message_core.o: $(NET)/dns_message.c $(NET)/dns_message.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/tls_keys_core.o: $(NET)/tls_keys.c $(NET)/tls_keys.h $(CRYPTO)/sha256.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/tls_record_core.o: $(NET)/tls_record.c $(NET)/tls_record.h $(NET)/tls_keys.h $(CRYPTO)/gcm.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) $(AESFLAGS) -Werror -c $< -o $@
-
-$(OBJ64)/tls_handshake_core.o: $(NET)/tls_handshake.c $(NET)/tls_handshake.h $(NET)/tls_record.h $(NET)/tls_keys.h $(CRYPTO)/x509_chain.h $(CRYPTO)/x25519.h $(CRYPTO)/p256.h $(CRYPTO)/rsa.h | $(OBJ64)
-	$(CC) $(CFLAGS64) $(AESFLAGS) -Werror -c $< -o $@
-
 
 
 $(OBJ64)/vfs_core.o: $(FS)/vfs.c $(FS)/vfs.h $(FS)/adytumfs.h $(OBJECTS)/object.h $(CORE)/entropy.h | $(OBJ64)
@@ -392,35 +363,8 @@ $(OBJ64)/test_entropy64.o: $(TEST64)/entropy_test.c $(TEST64)/tests64.h $(CORE)/
 $(OBJ64)/test_rtc64.o: $(TEST64)/rtc_test.c $(TEST64)/tests64.h $(ARCH64_PLATFORM)/rtc64.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -DMICH_TEST_BUILD -Werror -c $< -o $@
 
-$(OBJ64)/test_sha256_64.o: $(TEST64)/sha256_test.c $(TEST64)/tests64.h $(CRYPTO)/sha256.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -DMICH_TEST_BUILD -Werror -c $< -o $@
-
 $(OBJ64)/test_siphash64.o: $(TEST64)/siphash_test.c $(TEST64)/tests64.h $(CRYPTO)/siphash.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -DMICH_TEST_BUILD -Werror -c $< -o $@
-
-$(OBJ64)/test_aes_gcm64.o: $(TEST64)/aes_gcm_test.c $(TEST64)/tests64.h $(CRYPTO)/gcm.h $(CRYPTO)/aes.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) $(AESFLAGS) -DMICH_TEST_BUILD -Werror -c $< -o $@
-
-$(OBJ64)/test_x25519_64.o: $(TEST64)/x25519_test.c $(TEST64)/tests64.h $(CRYPTO)/x25519.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -DMICH_TEST_BUILD -Werror -c $< -o $@
-
-$(OBJ64)/test_p256_64.o: $(TEST64)/p256_test.c $(TEST64)/tests64.h $(CRYPTO)/p256.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -DMICH_TEST_BUILD -Werror -c $< -o $@
-
-$(OBJ64)/test_rsa64.o: $(TEST64)/rsa_test.c $(TEST64)/tests64.h $(CRYPTO)/rsa.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -DMICH_TEST_BUILD -Werror -c $< -o $@
-
-$(OBJ64)/test_x509_64.o: $(TEST64)/x509_test.c $(TEST64)/tests64.h $(CRYPTO)/x509.h $(CRYPTO)/der.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -DMICH_TEST_BUILD -Werror -c $< -o $@
-
-$(OBJ64)/test_x509_chain64.o: $(TEST64)/x509_chain_test.c $(TEST64)/tests64.h $(CRYPTO)/x509_chain.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -DMICH_TEST_BUILD -Werror -c $< -o $@
-
-$(OBJ64)/test_tls_records64.o: $(TEST64)/tls_record_test.c $(TEST64)/tests64.h $(NET)/tls_record.h $(NET)/tls_keys.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) $(AESFLAGS) -DMICH_TEST_BUILD -Werror -c $< -o $@
-
-$(OBJ64)/test_tls_handshake64.o: $(TEST64)/tls_handshake_test.c $(TEST64)/tests64.h $(NET)/tls_handshake.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) $(AESFLAGS) -DMICH_TEST_BUILD -Werror -c $< -o $@
 
 
 
@@ -495,37 +439,10 @@ $(OBJ64)/mem_core.o: $(CORE)/mem.c $(CORE)/types.h | $(OBJ64)
 $(OBJ64)/entropy_core.o: $(CORE)/entropy.c $(CORE)/entropy.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/sha256_core.o: $(CRYPTO)/sha256.c $(CRYPTO)/sha256.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
 $(OBJ64)/siphash_core.o: $(CRYPTO)/siphash.c $(CRYPTO)/siphash.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
 $(OBJ64)/crypto_core.o: $(CRYPTO)/crypto.c $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/aes_core.o: $(CRYPTO)/aes.c $(CRYPTO)/aes.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) $(AESFLAGS) -Werror -c $< -o $@
-
-$(OBJ64)/gcm_core.o: $(CRYPTO)/gcm.c $(CRYPTO)/gcm.h $(CRYPTO)/aes.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) $(AESFLAGS) -Werror -c $< -o $@
-
-$(OBJ64)/x25519_core.o: $(CRYPTO)/x25519.c $(CRYPTO)/x25519.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/p256_core.o: $(CRYPTO)/p256.c $(CRYPTO)/p256.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/rsa_core.o: $(CRYPTO)/rsa.c $(CRYPTO)/rsa.h $(CRYPTO)/sha256.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/der_core.o: $(CRYPTO)/der.c $(CRYPTO)/der.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/x509_core.o: $(CRYPTO)/x509.c $(CRYPTO)/x509.h $(CRYPTO)/der.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/x509_chain_core.o: $(CRYPTO)/x509_chain.c $(CRYPTO)/x509_chain.h $(CRYPTO)/trust_store.h $(CRYPTO)/x509.h $(CRYPTO)/rsa.h $(CRYPTO)/p256.h $(CRYPTO)/sha256.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
 
@@ -623,46 +540,7 @@ $(VIRTIO_NET64_PROBES_OBJ): src/user64/virtio_net/probes.c src/user64/virtio_net
 $(DNS_MESSAGE64_OBJ): src/net/dns_message.c src/net/dns_message.h | $(USER64_OBJ_DIR)
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
-$(TLS_KEYS64_OBJ): $(NET)/tls_keys.c $(NET)/tls_keys.h | $(USER64_OBJ_DIR)
-	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
-$(TLS_RECORD64_OBJ): $(NET)/tls_record.c $(NET)/tls_record.h $(NET)/tls_keys.h | $(USER64_OBJ_DIR)
-	$(CC) $(USER64_CFLAGS) $(AESFLAGS) -Werror -c $< -o $@
-
-$(TLS_HANDSHAKE64_OBJ): $(NET)/tls_handshake.c $(NET)/tls_handshake.h | $(USER64_OBJ_DIR)
-	$(CC) $(USER64_CFLAGS) $(AESFLAGS) -Werror -c $< -o $@
-
-
-
-$(SHA256_64_OBJ): $(CRYPTO)/sha256.c $(CRYPTO)/sha256.h $(CRYPTO)/crypto.h | $(USER64_OBJ_DIR)
-	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
-
-$(CRYPTO64_OBJ): $(CRYPTO)/crypto.c $(CRYPTO)/crypto.h | $(USER64_OBJ_DIR)
-	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
-
-$(AES64_OBJ): $(CRYPTO)/aes.c $(CRYPTO)/aes.h $(CRYPTO)/crypto.h | $(USER64_OBJ_DIR)
-	$(CC) $(USER64_CFLAGS) $(AESFLAGS) -Werror -c $< -o $@
-
-$(GCM64_OBJ): $(CRYPTO)/gcm.c $(CRYPTO)/gcm.h $(CRYPTO)/aes.h $(CRYPTO)/crypto.h | $(USER64_OBJ_DIR)
-	$(CC) $(USER64_CFLAGS) $(AESFLAGS) -Werror -c $< -o $@
-
-$(X25519_64_OBJ): $(CRYPTO)/x25519.c $(CRYPTO)/x25519.h $(CRYPTO)/crypto.h | $(USER64_OBJ_DIR)
-	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
-
-$(P256_64_OBJ): $(CRYPTO)/p256.c $(CRYPTO)/p256.h $(CRYPTO)/crypto.h | $(USER64_OBJ_DIR)
-	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
-
-$(RSA64_OBJ): $(CRYPTO)/rsa.c $(CRYPTO)/rsa.h $(CRYPTO)/sha256.h $(CRYPTO)/crypto.h | $(USER64_OBJ_DIR)
-	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
-
-$(DER64_OBJ): $(CRYPTO)/der.c $(CRYPTO)/der.h | $(USER64_OBJ_DIR)
-	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
-
-$(X509_64_OBJ): $(CRYPTO)/x509.c $(CRYPTO)/x509.h $(CRYPTO)/der.h | $(USER64_OBJ_DIR)
-	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
-
-$(X509_CHAIN64_OBJ): $(CRYPTO)/x509_chain.c $(CRYPTO)/x509_chain.h $(CRYPTO)/trust_store.h | $(USER64_OBJ_DIR)
-	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
 
 
@@ -686,19 +564,6 @@ $(NETBENCH64_OBJ): src/user64/netbench/main.c src/user64/include/mich/syscall.h 
 $(NETBENCH64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(NETBENCH64_OBJ) src/user64/linker.ld | $(USER64_DIR)
 	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(NETBENCH64_OBJ)
 
-$(TLSPROBE64_OBJ): src/user64/tlsprobe/main.c src/user64/tlsprobe/test_anchor.h $(NET)/tls_handshake.h $(CRYPTO)/crypto.h | $(USER64_OBJ_DIR)
-	$(CC) $(USER64_CFLAGS) $(AESFLAGS) -I$(NET) -Werror -c $< -o $@
-
-$(TLSPROBE64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(TLSPROBE64_OBJ) $(TLS_HANDSHAKE64_OBJ) $(TLS_RECORD64_OBJ) $(TLS_KEYS64_OBJ) $(X509_CHAIN64_OBJ) $(X509_64_OBJ) $(DER64_OBJ) $(X25519_64_OBJ) $(P256_64_OBJ) $(RSA64_OBJ) $(GCM64_OBJ) $(AES64_OBJ) $(SHA256_64_OBJ) $(CRYPTO64_OBJ) $(USER64_OBJ_DIR)/posix.o src/user64/linker.ld | $(USER64_DIR)
-	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(TLSPROBE64_OBJ) $(TLS_HANDSHAKE64_OBJ) $(TLS_RECORD64_OBJ) $(TLS_KEYS64_OBJ) $(X509_CHAIN64_OBJ) $(X509_64_OBJ) $(DER64_OBJ) $(X25519_64_OBJ) $(P256_64_OBJ) $(RSA64_OBJ) $(GCM64_OBJ) $(AES64_OBJ) $(SHA256_64_OBJ) $(CRYPTO64_OBJ) $(USER64_OBJ_DIR)/posix.o
-
-# Same probe, built for the public internet: MICH_TLS_REAL swaps the SNI name
-# and the trust store over to the built-in production CAs.
-$(TLSPROBE_REAL64_OBJ): src/user64/tlsprobe/main.c $(NET)/tls_handshake.h $(CRYPTO)/crypto.h $(CRYPTO)/x509_chain.h | $(USER64_OBJ_DIR)
-	$(CC) $(USER64_CFLAGS) $(AESFLAGS) -DMICH_TLS_REAL -I$(NET) -Werror -c $< -o $@
-
-$(TLSPROBE_REAL64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(TLSPROBE_REAL64_OBJ) $(TLS_HANDSHAKE64_OBJ) $(TLS_RECORD64_OBJ) $(TLS_KEYS64_OBJ) $(X509_CHAIN64_OBJ) $(X509_64_OBJ) $(DER64_OBJ) $(X25519_64_OBJ) $(P256_64_OBJ) $(RSA64_OBJ) $(GCM64_OBJ) $(AES64_OBJ) $(SHA256_64_OBJ) $(CRYPTO64_OBJ) $(USER64_OBJ_DIR)/posix.o src/user64/linker.ld | $(USER64_DIR)
-	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(TLSPROBE_REAL64_OBJ) $(TLS_HANDSHAKE64_OBJ) $(TLS_RECORD64_OBJ) $(TLS_KEYS64_OBJ) $(X509_CHAIN64_OBJ) $(X509_64_OBJ) $(DER64_OBJ) $(X25519_64_OBJ) $(P256_64_OBJ) $(RSA64_OBJ) $(GCM64_OBJ) $(AES64_OBJ) $(SHA256_64_OBJ) $(CRYPTO64_OBJ) $(USER64_OBJ_DIR)/posix.o
 
 
 $(VIRTIO_BLK64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_LIB64_OBJ) $(VIRTIO_BLK64_OBJ) src/user64/linker.ld | $(USER64_DIR)
@@ -771,7 +636,7 @@ $(DISK64_DNS): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_E
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
 		--efi $(UEFI64_EFI) $@ init64:0x410000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) dnsprobe:0=$(DNSPROBE64_ELF)
 # Loopback socket-path benchmark. Ships the same init flags and virtio-net
-# capsule as the dns and tls images so it reuses the kernel's probe-spawn hook,
+# capsule as the dns image so it reuses the kernel's probe-spawn hook,
 # but the kernel recognises the "netbench" module and skips the driver-live
 # recovery lab for this boot: a resident bench task perturbs that lab's tick
 # deadline and pollutes the cycle counts, so the benchmark wants a quiescent
@@ -780,16 +645,6 @@ $(DISK64_NETBENCH): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEF
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
 		--efi $(UEFI64_EFI) $@ init64:0x410000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) netbench:0=$(NETBENCH64_ELF)
 
-$(DISK64_TLS): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF) $(TLSPROBE64_ELF)
-	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
-		--efi $(UEFI64_EFI) $@ init64:0x410000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) tlsprobe:0x2000000=$(TLSPROBE64_ELF)
-
-# The kernel spawns whichever module is named "tlsprobe", so the real-internet
-# image ships the MICH_TLS_REAL build under that name. Everything else in the
-# image is identical to the local TLS test.
-$(DISK64_TLS_REAL): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF) $(TLSPROBE_REAL64_ELF)
-	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
-		--efi $(UEFI64_EFI) $@ init64:0x410000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) tlsprobe:0x2000000=$(TLSPROBE_REAL64_ELF)
 
 
 $(DISK64_HARDWARE_RESTART): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF)
@@ -844,14 +699,6 @@ test64-virtio-blk: $(DISK64_VIRTIO_BLK)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_VIRTIO_BLK) 256M virtio-blk
 test64-nvme: $(DISK64_NVME)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_NVME) 256M nvme
-test64-tls: $(DISK64_TLS)
-	sh ./scripts/qemu-smoke64.sh $(DISK64_TLS) 256M tls
-# Reaches a real site over the public internet: DNS-less, straight to the
-# address, validating the chain against the roots compiled into the image.
-# Kept out of the normal matrix on purpose, because a test that needs the
-# internet fails on a train, not in the code.
-test-https-real: $(DISK64_TLS_REAL)
-	sh ./scripts/qemu-smoke64.sh $(DISK64_TLS_REAL) 256M tls-real
 
 
 
@@ -919,4 +766,4 @@ DEPFILES = $(OBJS64:.o=.d) $(OBJS64_TEST:.o=.d) $(PORTABLE64_OBJS:.o=.d) \
 clean:
 	rm -rf $(BIN_DIR)
 
-.PHONY: all user64-virtio-blk test64-virtio-blk user64-nvme test64-nvme run64 test64 test64-prod test64-crash test64-unit test64-highmem test-https-real test64-tls test64-dns test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-msi-restart-stability test64-msi-circuit-stability test64-msi-recovery-stability test64-pcie test64-panic release-check clean
+.PHONY: all user64-virtio-blk test64-virtio-blk user64-nvme test64-nvme run64 test64 test64-prod test64-crash test64-unit test64-highmem test64-dns test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-msi-restart-stability test64-msi-circuit-stability test64-msi-recovery-stability test64-pcie test64-panic release-check clean
