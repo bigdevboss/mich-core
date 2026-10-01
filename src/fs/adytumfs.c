@@ -18,7 +18,7 @@ struct adytumfs_slot {
     u64 inode;
     u64 generation;
     u32 parent;
-    char name[VFS_NAME_MAX];
+    char name[VFS_NAME_MAX + 1];
 };
 
 struct adytumfs_cache {
@@ -99,7 +99,7 @@ static int walk_tree(struct adytumfs_mount *m) {
     m->slots[0].inode = m->super.root_inode;
     m->slots[0].generation = root.generation;
     m->slots[0].parent = 0;
-    for (u32 byte = 0; byte < VFS_NAME_MAX; byte++) m->slots[0].name[byte] = 0;
+    for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++) m->slots[0].name[byte] = 0;
     u64 queue_inode[ADYTUMFS_INODE_MAX];
     u32 queue_slot[ADYTUMFS_INODE_MAX];
     u32 head = 0;
@@ -132,7 +132,7 @@ static int walk_tree(struct adytumfs_mount *m) {
             u32 expect = bits == ADYTUMFS_MODE_DIR ? ADYTUMFS_DTYPE_DIR :
                                                      ADYTUMFS_DTYPE_REG;
             if (type != expect) return -1;
-            if (!name_len || name_len >= VFS_NAME_MAX) return -1;
+            if (!name_len || name_len > VFS_NAME_MAX) return -1;
             for (u32 slot = 0; slot < used; slot++)
                 if (m->slots[slot].inode == target) return -1;
             if (used >= ADYTUMFS_INODE_MAX) return -1;
@@ -140,7 +140,7 @@ static int walk_tree(struct adytumfs_mount *m) {
             m->slots[slot].inode = target;
             m->slots[slot].generation = child.generation;
             m->slots[slot].parent = dir_slot;
-            for (u32 byte = 0; byte < VFS_NAME_MAX; byte++)
+            for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
                 m->slots[slot].name[byte] = 0;
             for (u32 byte = 0; byte < name_len; byte++)
                 m->slots[slot].name[byte] = name[byte];
@@ -453,7 +453,7 @@ int adytumfs_attach(u32 mount, struct kernel_object *device) {
         m->slots[slot].inode = 0;
         m->slots[slot].generation = 0;
         m->slots[slot].parent = 0;
-        for (u32 byte = 0; byte < VFS_NAME_MAX; byte++)
+        for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
             m->slots[slot].name[byte] = 0;
         m->cache[slot].pages = 0;
         m->cache[slot].present = 0;
@@ -508,7 +508,7 @@ int adytumfs_inode_get(u32 mount, u32 inode, u32 *used, u32 *type, u32 *size,
         if (mode) *mode = 0;
         if (generation) *generation = 0;
         if (name)
-            for (u32 byte = 0; byte < VFS_NAME_MAX; byte++) name[byte] = 0;
+            for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++) name[byte] = 0;
         return 0;
     }
     struct adytumfs_inode in;
@@ -524,7 +524,7 @@ int adytumfs_inode_get(u32 mount, u32 inode, u32 *used, u32 *type, u32 *size,
     if (mode) *mode = in.mode & VFS_MODE_MASK;
     if (generation) *generation = m->slots[inode].generation;
     if (name)
-        for (u32 byte = 0; byte < VFS_NAME_MAX; byte++)
+        for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
             name[byte] = m->slots[inode].name[byte];
     return 0;
 }
@@ -580,7 +580,7 @@ int adytumfs_inode_create(u32 mount, const char *name, u32 parent, u32 type,
         return -1;
     u32 name_len = 0;
     while (name[name_len] && name_len < VFS_NAME_MAX) name_len++;
-    if (name_len >= VFS_NAME_MAX) return -1;
+    if (name_len == VFS_NAME_MAX && name[name_len]) return -1;
     struct adytumfs_inode dir;
     if (slot_inode_read(m, parent, &dir) || (dir.mode & ADYTUMFS_MODE_DIR) == 0)
         return -1;
@@ -607,7 +607,7 @@ int adytumfs_inode_create(u32 mount, const char *name, u32 parent, u32 type,
     m->slots[slot].inode = target;
     m->slots[slot].generation = fresh.generation;
     m->slots[slot].parent = parent;
-    for (u32 byte = 0; byte < VFS_NAME_MAX; byte++)
+    for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
         m->slots[slot].name[byte] = 0;
     for (u32 byte = 0; byte < name_len; byte++)
         m->slots[slot].name[byte] = name[byte];
@@ -653,7 +653,7 @@ int adytumfs_inode_remove(u32 mount, u32 inode) {
     if (adytumfs_inode_free(m->device, &m->super, real)) return -1;
     m->slots[inode].inode = 0;
     m->slots[inode].parent = 0;
-    for (u32 byte = 0; byte < VFS_NAME_MAX; byte++)
+    for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
         m->slots[inode].name[byte] = 0;
     return 0;
 }

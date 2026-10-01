@@ -25,7 +25,7 @@ int posix_profile_resolve(struct task *task, const char *path,
                           struct kernel_object **node);
 int posix_profile_parent(struct task *task, const char *path,
                          struct kernel_object **parent,
-                         char name[VFS_NAME_MAX]);
+                         char name[VFS_NAME_MAX + 1]);
 int posix_profile_chdir(struct task *task, const char *path);
 int posix_profile_getcwd(struct task *task, char path[VFS_PATH_MAX]);
 

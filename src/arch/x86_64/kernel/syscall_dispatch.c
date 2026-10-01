@@ -1724,7 +1724,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         if (vm64_user_access(task->page_dir, arg0, sizeof(request),
                              number != 163) ||
             vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)) ||
-            request.reserved || request.name[VFS_NAME_MAX - 1])
+            request.reserved || request.name[VFS_NAME_MAX])
             return (u64)-1;
         u32 rights = number == 157 ? KRIGHT_READ : KRIGHT_CONTROL;
         struct kernel_object *directory = handle_get(

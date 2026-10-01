@@ -110,6 +110,22 @@ int test_adytumfs64(void) {
         vfs_create_mode(disk, "folder", VFS_NODE_DIRECTORY, 0711) : 0;
     struct kernel_object *nested = folder ?
         vfs_create_mode(folder, "nested", VFS_NODE_REGULAR, 0620) : 0;
+    // A component of the full POSIX NAME_MAX length round-trips through the
+    // directory blocks and the slot table.
+    char stretched_name[VFS_NAME_MAX + 1];
+    for (u32 i = 0; i < VFS_NAME_MAX; i++)
+        stretched_name[i] = (u8)('a' + (i % 26));
+    stretched_name[VFS_NAME_MAX] = 0;
+    struct kernel_object *stretched = disk ?
+        vfs_create_mode(disk, stretched_name, VFS_NODE_REGULAR, 0600) : 0;
+    struct kernel_object *stretched_found = stretched ?
+        vfs_lookup(disk, stretched_name) : 0;
+    valid = valid && stretched && stretched_found;
+    if (stretched_found) object_release(stretched_found);
+    if (stretched) {
+        if (vfs_unlink(disk, stretched_name)) valid = 0;
+        object_release(stretched);
+    }
     struct kernel_object *opened = node ? vfs_open(node) : 0;
     struct vfs_node_info info;
     valid = valid && disk && node && folder && nested && opened &&
@@ -162,7 +178,7 @@ int test_adytumfs64(void) {
             break;
         }
     u32 used = 0, type = 0, size = 0, parent = 0, mode = 0;
-    char name[VFS_NAME_MAX];
+    char name[VFS_NAME_MAX + 1];
     valid = valid && mount_id &&
         !adytumfs_inode_get(mount_id, 1, &used, &type, &size, &parent, &mode,
                            name, 0) &&
@@ -661,7 +677,7 @@ int test_adytumfs_reuse64(void) {
                 break;
             }
         u32 used = 0, type = 0, size = 0, parent = 0, mode = 0, moved = 0;
-        char name[VFS_NAME_MAX];
+        char name[VFS_NAME_MAX + 1];
         u64 first_generation = 0;
         u64 second_generation = 0;
         u64 third_generation = 0;

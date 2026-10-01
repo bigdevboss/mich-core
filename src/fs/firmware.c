@@ -3,7 +3,7 @@
 
 static int valid_name(const char *name) {
     if (!name || !name[0]) return 0;
-    for (u32 index = 0; index < VFS_NAME_MAX; index++) {
+    for (u32 index = 0; index <= VFS_NAME_MAX; index++) {
         if (name[index] == '/') return 0;
         if (!name[index]) return 1;
     }

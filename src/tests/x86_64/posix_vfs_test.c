@@ -72,6 +72,21 @@ int test_posix_vfs64(struct task *owner, struct task *child) {
         POSIX_VFS_EACCES;
     valid &= posix_vfs_stat_path(owner, "/posix-api/zero", &info) ==
         POSIX_PROFILE_ENOENT;
+    // A 240-character component fits the path budget and round-trips.
+    char stretched[VFS_PATH_MAX];
+    for (u32 index = 0; index < VFS_PATH_MAX; index++) stretched[index] = 0;
+    const char *stretched_prefix = "/posix-api/";
+    for (u32 index = 0; stretched_prefix[index]; index++)
+        stretched[index] = stretched_prefix[index];
+    for (u32 index = 0; index < 240; index++)
+        stretched[11 + index] = 'n';
+    int stretched_fd = posix_vfs_open(owner, stretched,
+                                      POSIX_OPEN_WRONLY | POSIX_OPEN_CREAT,
+                                      0600);
+    valid &= stretched_fd >= 0;
+    if (stretched_fd >= 0) valid &= !posix_fd_close(owner, stretched_fd);
+    valid &= !posix_vfs_stat_path(owner, stretched, &info);
+    valid &= !posix_vfs_unlink(owner, stretched);
     valid &= posix_vfs_unlink(owner, "/posix-api/dir") == POSIX_VFS_EISDIR;
     valid &= posix_vfs_rmdir(owner, "/posix-api/state") == POSIX_VFS_ENOTDIR;
     valid &= !posix_vfs_rmdir(owner, "/posix-api/dir");

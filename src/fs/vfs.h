@@ -8,7 +8,9 @@
 #define VFS_NODE_MAX 64
 #define VFS_FILE_MAX 32
 #define VFS_MOUNT_MAX 8
-#define VFS_NAME_MAX 32
+/* Longest path component, POSIX NAME_MAX; name buffers hold one more
+   byte for the terminator. */
+#define VFS_NAME_MAX 255
 /* Ramfs regular files are page-backed, so the bound is the page resource. */
 #define VFS_FILE_SIZE_MAX (RESOURCE_PAGE_PAGES_MAX * 4096u)
 #define VFS_PATH_MAX 256
@@ -49,7 +51,7 @@ struct vfs_node_info {
     u64 atime;
     u64 mtime;
     u64 ctime;
-    char name[VFS_NAME_MAX];
+    char name[VFS_NAME_MAX + 1];
 };
 
 struct vfs_bootfs_entry {

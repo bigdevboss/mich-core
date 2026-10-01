@@ -64,7 +64,7 @@ static int profile_snapshot(struct task *task, int relative,
 static int append_component(char *path, u32 *length, const char *component,
                             u32 component_length) {
     if (!path || !length || !component || !component_length ||
-        component_length >= VFS_NAME_MAX)
+        component_length > VFS_NAME_MAX)
         return POSIX_PROFILE_ENAMETOOLONG;
     if (*length > 1 && *length + 1 >= VFS_PATH_MAX)
         return POSIX_PROFILE_ENAMETOOLONG;
@@ -91,10 +91,10 @@ static int append_normalized(char *path, u32 *length, const char *source,
     while (source[offset]) {
         while (source[offset] == '/') offset++;
         if (!source[offset]) break;
-        char component[VFS_NAME_MAX];
+        char component[VFS_NAME_MAX + 1];
         u32 component_length = 0;
         while (source[offset] && source[offset] != '/') {
-            if (component_length + 1 >= VFS_NAME_MAX)
+            if (component_length >= VFS_NAME_MAX)
                 return POSIX_PROFILE_ENAMETOOLONG;
             component[component_length++] = source[offset++];
         }
@@ -159,10 +159,10 @@ static int walk_path(const char *path, struct kernel_object **node) {
             object_release(current);
             return POSIX_PROFILE_EACCES;
         }
-        char component[VFS_NAME_MAX];
+        char component[VFS_NAME_MAX + 1];
         u32 length = 0;
         while (path[offset] && path[offset] != '/') {
-            if (length + 1 >= VFS_NAME_MAX) {
+            if (length >= VFS_NAME_MAX) {
                 object_release(current);
                 return POSIX_PROFILE_ENAMETOOLONG;
             }
@@ -286,7 +286,7 @@ int posix_profile_resolve(struct task *task, const char *path,
 
 int posix_profile_parent(struct task *task, const char *path,
                          struct kernel_object **parent,
-                         char name[VFS_NAME_MAX]) {
+                         char name[VFS_NAME_MAX + 1]) {
     if (!parent || !name || !path || !path[0]) return POSIX_PROFILE_EINVAL;
     *parent = 0;
     char normalized[VFS_PATH_MAX];
@@ -306,9 +306,9 @@ int posix_profile_parent(struct task *task, const char *path,
     u32 leaf = length;
     while (leaf > 1 && normalized[leaf - 1] != '/') leaf--;
     u32 name_length = length - leaf;
-    if (!name_length || name_length >= VFS_NAME_MAX)
+    if (!name_length || name_length > VFS_NAME_MAX)
         return POSIX_PROFILE_ENAMETOOLONG;
-    for (u32 index = 0; index < VFS_NAME_MAX; index++) name[index] = 0;
+    for (u32 index = 0; index <= VFS_NAME_MAX; index++) name[index] = 0;
     for (u32 index = 0; index < name_length; index++)
         name[index] = normalized[leaf + index];
     char parent_path[VFS_PATH_MAX];

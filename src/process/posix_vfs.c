@@ -85,7 +85,7 @@ int posix_vfs_open(struct task *task, const char *path, u32 flags, u32 mode) {
     if (mutating && profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
     struct kernel_object *node = 0;
     struct kernel_object *parent = 0;
-    char name[VFS_NAME_MAX];
+    char name[VFS_NAME_MAX + 1];
     int created = 0;
     result = posix_profile_resolve(task, path, &node);
     if (result == POSIX_PROFILE_ENOENT && (flags & POSIX_OPEN_CREAT)) {
@@ -137,7 +137,7 @@ int posix_vfs_mkdir(struct task *task, const char *path, u32 mode) {
     if (mode & ~VFS_MODE_MASK) return POSIX_VFS_EINVAL;
     if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
     struct kernel_object *parent = 0;
-    char name[VFS_NAME_MAX];
+    char name[VFS_NAME_MAX + 1];
     int result = posix_profile_parent(task, path, &parent, name);
     if (result) return result;
     result = check_parent_mutation(parent);
@@ -160,7 +160,7 @@ int posix_vfs_mkdir(struct task *task, const char *path, u32 mode) {
 static int remove_path(struct task *task, const char *path, u32 directory) {
     if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
     struct kernel_object *parent = 0;
-    char name[VFS_NAME_MAX];
+    char name[VFS_NAME_MAX + 1];
     int result = posix_profile_parent(task, path, &parent, name);
     if (result) return result;
     result = check_parent_mutation(parent);

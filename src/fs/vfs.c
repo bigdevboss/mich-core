@@ -9,7 +9,7 @@ struct vfs_node_state {
     struct kernel_object *self;
     const u8 *external_data;
     struct kernel_object *pages;
-    char name[VFS_NAME_MAX];
+    char name[VFS_NAME_MAX + 1];
     u32 parent;
     u32 type;
     u32 generation;
@@ -60,7 +60,7 @@ static int valid_name(const char *name) {
         if (name[length] == '/') return 0;
         length++;
     }
-    if (!length || length == VFS_NAME_MAX) return 0;
+    if (!length || (length == VFS_NAME_MAX && name[length])) return 0;
     if (length == 1 && name[0] == '.') return 0;
     if (length == 2 && name[0] == '.' && name[1] == '.') return 0;
     return 1;
@@ -160,7 +160,8 @@ static void node_destroy(struct kernel_object *object) {
         object_release(node->pages);
         node->pages = 0;
     }
-    for (u32 index = 0; index < VFS_NAME_MAX; index++) node->name[index] = 0;
+    for (u32 index = 0; index <= VFS_NAME_MAX; index++)
+        node->name[index] = 0;
     node->parent = VFS_NODE_MAX;
     node->type = 0;
     node->size = 0;
@@ -365,7 +366,8 @@ int vfs_mount_bootfs(struct kernel_object *directory,
         node->fs_id = 0;
         node->active = 1;
         const char *name = item ? entries[item - 1].name : point->name;
-        for (u32 byte = 0; byte < VFS_NAME_MAX; byte++) node->name[byte] = 0;
+        for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
+            node->name[byte] = 0;
         for (u32 byte = 0; name[byte]; byte++) node->name[byte] = name[byte];
         node->self = object_create(
             item ? KOBJECT_VNODE : KOBJECT_DIRECTORY,
@@ -427,7 +429,7 @@ int vfs_mount_adytumfs(struct kernel_object *directory,
     u32 sizes[ADYTUMFS_INODE_MAX];
     u32 parents[ADYTUMFS_INODE_MAX];
     u32 modes[ADYTUMFS_INODE_MAX];
-    char names[ADYTUMFS_INODE_MAX][VFS_NAME_MAX];
+    static char names[ADYTUMFS_INODE_MAX][VFS_NAME_MAX + 1];
     u64 generations[ADYTUMFS_INODE_MAX];
     u32 inode_item[ADYTUMFS_INODE_MAX];
     u32 count = 0;
@@ -444,7 +446,7 @@ int vfs_mount_adytumfs(struct kernel_object *directory,
                        types[inode] != VFS_NODE_DIRECTORY)) ||
             (modes[inode] & ~VFS_MODE_MASK) ||
             (inode && (!names[inode][0] ||
-                       names[inode][VFS_NAME_MAX - 1] ||
+                       names[inode][VFS_NAME_MAX] ||
                        !valid_name(names[inode]))) ||
             (inode && parents[inode] >= inode_count)) {
             adytumfs_detach(mount_index);
@@ -506,7 +508,8 @@ int vfs_mount_adytumfs(struct kernel_object *directory,
         node->fs_generation = generations[inode];
         node->active = 1;
         const char *name = inode ? names[inode] : point->name;
-        for (u32 byte = 0; byte < VFS_NAME_MAX; byte++) node->name[byte] = 0;
+        for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
+            node->name[byte] = 0;
         for (u32 byte = 0; name[byte]; byte++) node->name[byte] = name[byte];
         u32 object_type = node->type == VFS_NODE_DIRECTORY ?
             KOBJECT_DIRECTORY : KOBJECT_VNODE;
@@ -586,7 +589,8 @@ struct kernel_object *vfs_create_mode(struct kernel_object *directory,
         node->fs_id = 0;
         node->fs_generation = 0;
         node->active = 1;
-        for (u32 byte = 0; byte < VFS_NAME_MAX; byte++) node->name[byte] = 0;
+        for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
+            node->name[byte] = 0;
         for (u32 byte = 0; name[byte]; byte++) node->name[byte] = name[byte];
         if (parent->filesystem == VFS_FILESYSTEM_ADYTUMFS &&
             adytumfs_inode_create(parent->mount, name, parent->fs_id, type,
@@ -689,11 +693,12 @@ static struct kernel_object *resolve_path(struct kernel_object *start,
     while (offset < length) {
         while (offset < length && path[offset] == '/') offset++;
         if (offset == length) break;
-        char component[VFS_NAME_MAX];
-        for (u32 index = 0; index < VFS_NAME_MAX; index++) component[index] = 0;
+        char component[VFS_NAME_MAX + 1];
+        for (u32 index = 0; index <= VFS_NAME_MAX; index++)
+            component[index] = 0;
         u32 component_length = 0;
         while (offset < length && path[offset] != '/') {
-            if (component_length + 1 >= VFS_NAME_MAX) {
+            if (component_length >= VFS_NAME_MAX) {
                 object_release(current);
                 return 0;
             }
@@ -771,8 +776,8 @@ static struct kernel_object *path_parent(struct kernel_object *start,
     u32 leaf_start = length;
     while (leaf_start && path[leaf_start - 1] != '/') leaf_start--;
     u32 leaf_length = length - leaf_start;
-    if (!leaf_length || leaf_length >= VFS_NAME_MAX) return 0;
-    for (u32 index = 0; index < VFS_NAME_MAX; index++) leaf[index] = 0;
+    if (!leaf_length || leaf_length > VFS_NAME_MAX) return 0;
+    for (u32 index = 0; index <= VFS_NAME_MAX; index++) leaf[index] = 0;
     for (u32 index = 0; index < leaf_length; index++)
         leaf[index] = path[leaf_start + index];
     if (!valid_name(leaf)) return 0;
@@ -798,7 +803,7 @@ static struct kernel_object *path_parent(struct kernel_object *start,
 
 struct kernel_object *vfs_create_path(struct kernel_object *start,
                                       const char *path, u32 type) {
-    char leaf[VFS_NAME_MAX];
+    char leaf[VFS_NAME_MAX + 1];
     struct kernel_object *parent = path_parent(start, path, leaf);
     if (!parent) return 0;
     struct kernel_object *created = vfs_create(parent, leaf, type);
@@ -807,7 +812,7 @@ struct kernel_object *vfs_create_path(struct kernel_object *start,
 }
 
 int vfs_unlink_path(struct kernel_object *start, const char *path) {
-    char leaf[VFS_NAME_MAX];
+    char leaf[VFS_NAME_MAX + 1];
     struct kernel_object *parent = path_parent(start, path, leaf);
     if (!parent) return -1;
     int result = vfs_unlink(parent, leaf);
@@ -1187,7 +1192,7 @@ int vfs_stat(struct kernel_object *object, struct vfs_node_info *info) {
             return -1;
         info->links = links;
     }
-    for (u32 index = 0; index < VFS_NAME_MAX; index++)
+    for (u32 index = 0; index <= VFS_NAME_MAX; index++)
         info->name[index] = node->name[index];
     return 0;
 }
