@@ -122,8 +122,13 @@ int adytumfs_make(struct kernel_object *device) {
     u64 data_blocks = data_span - region_blocks;
     if (data_blocks == 0) return -1;
     u64 region_start = data_start + data_blocks;
-    u64 shadow_table_start = tail_base - inode_table_blocks;
-    u64 shadow_bitmap_start = tail_base;
+    // The tail packs upward from where the checksum region ends: shadow
+    // table, then shadow bitmap, then the backup superblock in the last
+    // block. Starting the table at tail_base rather than below it keeps the
+    // region's last block from doubling as the table's first; the overlap
+    // was latent until the generation pair made the tail readable.
+    u64 shadow_table_start = tail_base;
+    u64 shadow_bitmap_start = tail_base + inode_table_blocks;
 
     struct adytumfs_superblock super = {
         .format_version = ADYTUMFS_FORMAT_VERSION,
