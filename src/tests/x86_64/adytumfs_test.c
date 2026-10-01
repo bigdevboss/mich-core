@@ -1229,3 +1229,198 @@ int test_adytumfs_checksum64(void) {
         block_active_count() == devices;
     return valid ? 0 : -1;
 }
+
+int test_adytumfs_cow64(void) {
+    u32 objects = object_active_count();
+    u32 nodes = vfs_node_active_count();
+    u32 files = vfs_file_active_count();
+    u32 mounts = vfs_mount_active_count();
+    u32 devices = block_active_count();
+    struct kernel_object *root = vfs_root();
+    struct kernel_object *dev = 0;
+    struct kernel_object *point = 0;
+    struct adytumfs_superblock super;
+    u64 data_inode = 0;
+    u64 other_inode = 0;
+    int valid = !integrity_stage(root, &dev, &point, &super, &data_inode,
+                                 &other_inode);
+    u8 payload[16];
+    u8 received[32];
+    u64 moved = 0;
+    struct adytumfs_inode in;
+    u64 physical = 0;
+    u64 fresh_physical = 0;
+    struct adytumfs_superblock probe_super;
+    u64 free_before = 0;
+
+    // Overwriting a mapped block must leave the old bytes untouched on the
+    // device, reroute the extent to a fresh block, and keep the free count
+    // stable, since a redirect allocates one block and frees one block.
+    valid = valid && !adytumfs_inode_read(dev, &super, data_inode, &in) &&
+        !adytumfs_inode_map(&in, 0, &physical) &&
+        !probe_read_block(dev, physical, adytumfs_probe_block) &&
+        reuse_matches(adytumfs_probe_block, 16, 0x60) &&
+        !policy_super(dev, &probe_super);
+    free_before = probe_super.free_blocks;
+    reuse_fill(payload, sizeof(payload), 0xa0);
+    valid = valid && !adytumfs_file_write(dev, &super, data_inode, 0, payload,
+                                          sizeof(payload), &moved) &&
+        moved == sizeof(payload) &&
+        !adytumfs_inode_read(dev, &super, data_inode, &in) &&
+        !adytumfs_inode_map(&in, 0, &fresh_physical) &&
+        fresh_physical != physical &&
+        !probe_read_block(dev, physical, adytumfs_probe_block) &&
+        reuse_matches(adytumfs_probe_block, 16, 0x60) &&
+        !adytumfs_file_read(dev, &super, data_inode, 0, received, 16, &moved) &&
+        moved == 16 && reuse_matches(received, 16, 0xa0) &&
+        !policy_super(dev, &probe_super) &&
+        probe_super.free_blocks == free_before;
+
+    // A partial block read-modify-write redirects the same way: the previous
+    // image survives at the old physical block and the merge reads back.
+    // The probes below read the raw device, so the cache has to land first.
+    valid = valid && !integrity_commit(dev) &&
+        !adytumfs_inode_map(&in, 0, &physical) &&
+        !probe_read_block(dev, physical, adytumfs_probe_block) &&
+        reuse_matches(adytumfs_probe_block, 16, 0xa0);
+    reuse_fill(payload, sizeof(payload), 0xb0);
+    valid = valid && !adytumfs_file_write(dev, &super, data_inode, 4, payload,
+                                          8, &moved) &&
+        moved == 8 &&
+        !integrity_commit(dev) &&
+        !probe_read_block(dev, physical, adytumfs_probe_block) &&
+        reuse_matches(adytumfs_probe_block, 16, 0xa0) &&
+        !adytumfs_file_read(dev, &super, data_inode, 0, received, 16, &moved) &&
+        moved == 16 && received[0] == 0xa0u && received[3] == 0xa3u &&
+        received[4] == 0xb0u && received[11] == 0xb7u && received[12] == 0xacu;
+
+    // Repeated overwrites must not leak: every redirect returns the previous
+    // block to the pool, so the free count stays where it started.
+    u8 ramp_base = 0xc0;
+    for (u32 round = 0; valid && round < 4; round++) {
+        reuse_fill(payload, sizeof(payload), ramp_base);
+        valid = !adytumfs_file_write(dev, &super, data_inode, 0, payload,
+                                     sizeof(payload), &moved) &&
+            moved == sizeof(payload) &&
+            !adytumfs_file_read(dev, &super, data_inode, 0, received, 16,
+                               &moved) &&
+            moved == 16 && reuse_matches(received, 16, ramp_base);
+        ramp_base = (u8)(ramp_base + 0x10u);
+    }
+    valid = valid && !policy_super(dev, &probe_super) &&
+        probe_super.free_blocks == free_before;
+
+    // Redirecting the middle block of a multi-block extent splits it; the
+    // untouched neighbours must keep reading their images through the split.
+    reuse_fill(adytumfs_probe_block, ADYTUMFS_BLOCK_SIZE, 0xd1);
+    valid = valid && !adytumfs_file_write(dev, &super, data_inode, 4096,
+                                          adytumfs_probe_block,
+                                          ADYTUMFS_BLOCK_SIZE, &moved) &&
+        moved == ADYTUMFS_BLOCK_SIZE &&
+        !adytumfs_file_write(dev, &super, data_inode, 8192,
+                             adytumfs_probe_block, ADYTUMFS_BLOCK_SIZE,
+                             &moved) &&
+        moved == ADYTUMFS_BLOCK_SIZE &&
+        !adytumfs_inode_read(dev, &super, data_inode, &in) &&
+        !adytumfs_inode_map(&in, 1, &physical);
+    reuse_fill(payload, sizeof(payload), 0xe0);
+    valid = valid && !adytumfs_file_write(dev, &super, data_inode, 4096,
+                                          payload, sizeof(payload), &moved) &&
+        moved == sizeof(payload) && !integrity_commit(dev) &&
+        !probe_read_block(dev, physical, adytumfs_probe_block) &&
+        reuse_matches(adytumfs_probe_block, 16, 0xd1) &&
+        !adytumfs_file_read(dev, &super, data_inode, 4096, received, 32,
+                            &moved) &&
+        moved == 32 && reuse_matches(received, 16, 0xe0) &&
+        received[16] == 0xe1u && received[31] == 0xf0u &&
+        !adytumfs_file_read(dev, &super, data_inode, 8192 + 16, received, 16,
+                            &moved) &&
+        moved == 16 && reuse_matches(received, 16, 0xe1);
+
+    // The page-cache write-back redirects too: a VFS write of a mounted file
+    // leaves the original physical block untouched and reads back new.
+    valid = valid && !vfs_mount_adytumfs(point, dev);
+    {
+        struct kernel_object *disk = valid ? vfs_lookup(root, "integrity") : 0;
+        struct kernel_object *node = disk ? vfs_lookup(disk, "other") : 0;
+        struct kernel_object *opened = node ? vfs_open(node) : 0;
+        struct adytumfs_superblock live;
+        u64 other_num = 0;
+        valid = valid && opened &&
+            !policy_super(dev, &live) &&
+            !adytumfs_dir_lookup(dev, &live, live.root_inode, "other", 5,
+                                 &other_num) &&
+            !adytumfs_inode_read(dev, &live, other_num, &in) &&
+            !adytumfs_inode_map(&in, 0, &physical) &&
+            !probe_read_block(dev, physical, adytumfs_probe_block) &&
+            reuse_matches(adytumfs_probe_block, 16, 0x60);
+        reuse_fill(payload, sizeof(payload), 0xd0);
+        u32 transferred = 0;
+        valid = valid && !vfs_write(opened, 0, payload, sizeof(payload),
+                                    &transferred) &&
+            transferred == sizeof(payload) && !vfs_sync(opened) &&
+            !probe_read_block(dev, physical, adytumfs_probe_block) &&
+            reuse_matches(adytumfs_probe_block, 16, 0x60);
+        if (opened) object_release(opened);
+        if (node) object_release(node);
+        if (disk) object_release(disk);
+    }
+    valid = valid && point && !vfs_unmount(point);
+    valid = valid && !vfs_mount_adytumfs(point, dev);
+    {
+        struct kernel_object *disk = valid ? vfs_lookup(root, "integrity") : 0;
+        struct kernel_object *node = disk ? vfs_lookup(disk, "other") : 0;
+        struct kernel_object *opened = node ? vfs_open(node) : 0;
+        u32 transferred = 0;
+        valid = valid && opened &&
+            !vfs_read(opened, 0, received, 16, &transferred) &&
+            transferred == 16 && reuse_matches(received, 16, 0xd0);
+        if (opened) object_release(opened);
+        if (node) object_release(node);
+        if (disk) object_release(disk);
+    }
+    valid = valid && point && !vfs_unmount(point);
+
+    // A dirent edit redirects the directory block: the old block keeps the
+    // original records while the new one carries the tombstone.
+    u64 record_block = 0;
+    u32 record_at = 0;
+    u8 record_keep[32];
+    valid = valid && !policy_super(dev, &super) &&
+        !policy_find_record(dev, &super, "data", 4, &record_block,
+                            &record_at);
+    for (u32 index = 0; valid && index < sizeof(record_keep); index++)
+        record_keep[index] = adytumfs_probe_block[index];
+    valid = valid && !adytumfs_dir_remove(dev, &super, super.root_inode,
+                                          "data", 4) &&
+        !probe_read_block(dev, record_block, adytumfs_probe_block);
+    for (u32 index = 0; valid && index < sizeof(record_keep); index++)
+        if (adytumfs_probe_block[index] != record_keep[index]) valid = 0;
+    valid = valid &&
+        adytumfs_dir_lookup(dev, &super, super.root_inode, "data", 4,
+                            &data_inode) < 0 &&
+        !adytumfs_dir_lookup(dev, &super, super.root_inode, "other", 5,
+                             &other_inode) &&
+        other_inode;
+
+    // The steady state must still verify: the remount walks and audits the
+    // whole volume, so a leaked or lost block fails here.
+    valid = valid && !integrity_commit(dev) && !vfs_mount_adytumfs(point, dev);
+    {
+        struct kernel_object *disk = valid ? vfs_lookup(root, "integrity") : 0;
+        struct kernel_object *kept = disk ? vfs_lookup(disk, "other") : 0;
+        valid = valid && disk && kept && !vfs_lookup(disk, "data");
+        if (kept) object_release(kept);
+        if (disk) object_release(disk);
+    }
+    valid = valid && point && !vfs_unmount(point);
+
+    integrity_cleanup(root, point, dev);
+    if (root) object_release(root);
+    valid = valid && object_active_count() == objects &&
+        vfs_node_active_count() == nodes &&
+        vfs_file_active_count() == files &&
+        vfs_mount_active_count() == mounts &&
+        block_active_count() == devices;
+    return valid ? 0 : -1;
+}

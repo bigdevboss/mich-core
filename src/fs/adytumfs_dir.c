@@ -98,8 +98,8 @@ int adytumfs_dir_add(struct kernel_object *device,
             return -1;
         if (adytumfs_dir_place(adytumfs_dir_scratch, name, name_len,
                                target_inode, type, needed) == 0)
-            return adytumfs_data_write(device, super, physical,
-                                       adytumfs_dir_scratch);
+            return adytumfs_inode_remap(device, super, &dir, dir_inode,
+                                        logical, adytumfs_dir_scratch);
     }
 
     // No room in any existing block, so grow by one and seed it with a single
@@ -120,7 +120,7 @@ int adytumfs_dir_add(struct kernel_object *device,
 }
 
 int adytumfs_dir_remove(struct kernel_object *device,
-                        const struct adytumfs_superblock *super, u64 dir_inode,
+                        struct adytumfs_superblock *super, u64 dir_inode,
                         const char *name, u32 name_len) {
     if (name_len == 0 || name_len > ADYTUMFS_NAME_MAX) return -1;
     struct adytumfs_inode dir;
@@ -144,8 +144,8 @@ int adytumfs_dir_remove(struct kernel_object *device,
                                     name_len)) {
                 // Tombstone: a zero inode makes the record free for reuse.
                 adytumfs_write_le64(adytumfs_dir_scratch + offset, 0);
-                return adytumfs_data_write(device, super, physical,
-                                           adytumfs_dir_scratch);
+                return adytumfs_inode_remap(device, super, &dir, dir_inode,
+                                            logical, adytumfs_dir_scratch);
             }
             offset += rec_len;
         }

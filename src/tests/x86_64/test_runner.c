@@ -131,6 +131,9 @@ int tests64_run(const struct test64_env *env) {
                            test_adytumfs_checksum64()))
         return -1;
     serial64_write("Mich test64: adytumfs data checksum pass\n");
+    if (test_report_record(TEST_ID_ADYTUMFS_COW, test_adytumfs_cow64()))
+        return -1;
+    serial64_write("Mich test64: adytumfs copy-on-write pass\n");
     if (test_report_record(TEST_ID_RESOURCE, test_resource64())) return -1;
     serial64_write("Mich test64: resource object layer pass\n");
     if (test_report_record(TEST_ID_PAGE, test_page64(env))) return -1;

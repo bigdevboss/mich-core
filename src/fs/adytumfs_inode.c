@@ -207,3 +207,130 @@ int adytumfs_inode_truncate(struct kernel_object *device,
     inode->blocks = new_blocks;
     return 0;
 }
+
+// Point one mapped logical block at a different physical block. The covering
+// extent splits into up to three pieces and neighbours that stay physically
+// adjacent merge back, so the array remains packed from the front. Fails
+// closed when the split would need more than the direct slots.
+static int adytumfs_extent_reroute(struct adytumfs_inode *inode, u64 logical,
+                                   u64 fresh) {
+    u32 extents = 0;
+    while (extents < ADYTUMFS_DIRECT_EXTENTS && inode->direct[extents].length)
+        extents++;
+
+    u64 base = 0;
+    for (u32 index = 0; index < extents; index++) {
+        u32 length = inode->direct[index].length;
+        if (logical < base || logical >= base + length) {
+            base += length;
+            continue;
+        }
+        u64 start = inode->direct[index].start_block;
+        u64 offset = logical - base;
+        struct adytumfs_extent pieces[3];
+        u32 count = 0;
+        if (offset) {
+            pieces[count].start_block = start;
+            pieces[count].length = (u32)offset;
+            pieces[count].flags = 0;
+            count++;
+        }
+        pieces[count].start_block = fresh;
+        pieces[count].length = 1;
+        pieces[count].flags = 0;
+        count++;
+        if (offset + 1 < length) {
+            pieces[count].start_block = start + offset + 1;
+            pieces[count].length = (u32)(length - offset - 1);
+            pieces[count].flags = 0;
+            count++;
+        }
+        if (extents - 1u + count > ADYTUMFS_DIRECT_EXTENTS) return -1;
+
+        struct adytumfs_extent rebuilt[ADYTUMFS_DIRECT_EXTENTS];
+        u32 used = 0;
+        for (u32 scan = 0; scan < index; scan++)
+            rebuilt[used++] = inode->direct[scan];
+        for (u32 piece = 0; piece < count; piece++)
+            rebuilt[used++] = pieces[piece];
+        for (u32 scan = index + 1; scan < extents; scan++)
+            rebuilt[used++] = inode->direct[scan];
+
+        // Consecutive slots are logically adjacent, so merging on physical
+        // adjacency is representation preserving and undoes the split when
+        // the allocator handed out a neighbouring block.
+        u32 compact = 0;
+        for (u32 scan = 0; scan < used; scan++) {
+            if (compact &&
+                rebuilt[scan].start_block ==
+                    rebuilt[compact - 1].start_block +
+                        rebuilt[compact - 1].length) {
+                rebuilt[compact - 1].length += rebuilt[scan].length;
+                continue;
+            }
+            rebuilt[compact++] = rebuilt[scan];
+        }
+        for (u32 scan = 0; scan < ADYTUMFS_DIRECT_EXTENTS; scan++) {
+            if (scan < compact) {
+                inode->direct[scan] = rebuilt[scan];
+            } else {
+                inode->direct[scan].start_block = 0;
+                inode->direct[scan].length = 0;
+                inode->direct[scan].flags = 0;
+            }
+        }
+        return 0;
+    }
+    return -1;
+}
+
+int adytumfs_redirect_stage(struct kernel_object *device,
+                            struct adytumfs_superblock *super,
+                            struct adytumfs_inode *inode, u64 logical,
+                            u64 *old_block, u64 *fresh_block) {
+    if (!super || !inode || !old_block || !fresh_block) return -1;
+    if (adytumfs_inode_map(inode, logical, old_block)) return -1;
+    // The old block is still marked allocated here, so the fresh run can
+    // never land on it; nothing else moves until commit.
+    return adytumfs_alloc_run(device, super, 1, fresh_block);
+}
+
+int adytumfs_redirect_commit(struct kernel_object *device,
+                             struct adytumfs_superblock *super,
+                             struct adytumfs_inode *inode, u64 inode_num,
+                             u64 logical, u64 old_block, u64 fresh_block) {
+    if (!super || !inode) return -1;
+    struct adytumfs_extent saved[ADYTUMFS_DIRECT_EXTENTS];
+    for (u32 index = 0; index < ADYTUMFS_DIRECT_EXTENTS; index++)
+        saved[index] = inode->direct[index];
+    if (adytumfs_extent_reroute(inode, logical, fresh_block)) {
+        if (adytumfs_free_run(device, super, fresh_block, 1)) return -1;
+        return -1;
+    }
+    if (adytumfs_inode_write(device, super, inode_num, inode)) {
+        for (u32 index = 0; index < ADYTUMFS_DIRECT_EXTENTS; index++)
+            inode->direct[index] = saved[index];
+        if (adytumfs_free_run(device, super, fresh_block, 1)) return -1;
+        return -1;
+    }
+    // The old block leaves the pool only after the new mapping is on disk,
+    // so the mapping a later boot reads never names a free block.
+    return adytumfs_free_run(device, super, old_block, 1);
+}
+
+int adytumfs_inode_remap(struct kernel_object *device,
+                         struct adytumfs_superblock *super,
+                         struct adytumfs_inode *inode, u64 inode_num,
+                         u64 logical, const u8 *content) {
+    u64 old_block = 0;
+    u64 fresh_block = 0;
+    if (adytumfs_redirect_stage(device, super, inode, logical, &old_block,
+                                &fresh_block))
+        return -1;
+    if (adytumfs_data_write(device, super, fresh_block, content)) {
+        if (adytumfs_free_run(device, super, fresh_block, 1)) return -1;
+        return -1;
+    }
+    return adytumfs_redirect_commit(device, super, inode, inode_num, logical,
+                                    old_block, fresh_block);
+}
