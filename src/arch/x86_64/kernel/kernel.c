@@ -1915,6 +1915,15 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     // scheduler runs it only when no real task is runnable (see task.h).
     task_pool[0].is_idle = 1;
 #ifdef MICH_TEST_BUILD
+    // A crash harness boot packs a crash64 marker module and runs the crash
+    // workload in place of the battery, against the NVMe drive the harness
+    // keeps alive across kills.
+    int crash_boot = 0;
+    for (u32 index = 0; index < info->mods_count; index++)
+        if (module_name_is(&modules[index], "crash64")) {
+            crash_boot = 1;
+            break;
+        }
     test_report_reset();
     struct test64_env test_env;
     test_env.owner = &task_pool[1];
@@ -1932,9 +1941,12 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     test_env.revoke = supervisor64_revoke;
     test_env.terminate = supervisor64_terminate;
     test_env.module_flags = spawn_image_flags[0];
-    if (tests64_run(&test_env)) KERNEL_PANIC("independent kernel tests");
-    if (tests64_run_network(&test_env)) KERNEL_PANIC("independent network tests");
-    if ((spawn_image_flags[0] & BD_MODULE_POSIX_PROFILE) &&
+    if (!crash_boot && tests64_run(&test_env))
+        KERNEL_PANIC("independent kernel tests");
+    if (!crash_boot && tests64_run_network(&test_env))
+        KERNEL_PANIC("independent network tests");
+    if (!crash_boot &&
+        (spawn_image_flags[0] & BD_MODULE_POSIX_PROFILE) &&
         !posix_profile_admitted(&task_pool[1]) &&
         posix_profile_admit(&task_pool[1]))
         KERNEL_PANIC("POSIX profile restore");
@@ -2001,7 +2013,8 @@ void kernel64_main(u32 magic, struct bd_info *info) {
                 "Mich test64: Intel VT-d interrupt remapping pass\n");
         }
     }
-    if (tests64_run_driver(&test_env)) KERNEL_PANIC("independent driver tests");
+    if (!crash_boot && tests64_run_driver(&test_env))
+        KERNEL_PANIC("independent driver tests");
 #endif
     serial64_write("Mich x86_64: PCI enumeration pass\n");
     if (pci64_uses_ecam())
@@ -2013,17 +2026,22 @@ void kernel64_main(u32 magic, struct bd_info *info) {
 #ifdef MICH_TEST_BUILD
     // NVMe has to be probed here: after the MSI-X backend exists and before
     // smp64_init() parks the APs. What counts as a pass lives in the test.
-    if (tests64_run_nvme(&test_env)) KERNEL_PANIC("independent kernel tests");
+    if (crash_boot) {
+        if (tests64_run_crash()) KERNEL_PANIC("crash workload");
+    } else if (tests64_run_nvme(&test_env)) {
+        KERNEL_PANIC("independent kernel tests");
+    }
 #endif
     if (smp64_init()) KERNEL_PANIC("SMP bring-up");
 #ifdef MICH_TEST_BUILD
-    if (tests64_run_smp()) KERNEL_PANIC("independent SMP tests");
+    if (!crash_boot && tests64_run_smp()) KERNEL_PANIC("independent SMP tests");
     int msi_test;
     int msix_test;
     int destructive = (init_module->flags & BOOT_MODULE_HARDWARE_TEST) != 0;
     if (destructive)
         serial64_write("Mich x86_64: hardware destructive test profile\n");
-    if (tests64_run_hardware(&test_env, destructive, &msi_test, &msix_test))
+    if (!crash_boot &&
+        tests64_run_hardware(&test_env, destructive, &msi_test, &msix_test))
         KERNEL_PANIC("independent hardware tests");
 #endif
     int virtio_net_restart_test =
@@ -2062,7 +2080,8 @@ void kernel64_main(u32 magic, struct bd_info *info) {
             bench_boot = 1;
             break;
         }
-    if (!bench_boot && !(init_module->flags & BOOT_MODULE_UNIT_TEST) &&
+    if (!bench_boot && !crash_boot &&
+        !(init_module->flags & BOOT_MODULE_UNIT_TEST) &&
         driver_live_recovery_prepare())
         KERNEL_PANIC("driver live recovery setup");
 #endif
@@ -2082,12 +2101,14 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     }
 #endif
 #ifdef MICH_TEST_BUILD
-    if (!bench_boot && !(init_module->flags & BOOT_MODULE_UNIT_TEST) &&
+    if (!bench_boot && !crash_boot &&
+        !(init_module->flags & BOOT_MODULE_UNIT_TEST) &&
         driver_live_recovery_arm())
         KERNEL_PANIC("driver live recovery arm");
-    if (tests64_run_irq(&test_env, msi_test, msix_test))
+    if (!crash_boot && tests64_run_irq(&test_env, msi_test, msix_test))
         KERNEL_PANIC("independent IRQ tests");
-    if (!bench_boot && !(init_module->flags & BOOT_MODULE_UNIT_TEST)) {
+    if (!bench_boot && !crash_boot &&
+        !(init_module->flags & BOOT_MODULE_UNIT_TEST)) {
         // Keep the lifecycle probe out of the init1/init2 handshake. A bench
         // boot has no recovery lab to reach COMPLETE and unblock these, so it
         // must leave the init tasks runnable.
@@ -2106,7 +2127,7 @@ void kernel64_main(u32 magic, struct bd_info *info) {
 #endif
     if (smp64_host_start()) KERNEL_PANIC("SMP AP host");
 #ifdef MICH_TEST_BUILD
-    if (!(init_module->flags & BOOT_MODULE_UNIT_TEST)) {
+    if (!crash_boot && !(init_module->flags & BOOT_MODULE_UNIT_TEST)) {
         u32 live_slot = PID_SLOT((u32)driver_live_recovery.primary_pid);
         if (live_slot >= MAX_TASKS ||
             task_pool[live_slot].id != driver_live_recovery.primary_pid)
