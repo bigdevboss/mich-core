@@ -222,6 +222,27 @@ int adytumfs_verify(struct kernel_object *device,
 // Map a logical file block to its physical block through the inode's extents.
 int adytumfs_inode_map(const struct adytumfs_inode *inode, u64 logical_block,
                        u64 *physical_block);
+// Copy-on-write redirect of one mapped block. Stage reserves a fresh block
+// for the caller to land the new bytes in (a page transfer or a staging
+// block); commit reroutes the extent to it, persists the inode, and returns
+// the old block to the pool. The old bytes are never overwritten while the
+// on-disk mapping still names them, so a later boot reads either the old
+// block with its old checksum or the new one, never a mix. A failed commit
+// rolls the extent array back and releases the fresh block.
+int adytumfs_redirect_stage(struct kernel_object *device,
+                            struct adytumfs_superblock *super,
+                            struct adytumfs_inode *inode, u64 logical,
+                            u64 *old_block, u64 *fresh_block);
+int adytumfs_redirect_commit(struct kernel_object *device,
+                             struct adytumfs_superblock *super,
+                             struct adytumfs_inode *inode, u64 inode_num,
+                             u64 logical, u64 old_block, u64 fresh_block);
+// The staging-block form of a redirect: land content in the fresh block and
+// commit in one call.
+int adytumfs_inode_remap(struct kernel_object *device,
+                         struct adytumfs_superblock *super,
+                         struct adytumfs_inode *inode, u64 inode_num,
+                         u64 logical, const u8 *content);
 // Grow the file to new_blocks mapped blocks (allocating a run and appending or
 // coalescing an extent), or truncate it down (freeing and reclaiming the tail).
 // Direct extents only for now; indirect blocks come later.
@@ -246,7 +267,7 @@ int adytumfs_dir_add(struct kernel_object *device,
                      struct adytumfs_superblock *super, u64 dir_inode,
                      const char *name, u32 name_len, u64 target_inode, u8 type);
 int adytumfs_dir_remove(struct kernel_object *device,
-                        const struct adytumfs_superblock *super, u64 dir_inode,
+                        struct adytumfs_superblock *super, u64 dir_inode,
                         const char *name, u32 name_len);
 // Iterate directory entries: start with *cursor = 0, get one used entry per call
 // (name needs an ADYTUMFS_NAME_MAX buffer) plus its length, inode, and type, and

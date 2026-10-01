@@ -51,6 +51,10 @@ int adytumfs_file_write(struct kernel_object *device,
     u64 end = offset + length;
     if (end < offset) return -1;
     u64 need = (end + ADYTUMFS_BLOCK_SIZE - 1) / ADYTUMFS_BLOCK_SIZE;
+    // Blocks that existed before this write hold the state a later boot
+    // would read, so they are redirected to fresh copies; blocks the grow is
+    // about to add have no old state to preserve and take the direct write.
+    u64 old_blocks = inode.blocks;
     if (need > inode.blocks && adytumfs_inode_grow(device, super, &inode, need))
         return -1;
 
@@ -71,8 +75,14 @@ int adytumfs_file_write(struct kernel_object *device,
             return -1;
         for (u32 index = 0; index < chunk; index++)
             adytumfs_file_scratch[within + index] = in[done + index];
-        if (adytumfs_data_write(device, super, physical, adytumfs_file_scratch))
+        if (logical < old_blocks) {
+            if (adytumfs_inode_remap(device, super, &inode, inode_num,
+                                     logical, adytumfs_file_scratch))
+                return -1;
+        } else if (adytumfs_data_write(device, super, physical,
+                                       adytumfs_file_scratch)) {
             return -1;
+        }
         done += chunk;
     }
     if (end > inode.size) inode.size = end;

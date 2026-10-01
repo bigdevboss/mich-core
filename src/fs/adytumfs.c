@@ -323,6 +323,9 @@ int adytumfs_pages_sync(u32 mount, u32 inode, u64 generation) {
     u64 needed = in.size / ADYTUMFS_BLOCK_SIZE +
                  (in.size % ADYTUMFS_BLOCK_SIZE ? 1 : 0);
     if (needed > ADYTUMFS_FILE_PAGES) needed = ADYTUMFS_FILE_PAGES;
+    // Pages backed by blocks that predate this write-back are redirected to
+    // fresh copies; pages the grow is about to add are written directly.
+    u64 old_blocks = in.blocks;
     if (needed > in.blocks) {
         if (adytumfs_inode_grow(m->device, &m->super, &in, needed)) return -1;
         if (adytumfs_inode_write(m->device, &m->super, m->slots[inode].inode,
@@ -337,6 +340,35 @@ int adytumfs_pages_sync(u32 mount, u32 inode, u64 generation) {
         }
         u64 physical = 0;
         if (adytumfs_inode_map(&in, page, &physical)) return -1;
+        // A redirected page moves alone: its fresh target shares no run with
+        // the neighbours, so batching stops at the redirect.
+        if (page < old_blocks) {
+            u64 stale = 0;
+            u64 fresh = 0;
+            if (adytumfs_redirect_stage(m->device, &m->super, &in, page,
+                                        &stale, &fresh))
+                return -1;
+            if (page_transfer(m, slot,
+                              (u32)(fresh * ADYTUMFS_SECTORS_PER_BLOCK), page,
+                              1, BLOCK_OP_WRITE))
+                return -1;
+            // The page reached the device through a direct transfer, so the
+            // new bytes are sealed into the checksum region here rather than
+            // through a staging block.
+            struct page_resource *resource = page_resource_get(slot->pages);
+            u8 *bytes = resource ?
+                (u8 *)(uptr_t)resource->physical[page] : 0;
+            if (!bytes ||
+                adytumfs_data_seal(m->device, &m->super, fresh, bytes))
+                return -1;
+            if (adytumfs_redirect_commit(m->device, &m->super, &in,
+                                         m->slots[inode].inode, page, stale,
+                                         fresh))
+                return -1;
+            slot->dirty &= ~(1ull << page);
+            page++;
+            continue;
+        }
         u32 count = 1;
         // One transfer covers one physically contiguous run, so the batch
         // ends where the next dirty page maps to a non-adjacent block.
@@ -596,8 +628,9 @@ int adytumfs_truncate(u32 mount, u32 inode, u64 generation, u32 size,
         for (u32 index = size % ADYTUMFS_BLOCK_SIZE;
              index < ADYTUMFS_BLOCK_SIZE; index++)
             adytumfs_backend_scratch[index] = 0;
-        if (adytumfs_data_write(m->device, &m->super, physical,
-                                adytumfs_backend_scratch))
+        if (adytumfs_inode_remap(m->device, &m->super, &in,
+                                 m->slots[inode].inode, blocks - 1,
+                                 adytumfs_backend_scratch))
             return -1;
     }
     in.size = size;
