@@ -22,7 +22,14 @@ static int check_parent_mutation(struct kernel_object *parent) {
 }
 
 static int check_file_access(const struct vfs_node_info *info, u32 access) {
-    if (info->type == VFS_NODE_DIRECTORY) return POSIX_VFS_EISDIR;
+    // A directory opens read-only so getdents can list it; writing through
+    // one stays the EISDIR POSIX requires.
+    if (info->type == VFS_NODE_DIRECTORY) {
+        if (access & POSIX_FD_ACCESS_WRITE) return POSIX_VFS_EISDIR;
+        if ((access & POSIX_FD_ACCESS_READ) && !(info->mode & 0400u))
+            return POSIX_VFS_EACCES;
+        return 0;
+    }
     if (info->type != VFS_NODE_REGULAR) return POSIX_VFS_EIO;
     if ((access & POSIX_FD_ACCESS_READ) && !(info->mode & 0400u))
         return POSIX_VFS_EACCES;

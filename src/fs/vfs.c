@@ -860,8 +860,11 @@ int vfs_image(struct kernel_object *object, const u8 **data, u32 *size) {
 struct kernel_object *vfs_open(struct kernel_object *object) {
     spin_lock(&vfs_file_lock);
     struct vfs_node_state *node = node_for(object);
+    // Directories open read-only so getdents can list them; the read and
+    // write paths below still require a regular node.
     if (!node || !node_backing_live(node) ||
-        node->type != VFS_NODE_REGULAR) {
+        (node->type != VFS_NODE_REGULAR &&
+         node->type != VFS_NODE_DIRECTORY)) {
         spin_unlock(&vfs_file_lock);
         return 0;
     }
@@ -1195,6 +1198,45 @@ int vfs_stat(struct kernel_object *object, struct vfs_node_info *info) {
     for (u32 index = 0; index <= VFS_NAME_MAX; index++)
         info->name[index] = node->name[index];
     return 0;
+}
+
+int vfs_read_dir(struct kernel_object *object, u64 *cursor, char *name,
+                 u32 *name_len, u64 *inode_out, u32 *type_out) {
+    struct vfs_file_state *file = file_for(object);
+    struct vfs_node_state *node = file ? node_for(file->node) : 0;
+    if (!node || !node_backing_live(node) ||
+        node->type != VFS_NODE_DIRECTORY || !cursor || !name || !name_len ||
+        !inode_out || !type_out)
+        return -1;
+    // A mountpoint lists the mounted tree, the same redirect lookup does.
+    struct vfs_mount_state *mount = mount_for_point(node->self);
+    if (mount) {
+        struct vfs_node_state *root = node_for(mount->root);
+        if (!root || root->type != VFS_NODE_DIRECTORY) return -1;
+        node = root;
+    }
+    if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS)
+        return adytumfs_dir_read(node->mount, node->fs_id,
+                                 node->fs_generation, cursor, name, name_len,
+                                 inode_out, type_out);
+    // Ramfs and bootfs children live in the node table, so the cursor is
+    // the node index the previous call stopped at.
+    u32 parent = node_index(node);
+    for (u32 index = (u32)*cursor; index < VFS_NODE_MAX; index++) {
+        struct vfs_node_state *child = &nodes[index];
+        if (!child->active || !child->linked || child->parent != parent)
+            continue;
+        for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
+            name[byte] = child->name[byte];
+        *name_len = 0;
+        while (name[*name_len]) (*name_len)++;
+        *inode_out = index + 1;
+        *type_out = child->type;
+        *cursor = index + 1;
+        return 0;
+    }
+    *cursor = VFS_NODE_MAX;
+    return 1;
 }
 
 struct kernel_object *vfs_file_pages(struct kernel_object *object,

@@ -96,6 +96,10 @@ int vfs_append(struct kernel_object *file, const void *buffer, u32 length,
 int vfs_truncate(struct kernel_object *file, u32 size);
 int vfs_sync(struct kernel_object *file);
 int vfs_stat(struct kernel_object *object, struct vfs_node_info *info);
+// One used directory entry per call into name: 0 for an entry, 1 at the
+// end, -1 on error. The cursor is opaque and advances past the entry.
+int vfs_read_dir(struct kernel_object *file, u64 *cursor, char *name,
+                 u32 *name_len, u64 *inode, u32 *type);
 struct kernel_object *vfs_node_pages(struct kernel_object *node,
                                       u32 *size);
 struct kernel_object *vfs_file_pages(struct kernel_object *file,

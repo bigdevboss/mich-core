@@ -5,6 +5,7 @@
 #include "posix_fd.h"
 #include "posix_profile.h"
 #include "posix_vfs.h"
+#include "posix_abi.h"
 #include "tests64.h"
 
 int test_posix_vfs64(struct task *owner, struct task *child) {
@@ -59,6 +60,62 @@ int test_posix_vfs64(struct task *owner, struct task *child) {
     valid &= posix_vfs_open(owner, "/boot/init64", POSIX_OPEN_WRONLY, 0) ==
         POSIX_VFS_EROFS;
     valid &= !posix_vfs_mkdir(owner, "/posix-api/dir", 0700);
+    // Directory listing: open read-only, drain packed records, hit the end,
+    // and refuse to open a directory for writing.
+    int listing = posix_vfs_open(owner, "/posix-api", POSIX_OPEN_RDONLY, 0);
+    valid &= listing >= 0;
+    valid &= posix_vfs_open(owner, "/posix-api", POSIX_OPEN_WRONLY, 0) ==
+        POSIX_VFS_EISDIR;
+    u8 listing_buffer[POSIX_IO_MAX];
+    u32 listing_seen_state = 0;
+    u32 listing_seen_readonly = 0;
+    u32 listing_seen_dir = 0;
+    u32 listing_seen_other = 0;
+    while (listing >= 0) {
+        u32 listing_transferred = 0;
+        int listed = posix_fd_getdents(owner, listing, listing_buffer,
+                                       sizeof(listing_buffer),
+                                       &listing_transferred);
+        valid &= !listed;
+        if (listed || !listing_transferred) break;
+        u32 listing_walk = 0;
+        while (listing_walk + 24 <= listing_transferred) {
+            const u8 *record = listing_buffer + listing_walk;
+            u32 record_length = (u32)record[16] | ((u32)record[17] << 8) |
+                ((u32)record[18] << 16) | ((u32)record[19] << 24);
+            u32 record_type = (u32)record[20] | ((u32)record[21] << 8) |
+                ((u32)record[22] << 16) | ((u32)record[23] << 24);
+            const char *record_name = (const char *)(record + 24);
+            if (record_length < 26 || (record_length & 7) ||
+                listing_walk + record_length > listing_transferred) {
+                valid = 0;
+                break;
+            }
+            if (record_name[0] == 's' && record_name[1] == 't' &&
+                record_name[2] == 'a' && record_name[3] == 't' &&
+                record_name[4] == 'e' && !record_name[5]) {
+                listing_seen_state++;
+                if (record_type != POSIX_DT_REG) valid = 0;
+            } else if (record_name[0] == 'd' && record_name[1] == 'i' &&
+                       record_name[2] == 'r' && !record_name[3]) {
+                listing_seen_dir++;
+                if (record_type != POSIX_DT_DIR) valid = 0;
+            } else if (record_name[0] == 'r' && record_name[1] == 'e' &&
+                       record_name[2] == 'a' && record_name[3] == 'd' &&
+                       record_name[4] == 'o' && record_name[5] == 'n' &&
+                       record_name[6] == 'l' && record_name[7] == 'y' &&
+                       !record_name[8]) {
+                listing_seen_readonly++;
+                if (record_type != POSIX_DT_REG) valid = 0;
+            } else {
+                listing_seen_other++;
+            }
+            listing_walk += record_length;
+        }
+    }
+    valid &= listing_seen_state == 1 && listing_seen_readonly == 1 &&
+        listing_seen_dir == 1 && !listing_seen_other;
+    if (listing >= 0) valid &= !posix_fd_close(owner, listing);
     valid &= !posix_vfs_mkdir(owner, "/posix-api/sealed", 0600);
     valid &= !posix_vfs_mkdir(owner, "/posix-api/no-write", 0500);
     valid &= posix_vfs_open(owner, "/posix-api/sealed/item",

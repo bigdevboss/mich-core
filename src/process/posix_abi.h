@@ -28,6 +28,9 @@
 #define POSIX_SYSCALL_GETPPID 207u
 #define POSIX_SYSCALL_BRK 208u
 #define POSIX_SYSCALL_GETRANDOM 209u
+/* 210 through 216 belong to the driver-domain socket stream calls, so the
+   first free number for the POSIX chain is 217. */
+#define POSIX_SYSCALL_GETDENTS 217u
 
 #define POSIX_IO_MAX 512u
 #define POSIX_SEEK_SET 0u
@@ -50,6 +53,19 @@ struct posix_fd_request {
 };
 
 struct posix_io_request {
+    i32 descriptor;
+    u32 length;
+    u32 transferred;
+    u8 data[POSIX_IO_MAX];
+};
+
+// getdents packs variable-length records into the data buffer: an 8-byte
+// inode, an 8-byte offset for the next record, a 4-byte record length, a
+// 4-byte POSIX_DT_* type, then the NUL-terminated name padded to 8 bytes.
+#define POSIX_DT_REG 1u
+#define POSIX_DT_DIR 2u
+
+struct posix_getdents_request {
     i32 descriptor;
     u32 length;
     u32 transferred;
