@@ -34,6 +34,22 @@ int test_adytumfs_ops64(void) {
         adytumfs_path_resolve(dev, &super, "/", &got) == 0 && got == root &&
         adytumfs_path_resolve(dev, &super, "/nope", &got) != 0;
 
+    // Ownership and times are stamped at birth: the fresh inodes carry the
+    // alloc stamp, a directory reports its two names, and the root carries
+    // the format stamp.
+    struct adytumfs_inode born;
+    struct adytumfs_inode dir_born;
+    struct adytumfs_inode root_born;
+    valid = valid &&
+        adytumfs_inode_read(dev, &super, root, &root_born) == 0 &&
+        root_born.atime && root_born.atime == root_born.mtime &&
+        root_born.mtime == root_born.ctime && root_born.links == 2 &&
+        adytumfs_inode_read(dev, &super, readme, &born) == 0 &&
+        born.atime && born.atime == born.mtime && born.mtime == born.ctime &&
+        born.links == 1 && born.uid == 0 && born.gid == 0 &&
+        adytumfs_inode_read(dev, &super, etc, &dir_born) == 0 &&
+        dir_born.links == 2;
+
     // Duplicate names are refused.
     u64 duplicate = 0;
     valid = valid &&

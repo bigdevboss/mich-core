@@ -1,5 +1,6 @@
 #include "adytumfs_format.h"
 #include "crc32c.h"
+#include "rtc64.h"
 
 void adytumfs_inode_pack(u8 *slot, const struct adytumfs_inode *inode) {
     for (u32 index = 0; index < ADYTUMFS_INODE_SIZE; index++) slot[index] = 0;
@@ -99,8 +100,15 @@ int adytumfs_inode_alloc(struct kernel_object *device,
         // outlives it fails the generation check rather than aliasing the new one.
         struct adytumfs_inode fresh = {0};
         fresh.mode = mode;
-        fresh.links = 1;
+        // A directory is born holding the two names every POSIX directory
+        // has, its entry in the parent plus the implicit self reference;
+        // counting subdirectory parents arrives with hard links.
+        fresh.links = (mode & ADYTUMFS_MODE_DIR) ? 2u : 1u;
         fresh.generation = inode.generation + 1;
+        u64 now = rtc64_wall_clock();
+        fresh.atime = now;
+        fresh.mtime = now;
+        fresh.ctime = now;
         if (adytumfs_inode_write(device, super, candidate, &fresh)) return -1;
         super->free_inodes--;
         *inode_num = candidate;

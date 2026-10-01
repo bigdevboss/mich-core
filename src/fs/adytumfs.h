@@ -17,6 +17,18 @@ int adytumfs_inode_get(u32 mount, u32 inode, u32 *used, u32 *type, u32 *size,
 int adytumfs_inode_create(u32 mount, const char *name, u32 parent, u32 type,
                          u32 mode, u32 *inode, u64 *generation);
 int adytumfs_inode_remove(u32 mount, u32 inode);
+// Stamp inode times through the open window. MTIME and CTIME follow data
+// writes and metadata edits; ATIME applies the relatime-lite rule and only
+// refreshes while atime trails mtime, so a steady-state read stages nothing.
+#define ADYTUMFS_TOUCH_ATIME 1u
+#define ADYTUMFS_TOUCH_MTIME 2u
+#define ADYTUMFS_TOUCH_CTIME 4u
+int adytumfs_touch(u32 mount, u32 inode, u64 generation, u32 flags);
+// The live ownership, link count, and time picture of one inode, read
+// through the window staging.
+int adytumfs_inode_meta(u32 mount, u32 inode, u64 generation, u16 *links,
+                        u32 *uid, u32 *gid, u64 *atime, u64 *mtime,
+                        u64 *ctime);
 int adytumfs_truncate(u32 mount, u32 inode, u64 generation, u32 size,
                      u32 *new_size);
 int adytumfs_pages_attach(u32 mount, u32 inode, u64 generation,

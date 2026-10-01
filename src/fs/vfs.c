@@ -3,6 +3,7 @@
 #include "resource.h"
 #include "adytumfs.h"
 #include "entropy.h"
+#include "rtc64.h"
 
 struct vfs_node_state {
     struct kernel_object *self;
@@ -22,6 +23,9 @@ struct vfs_node_state {
     u32 linked;
     u32 fs_id;
     u64 fs_generation;
+    u64 atime;
+    u64 mtime;
+    u64 ctime;
     u32 active;
 };
 
@@ -262,6 +266,10 @@ void vfs_init(void) {
     root->mount_generation = 0;
     root->readonly = 0;
     root->mode = VFS_MODE_DIRECTORY_DEFAULT;
+    u64 now = rtc64_wall_clock();
+    root->atime = now;
+    root->mtime = now;
+    root->ctime = now;
     root->linked = 1;
     root->active = 1;
     root->name[0] = 0;
@@ -569,6 +577,10 @@ struct kernel_object *vfs_create_mode(struct kernel_object *directory,
         node->mount_generation = parent->mount_generation;
         node->readonly = 0;
         node->mode = mode;
+        u64 created = rtc64_wall_clock();
+        node->atime = created;
+        node->mtime = created;
+        node->ctime = created;
         node->special = VFS_SPECIAL_NONE;
         node->linked = 1;
         node->fs_id = 0;
@@ -899,7 +911,9 @@ int vfs_read(struct kernel_object *object, u32 offset,
              void *buffer, u32 length, u32 *transferred) {
     struct vfs_file_state *file = file_for(object);
     struct vfs_node_state *node = file ? node_for(file->node) : 0;
-    if (!node || !node_backing_live(node) || !buffer || !transferred) return -1;
+    if (!node || !node_backing_live(node) || node->type != VFS_NODE_REGULAR ||
+        !buffer || !transferred)
+        return -1;
     if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) {
         if (offset >= node->size) {
             *transferred = 0;
@@ -923,6 +937,10 @@ int vfs_read(struct kernel_object *object, u32 offset,
                 ((u8 *)buffer)[done + index] = source[within + index];
             done += chunk;
         }
+        if (count &&
+            adytumfs_touch(node->mount, node->fs_id, node->fs_generation,
+                           ADYTUMFS_TOUCH_ATIME))
+            return -1;
         *transferred = count;
         return 0;
     }
@@ -966,6 +984,9 @@ int vfs_read(struct kernel_object *object, u32 offset,
                 ((u8 *)buffer)[done + index] = 0;
         done += chunk;
     }
+    // Same relatime-lite rule as the adytumfs backend: reads do not dirty
+    // the node once atime has caught up with the last write.
+    if (count && node->atime < node->mtime) node->atime = rtc64_wall_clock();
     *transferred = count;
     return 0;
 }
@@ -973,8 +994,9 @@ int vfs_read(struct kernel_object *object, u32 offset,
 static int write_node(struct vfs_node_state *node, u32 offset,
                       const void *buffer, u32 length, u32 *transferred) {
     if (!node || !node_backing_live(node) || node->readonly ||
-        node->external_data || !buffer || !transferred ||
-        offset > VFS_FILE_SIZE_MAX || length > VFS_FILE_SIZE_MAX - offset)
+        node->type != VFS_NODE_REGULAR || node->external_data || !buffer ||
+        !transferred || offset > VFS_FILE_SIZE_MAX ||
+        length > VFS_FILE_SIZE_MAX - offset)
         return -1;
     if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) {
         if (offset > ADYTUMFS_FILE_SIZE_MAX ||
@@ -1004,6 +1026,10 @@ static int write_node(struct vfs_node_state *node, u32 offset,
             }
         }
         if (end > node->size) node->size = end;
+        if (length &&
+            adytumfs_touch(node->mount, node->fs_id, node->fs_generation,
+                           ADYTUMFS_TOUCH_MTIME | ADYTUMFS_TOUCH_CTIME))
+            return -1;
         *transferred = length;
         return 0;
     }
@@ -1032,6 +1058,11 @@ static int write_node(struct vfs_node_state *node, u32 offset,
         }
     }
     if (end > node->size) node->size = end;
+    if (length) {
+        u64 written = rtc64_wall_clock();
+        node->mtime = written;
+        node->ctime = written;
+    }
     *transferred = length;
     return 0;
 }
@@ -1061,7 +1092,8 @@ int vfs_append(struct kernel_object *object, const void *buffer, u32 length,
 
 static int truncate_node(struct vfs_node_state *node, u32 size) {
     if (!node || !node_backing_live(node) || node->readonly ||
-        node->external_data || size > VFS_FILE_SIZE_MAX)
+        node->type != VFS_NODE_REGULAR || node->external_data ||
+        size > VFS_FILE_SIZE_MAX)
         return -1;
     if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) {
         u32 new_size = 0;
@@ -1094,6 +1126,9 @@ static int truncate_node(struct vfs_node_state *node, u32 size) {
         }
     }
     node->size = size;
+    u64 trimmed = rtc64_wall_clock();
+    node->mtime = trimmed;
+    node->ctime = trimmed;
     return 0;
 }
 
@@ -1134,6 +1169,24 @@ int vfs_stat(struct kernel_object *object, struct vfs_node_info *info) {
     info->filesystem = node->filesystem;
     info->readonly = node->readonly;
     info->mode = node->mode;
+    info->links = node->type == VFS_NODE_DIRECTORY ? 2u : 1u;
+    info->uid = 0;
+    info->gid = 0;
+    info->atime = node->atime;
+    info->mtime = node->mtime;
+    info->ctime = node->ctime;
+    // The on-disk inode is the source of truth for an adytumfs node: link
+    // count, ownership, and times are read live through the window staging
+    // rather than cached in the node.
+    if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) {
+        u16 links = 0;
+        if (adytumfs_inode_meta(node->mount, node->fs_id,
+                                node->fs_generation, &links, &info->uid,
+                                &info->gid, &info->atime, &info->mtime,
+                                &info->ctime))
+            return -1;
+        info->links = links;
+    }
     for (u32 index = 0; index < VFS_NAME_MAX; index++)
         info->name[index] = node->name[index];
     return 0;

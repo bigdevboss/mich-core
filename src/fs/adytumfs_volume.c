@@ -2,6 +2,7 @@
 #include "crc32c.h"
 #include "block.h"
 #include "cache.h"
+#include "rtc64.h"
 
 int adytumfs_block_read(struct kernel_object *device, u64 block, u8 *buffer) {
     return block_cache_read(device, (u32)(block * ADYTUMFS_SECTORS_PER_BLOCK),
@@ -186,6 +187,10 @@ int adytumfs_make(struct kernel_object *device) {
             root.mode = ADYTUMFS_MODE_DIR | 0755u;
             root.links = 2;
             root.generation = 1;
+            u64 now = rtc64_wall_clock();
+            root.atime = now;
+            root.mtime = now;
+            root.ctime = now;
             adytumfs_inode_pack(
                 block + ADYTUMFS_ROOT_INODE * ADYTUMFS_INODE_SIZE, &root);
         }

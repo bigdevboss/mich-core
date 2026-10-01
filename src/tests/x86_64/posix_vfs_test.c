@@ -30,7 +30,8 @@ int test_posix_vfs64(struct task *owner, struct task *child) {
     int valid = root && directory && denied == POSIX_VFS_EACCES && admitted &&
         state == 0;
     valid &= !posix_vfs_stat_path(owner, "/posix-api/state", &info);
-    valid &= info.type == VFS_NODE_REGULAR && info.mode == 0600;
+    valid &= info.type == VFS_NODE_REGULAR && info.mode == 0600 &&
+        info.links == 1 && info.uid == 0 && info.gid == 0 && info.mtime;
     valid &= !posix_fd_get_cloexec(owner, state, &position) && position;
     valid &= !posix_fd_write(owner, state, payload, sizeof(payload),
                              &transferred) && transferred == sizeof(payload);
