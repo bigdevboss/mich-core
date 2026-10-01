@@ -474,6 +474,13 @@ int adytumfs_commit(struct kernel_object *device,
                         : bitmap_slot_base(super, inactive) + slot->index;
         if (adytumfs_block_write(device, block, slot->image)) return -1;
     }
+    // Land every dirty sector of this device before the flip exists on it.
+    // The cache flushes entries in array order, so one flush could seat the
+    // new superblock ahead of the metadata it names and a crash between the
+    // two would leave the newest generation naming blocks the device never
+    // wrote. Flushing here, then writing and flushing the superblock alone,
+    // makes the flip the last write the commit can issue.
+    if (block_cache_flush(device)) return -1;
     // The superblock write is the flip: it lands last, carries generation
     // plus one, and names the set just written. A torn write fails the
     // superblock checksum and the mount picker falls back to the old one.
@@ -484,11 +491,16 @@ int adytumfs_commit(struct kernel_object *device,
     // path is single threaded like the rest of the format layer.
     static u8 block[ADYTUMFS_BLOCK_SIZE];
     adytumfs_super_pack(block, &next);
-    if (adytumfs_block_write(device, superblock_slot(super->total_blocks,
-                                                     inactive),
-                             block))
+    u64 flip = superblock_slot(super->total_blocks, inactive);
+    if (adytumfs_block_write(device, flip, block)) return -1;
+    if (block_cache_flush(device)) {
+        // A failed flip can leave a half written superblock resident in the
+        // cache. A retry must not land it ahead of the metadata it names, so
+        // the cached copy is dropped and rebuilt from the staging.
+        block_cache_invalidate(device, (u32)(flip * ADYTUMFS_SECTORS_PER_BLOCK),
+                               ADYTUMFS_SECTORS_PER_BLOCK);
         return -1;
-    if (block_cache_flush(device)) return -1;
+    }
     *super = next;
     adytumfs_window_discard(device);
     return 0;
