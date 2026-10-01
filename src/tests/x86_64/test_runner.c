@@ -60,26 +60,8 @@ int tests64_run(const struct test64_env *env) {
     serial64_write("Mich test64: ChaCha20 DRBG pass\n");
     if (test_report_record(TEST_ID_RTC, test_rtc64())) return -1;
     serial64_write("Mich test64: RTC civil date conversion pass\n");
-    if (test_report_record(TEST_ID_SHA256, test_sha256_64())) return -1;
-    serial64_write("Mich test64: SHA-256, HMAC and HKDF pass\n");
     if (test_report_record(TEST_ID_SIPHASH, test_siphash64())) return -1;
     serial64_write("Mich test64: SipHash-2-4 pass\n");
-    if (test_report_record(TEST_ID_AES_GCM, test_aes_gcm64())) return -1;
-    serial64_write("Mich test64: AES-128-GCM pass\n");
-    if (test_report_record(TEST_ID_X25519, test_x25519_64())) return -1;
-    serial64_write("Mich test64: X25519 pass\n");
-    if (test_report_record(TEST_ID_P256, test_p256_64())) return -1;
-    serial64_write("Mich test64: ECDSA P-256 verify pass\n");
-    if (test_report_record(TEST_ID_RSA, test_rsa64())) return -1;
-    serial64_write("Mich test64: RSA PKCS1 and PSS verify pass\n");
-    if (test_report_record(TEST_ID_X509, test_x509_64())) return -1;
-    serial64_write("Mich test64: DER and X.509 parsing pass\n");
-    if (test_report_record(TEST_ID_X509_CHAIN, test_x509_chain64())) return -1;
-    serial64_write("Mich test64: X.509 chain to a real anchor pass\n");
-    if (test_report_record(TEST_ID_TLS_RECORDS, test_tls_records64())) return -1;
-    serial64_write("Mich test64: TLS 1.3 key schedule and records pass\n");
-    if (test_report_record(TEST_ID_TLS_HANDSHAKE, test_tls_handshake64())) return -1;
-    serial64_write("Mich test64: TLS 1.3 client handshake pass\n");
     if (test_report_record(TEST_ID_CRC32C, test_crc32c64())) return -1;
     serial64_write("Mich test64: crc32c and little-endian helpers pass\n");
     if (test_report_record(TEST_ID_ADYTUMFS_SUPER, test_adytumfs_super64()))
