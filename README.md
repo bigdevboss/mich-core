@@ -628,9 +628,6 @@ This prevents an MSI-X interrupt from corrupting a queue or causing a lost wakeu
 | Panic register dump | Yes |
 | FPU context switching | FXSAVE and FXRSTOR |
 | SMP | Yes, AP bring-up, per-CPU state, IPI and spinlocks |
-| TLS 1.3 client | Yes, x25519 with AES-128-GCM |
-| X.509 validation | Yes, chain, validity and host name |
-| HTTPS request | Yes, verified against a real server |
 | IOMMU | Intel VT-d and AMD-Vi coherent DMA |
 | AArch64 | Planned |
 | RISC-V 64 | Planned |
@@ -956,39 +953,23 @@ because the hot path is in memory with no MMIO):
 TCG (emulated CPU) numbers run 5-9x higher on the same machine and are useful
 only for spotting relative regressions, never as a figure to quote.
 
-## TLS 1.3
+## Crypto policy
 
-The kernel ships a TLS 1.3 client and can complete a handshake with an
-ordinary server, validate its certificate chain and send an HTTPS request.
-`make test64-tls` runs exactly that against a local `openssl s_server`.
+The kernel keeps only the cryptography its own machinery needs, and nothing
+a userspace library does better:
 
-The primitives live in `src/crypto/` and are checked against published test
-vectors rather than against themselves: FIPS 180-4 and RFC 4231 for SHA-256
-and HMAC, RFC 5869 for HKDF, the GCM specification test cases, RFC 7748 for
-x25519, FIPS 186-4 for ECDSA P-256, and the self-signatures of ISRG Root X1
-and DigiCert Global Root G2 for RSA. The key schedule and the record layer are
-checked against the byte-for-byte handshake published in RFC 8448, and the
-certificate parser against the 150 certificates in a system trust store plus
-the live chain served by google.com.
+- A ChaCha20 DRBG entropy source, because userspace randomness has to come
+  from the kernel, not the other way around.
+- SipHash-2-4 keyed with boot entropy, used to derive TCP initial sequence
+  numbers the way Linux does.
+- CRC32C for adytumfs integrity: superblock and data checksums.
 
-### What it does not do
-
-This is a working client, not a replacement for a TLS library. Missing on
-purpose, and worth knowing before trusting it with anything:
-
-- **No revocation checking.** Neither OCSP nor CRL. A certificate that has
-  been revoked still validates.
-- **No session resumption and no 0-RTT.** Every connection pays for a full
-  handshake.
-- **No KeyUpdate**, so a connection cannot rekey and is bounded by the record
-  sequence number.
-- **One group and one cipher suite**: x25519 and `TLS_AES_128_GCM_SHA256`. A
-  server that insists on anything else is refused rather than negotiated with.
-- **No P-384**, so an ECDSA chain on that curve cannot be verified. RSA and
-  ECDSA P-256 chains work.
-- **No client certificates.**
-- Three roots are compiled in: ISRG Root X1, DigiCert Global Root G2 and
-  GTS Root R1.
+That is the whole list. There is no TLS, no X.509, and no public key
+cryptography in the kernel. Writing and shipping your own protocol
+cryptography is the classic OS dev trap, and the kernel's job is to be a
+small auditable TCB, not a crypto library. An operating system built on
+Mich Core links the TLS library of its choice in userspace, the same way
+the userspace already owns init, libc, and the driver capsules.
 
 ## Versioning
 
