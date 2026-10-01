@@ -11,7 +11,7 @@ struct vfs_name_request {
     u32 type;
     u32 node_handle;
     u32 reserved;
-    char name[VFS_NAME_MAX];
+    char name[VFS_NAME_MAX + 1];
 };
 
 struct vfs_open_request {
