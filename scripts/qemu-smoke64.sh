@@ -676,6 +676,7 @@ for marker in \
     "Mich test64: adytumfs mount integrity pass" \
     "Mich test64: adytumfs data checksum pass" \
     "Mich test64: adytumfs copy-on-write pass" \
+    "Mich test64: adytumfs crash windows pass" \
     "Mich test64: nvme controller and prp io pass" \
     "Mich test64: nvme scatter-gather io pass" \
     "Mich test64: nvme msi-x completion wake pass" \
