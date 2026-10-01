@@ -5,8 +5,8 @@
 // inode table are checksummed, but the bitmap is not, and the allocation
 // truth is stored three times: bitmap bits, inode extents, and the superblock
 // counters. A volume is only mountable when the views agree, so a forged or
-// corrupted extent cannot reach the metadata prefix, the backup superblock,
-// or another file's blocks.
+// corrupted extent cannot reach the metadata prefix, the checksum region and
+// the shadow tail, or another file's blocks.
 
 #define ADYTUMFS_VERIFY_CLAIMS_MAX \
     ((u32)ADYTUMFS_INODE_TABLE_BLOCKS_MAX * ADYTUMFS_INODES_PER_BLOCK * \
@@ -75,12 +75,13 @@ int adytumfs_verify(struct kernel_object *device,
             }
             if (terminated) return -1;
             u64 start = in.direct[index].start_block;
-            // The metadata prefix and the backup superblock are never handed
-            // out by the allocator, so an extent reaching either is forged.
-            // The bound is written as a subtraction so a crafted start cannot
-            // overflow the addition.
-            if (start < super->data_start || start >= super->total_blocks - 1 ||
-                length > super->total_blocks - 1 - start)
+            // The metadata prefix and the whole tail from the checksum region
+            // on are never handed out by the allocator, so an extent reaching
+            // either is forged. The bound is written as a subtraction so a
+            // crafted start cannot overflow the addition.
+            if (start < super->data_start ||
+                start >= super->data_checksum_region ||
+                length > super->data_checksum_region - start)
                 return -1;
             if (verify_claim_count >= ADYTUMFS_VERIFY_CLAIMS_MAX) return -1;
             verify_claims[verify_claim_count].start = start;
@@ -94,13 +95,14 @@ int adytumfs_verify(struct kernel_object *device,
         // mapped blocks anyway.
     }
 
-    // The metadata prefix and the backup superblock must stay allocated, and
-    // every allocated data block must belong to an extent.
+    // The metadata prefix and the tail from the checksum region on must stay
+    // allocated, and every allocated data block must belong to an extent.
     u64 allocated = 0;
     for (u64 block = 0; block < super->total_blocks; block++) {
         int bit = verify_bit(device, super, block);
         if (bit < 0) return -1;
-        if (block < super->data_start || block == super->total_blocks - 1) {
+        if (block < super->data_start ||
+            block >= super->data_checksum_region) {
             if (!bit) return -1;
             continue;
         }
@@ -127,8 +129,10 @@ int adytumfs_verify(struct kernel_object *device,
     // leaked and none is claimed while free.
     if (claimed != allocated) return -1;
     if (super->free_inodes != free_inodes) return -1;
+    // The allocatable span ends at the checksum region, not at the backup
+    // superblock, so the free count is taken against the region start.
     if (super->free_blocks !=
-        super->total_blocks - 1 - super->data_start - allocated)
+        super->data_checksum_region - super->data_start - allocated)
         return -1;
     return 0;
 }

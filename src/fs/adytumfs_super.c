@@ -59,9 +59,11 @@ int adytumfs_super_unpack(struct adytumfs_superblock *super, const u8 *block) {
 
 int adytumfs_super_valid(const struct adytumfs_superblock *super,
                          u64 device_blocks) {
-    // An unknown incompatible feature means the on-disk layout is one we cannot
-    // safely interpret, so refuse the volume rather than guess.
-    if (super->feature_incompat) return -1;
+    // The v2 layout is one incompatible package (checksum region plus the
+    // shadow tail), so the mask must match exactly: a missing bit is a volume
+    // this build cannot interpret, and an extra bit is one a future build
+    // wrote and this one must not guess at.
+    if (super->feature_incompat != ADYTUMFS_FEATURE_INCOMPAT_V2) return -1;
     if (super->block_size != ADYTUMFS_BLOCK_SIZE) return -1;
     if (super->total_blocks > device_blocks) return -1;
 
@@ -96,9 +98,23 @@ int adytumfs_super_valid(const struct adytumfs_superblock *super,
         return -1;
     if (super->root_inode == 0 || super->root_inode >= super->inode_count)
         return -1;
-    if (super->data_checksum_region &&
-        (super->data_checksum_region < super->data_start ||
-         super->data_checksum_region >= super->total_blocks))
+    // The v2 tail grows backwards from the last block: shadow superblock,
+    // shadow bitmap, shadow table, then the checksum region. Every bound is
+    // derived with the prefix checks above already in place, so the
+    // subtraction cannot underflow.
+    u64 tail_base = super->total_blocks - 1 - super->block_bitmap_blocks -
+                    super->inode_table_blocks;
+    if (super->data_checksum_region < super->data_start + 1 ||
+        super->data_checksum_region > tail_base)
+        return -1;
+    u64 data_blocks = super->data_checksum_region - super->data_start;
+    u64 region_blocks = tail_base - super->data_checksum_region;
+    // The region must hold one u32 per data block; a larger region is a
+    // volume the formatter solved a different span for, but a smaller one
+    // leaves data blocks with nowhere to store their checksum.
+    if (region_blocks <
+        (data_blocks + ADYTUMFS_CHECKSUMS_PER_BLOCK - 1) /
+            ADYTUMFS_CHECKSUMS_PER_BLOCK)
         return -1;
     return 0;
 }

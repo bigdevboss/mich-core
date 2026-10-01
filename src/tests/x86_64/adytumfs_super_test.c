@@ -5,6 +5,9 @@ int test_adytumfs_super64(void) {
     // A 4 KiB block is too big for a modest stack, and this test is single
     // threaded, so the scratch block is static.
     static u8 block[ADYTUMFS_BLOCK_SIZE];
+    // The tail grows backwards from block 1023: shadow superblock, shadow
+    // bitmap (1), shadow table (4), so the checksum region starts at 1017 and
+    // covers the 1011 data blocks [6, 1017).
     struct adytumfs_superblock super = {
         .format_version = ADYTUMFS_FORMAT_VERSION,
         .block_size = ADYTUMFS_BLOCK_SIZE,
@@ -16,13 +19,13 @@ int test_adytumfs_super64(void) {
         .inode_count = 64,
         .root_inode = ADYTUMFS_ROOT_INODE,
         .data_start = 6,
-        .free_blocks = 1018,
+        .free_blocks = 1011,
         .free_inodes = 63,
         .generation = 1,
         .feature_compat = 0,
-        .feature_incompat = 0,
+        .feature_incompat = ADYTUMFS_FEATURE_INCOMPAT_V2,
         .feature_ro_compat = 0,
-        .data_checksum_region = 0,
+        .data_checksum_region = 1017,
     };
 
     adytumfs_super_pack(block, &super);
@@ -58,13 +61,23 @@ int test_adytumfs_super64(void) {
     block[0] = 'X';
     valid = valid && adytumfs_super_unpack(&decoded, block) != 0;
 
-    // Bounds validation rejects an out-of-range root inode and a region that is
-    // not where the fixed order demands.
+    // Bounds validation rejects an out-of-range root inode, a table that is
+    // not where the fixed order demands, a checksum region that does not fit
+    // its data span, and an unknown incompatible feature bit.
     struct adytumfs_superblock bad = super;
     bad.root_inode = super.inode_count;
     valid = valid && adytumfs_super_valid(&bad, 1024) != 0;
     bad = super;
     bad.inode_table_start = 3;
+    valid = valid && adytumfs_super_valid(&bad, 1024) != 0;
+    bad = super;
+    bad.data_checksum_region = 1020;
+    valid = valid && adytumfs_super_valid(&bad, 1024) != 0;
+    bad = super;
+    bad.data_checksum_region = super.data_start;
+    valid = valid && adytumfs_super_valid(&bad, 1024) != 0;
+    bad = super;
+    bad.feature_incompat = ADYTUMFS_FEATURE_INCOMPAT_V2 | 0x2u;
     valid = valid && adytumfs_super_valid(&bad, 1024) != 0;
 
     return valid ? 0 : -1;

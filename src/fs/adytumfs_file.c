@@ -26,7 +26,7 @@ int adytumfs_file_read(struct kernel_object *device,
         if (chunk > want - done) chunk = (u32)(want - done);
         u64 physical;
         if (adytumfs_inode_map(&inode, logical, &physical)) return -1;
-        if (adytumfs_block_read(device, physical, adytumfs_file_scratch))
+        if (adytumfs_data_read(device, super, physical, adytumfs_file_scratch))
             return -1;
         for (u32 index = 0; index < chunk; index++)
             out[done + index] = adytumfs_file_scratch[within + index];
@@ -67,11 +67,11 @@ int adytumfs_file_write(struct kernel_object *device,
         // A partial block keeps its surrounding bytes; a full-block overwrite
         // does not need the prior contents.
         if ((within != 0 || chunk != ADYTUMFS_BLOCK_SIZE) &&
-            adytumfs_block_read(device, physical, adytumfs_file_scratch))
+            adytumfs_data_read(device, super, physical, adytumfs_file_scratch))
             return -1;
         for (u32 index = 0; index < chunk; index++)
             adytumfs_file_scratch[within + index] = in[done + index];
-        if (adytumfs_block_write(device, physical, adytumfs_file_scratch))
+        if (adytumfs_data_write(device, super, physical, adytumfs_file_scratch))
             return -1;
         done += chunk;
     }
