@@ -3,6 +3,7 @@
 #include "object.h"
 #include "vfs.h"
 #include "posix_vfs.h"
+#include "posix_profile.h"
 #include "posix_abi.h"
 #include "spinlock.h"
 
@@ -426,6 +427,20 @@ int posix_fd_stat(struct task *task, int descriptor, struct vfs_node_info *info)
     struct posix_ofd *ofd = retain_descriptor(task, descriptor, 0);
     if (!ofd) return -1;
     int result = vfs_stat(ofd->file, info);
+    release_ofd(ofd);
+    return result;
+}
+
+int posix_fd_fchmod(struct task *task, int descriptor, u32 mode) {
+    if (mode & ~VFS_MODE_MASK) return POSIX_VFS_EINVAL;
+    if (!posix_profile_vfs_authorized(task)) return POSIX_VFS_EACCES;
+    struct posix_ofd *ofd = retain_descriptor(task, descriptor, 0);
+    if (!ofd) return POSIX_VFS_EBADF;
+    struct vfs_node_info info;
+    int result = vfs_stat(ofd->file, &info) ? POSIX_VFS_EIO : 0;
+    if (!result && info.readonly) result = POSIX_VFS_EROFS;
+    if (!result && info.uid != task->uid) result = POSIX_VFS_EPERM;
+    if (!result && vfs_chmod(ofd->file, mode)) result = POSIX_VFS_EIO;
     release_ofd(ofd);
     return result;
 }

@@ -2072,7 +2072,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         object_release(object);
         return handle ? handle : (u64)-1;
     }
-    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_GETDENTS) {
+    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_UMASK) {
         struct task *task = &task_pool[current_task_slot];
         if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
         if (number == POSIX_SYSCALL_OPEN) {
@@ -2191,6 +2191,49 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             return vm64_copy_to(task->page_dir, arg0, &request,
                                 sizeof(request)) ?
                 (u64)(i64)POSIX_VFS_EIO : (u64)(i64)request.transferred;
+        }
+        if (number == POSIX_SYSCALL_CHMOD) {
+            struct posix_chmod_request request;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 0) ||
+                vm64_copy_from(task->page_dir, &request, arg0,
+                               sizeof(request)) ||
+                request.path[VFS_PATH_MAX - 1])
+                return (u64)(i64)POSIX_VFS_EINVAL;
+            int result = posix_vfs_chmod(task, request.path, request.mode);
+            return result ? (u64)(i64)result : 0;
+        }
+        if (number == POSIX_SYSCALL_FCHMOD) {
+            struct posix_fchmod_request request;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 0) ||
+                vm64_copy_from(task->page_dir, &request, arg0,
+                               sizeof(request)) || request.reserved)
+                return (u64)(i64)POSIX_VFS_EINVAL;
+            int error = posix_fd_error(task, request.descriptor, 0);
+            if (error) return (u64)(i64)error;
+            error = posix_fd_fchmod(task, request.descriptor, request.mode);
+            return error ? (u64)(i64)error : 0;
+        }
+        if (number == POSIX_SYSCALL_CHOWN) {
+            struct posix_chown_request request;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 0) ||
+                vm64_copy_from(task->page_dir, &request, arg0,
+                               sizeof(request)) ||
+                request.path[VFS_PATH_MAX - 1])
+                return (u64)(i64)POSIX_VFS_EINVAL;
+            int result = posix_vfs_chown(task, request.path, request.uid,
+                                         request.gid);
+            return result ? (u64)(i64)result : 0;
+        }
+        if (number == POSIX_SYSCALL_UMASK) {
+            struct posix_umask_request request;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 0) ||
+                vm64_copy_from(task->page_dir, &request, arg0,
+                               sizeof(request)) || request.reserved)
+                return (u64)(i64)POSIX_VFS_EINVAL;
+            // umask never fails: the old mask rides back as the return.
+            u32 previous = task->umask;
+            task->umask = request.mask & VFS_MODE_MASK;
+            return (u64)previous;
         }
         if (number == POSIX_SYSCALL_STAT) {
             struct posix_stat_path_request request;

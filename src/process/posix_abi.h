@@ -31,6 +31,10 @@
 /* 210 through 216 belong to the driver-domain socket stream calls, so the
    first free number for the POSIX chain is 217. */
 #define POSIX_SYSCALL_GETDENTS 217u
+#define POSIX_SYSCALL_CHMOD 218u
+#define POSIX_SYSCALL_FCHMOD 219u
+#define POSIX_SYSCALL_CHOWN 220u
+#define POSIX_SYSCALL_UMASK 221u
 
 #define POSIX_IO_MAX 512u
 #define POSIX_SEEK_SET 0u
@@ -70,6 +74,30 @@ struct posix_getdents_request {
     u32 length;
     u32 transferred;
     u8 data[POSIX_IO_MAX];
+};
+
+struct posix_chmod_request {
+    u32 mode;
+    char path[VFS_PATH_MAX];
+};
+
+struct posix_fchmod_request {
+    i32 descriptor;
+    u32 mode;
+    u32 reserved;
+};
+
+// chown carries uid and gid as signed values where -1 leaves the field
+// unchanged, the POSIX convention.
+struct posix_chown_request {
+    i32 uid;
+    i32 gid;
+    char path[VFS_PATH_MAX];
+};
+
+struct posix_umask_request {
+    u32 mask;
+    u32 reserved;
 };
 
 struct posix_seek_request {

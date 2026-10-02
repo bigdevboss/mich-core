@@ -375,3 +375,7 @@ admitted to a POSIX profile. They are defined in `src/process/posix_abi.h`.
 | 208 | brk | Adjust the program break (heap). |
 | 209 | getrandom | Fill a buffer with random bytes. |
 | 217 | getdents | Read directory entries from an open directory descriptor. |
+| 218 | chmod | Change the permission bits of a path. |
+| 219 | fchmod | Change permission bits on an open descriptor. |
+| 220 | chown | Change file ownership by path. |
+| 221 | umask | Set the process create mask and return the previous one. |

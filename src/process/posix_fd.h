@@ -40,6 +40,7 @@ int posix_fd_stat(struct task *task, int descriptor,
                   struct vfs_node_info *info);
 int posix_fd_fork(struct task *parent, struct task *child);
 void posix_fd_close_cloexec(struct task *task);
+int posix_fd_fchmod(struct task *task, int descriptor, u32 mode);
 void posix_fd_close_all(struct task *task);
 u32 posix_fd_revoke_object(struct kernel_object *object);
 u32 posix_fd_active_count(void);

@@ -13,6 +13,7 @@
 #define POSIX_OPEN_APPEND 0x400u
 #define POSIX_OPEN_CLOEXEC 0x80000u
 
+#define POSIX_VFS_EPERM (-1)
 #define POSIX_VFS_EIO (-5)
 #define POSIX_VFS_EBADF (-9)
 #define POSIX_VFS_EACCES (-13)
@@ -37,5 +38,7 @@ int posix_vfs_mkdir(struct task *task, const char *path, u32 mode);
 int posix_vfs_unlink(struct task *task, const char *path);
 int posix_vfs_rmdir(struct task *task, const char *path);
 int posix_vfs_truncate_path(struct task *task, const char *path, u32 size);
+int posix_vfs_chmod(struct task *task, const char *path, u32 mode);
+int posix_vfs_chown(struct task *task, const char *path, i32 uid, i32 gid);
 
 #endif

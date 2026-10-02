@@ -555,6 +555,36 @@ int adytumfs_touch(u32 mount, u32 inode, u64 generation, u32 flags) {
                                 &in);
 }
 
+int adytumfs_inode_update(u32 mount, u32 inode, u64 generation, u32 flags,
+                          u32 mode, u32 uid, u32 gid) {
+    struct adytumfs_mount *m = slot_mount(mount, inode, generation);
+    if (!m || !flags || (flags & ~(ADYTUMFS_SET_MODE | ADYTUMFS_SET_UID |
+                                   ADYTUMFS_SET_GID)))
+        return -1;
+    struct adytumfs_inode in;
+    if (slot_inode_read(m, inode, &in)) return -1;
+    u32 changed = 0;
+    if ((flags & ADYTUMFS_SET_MODE) && (in.mode & 0777u) != mode) {
+        // The on-disk mode carries the type bits over the permission bits,
+        // so an edit replaces only the permission half.
+        in.mode = (u16)((in.mode & (ADYTUMFS_MODE_DIR | ADYTUMFS_MODE_REG)) |
+                        mode);
+        changed = 1;
+    }
+    if ((flags & ADYTUMFS_SET_UID) && in.uid != uid) {
+        in.uid = uid;
+        changed = 1;
+    }
+    if ((flags & ADYTUMFS_SET_GID) && in.gid != gid) {
+        in.gid = gid;
+        changed = 1;
+    }
+    if (!changed) return 0;
+    in.ctime = rtc64_wall_clock();
+    return adytumfs_inode_write(m->device, &m->super, m->slots[inode].inode,
+                                &in);
+}
+
 int adytumfs_inode_meta(u32 mount, u32 inode, u64 generation, u16 *links,
                         u32 *uid, u32 *gid, u64 *atime, u64 *mtime,
                         u64 *ctime) {

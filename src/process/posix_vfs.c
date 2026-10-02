@@ -120,6 +120,13 @@ int posix_vfs_open(struct task *task, const char *path, u32 flags, u32 mode) {
             }
         } else {
             created = 1;
+            if (vfs_chown(node, task->uid, task->gid)) {
+                vfs_unlink(parent, name);
+                object_release(node);
+                node = 0;
+                object_release(parent);
+                return POSIX_VFS_EIO;
+            }
         }
     } else if (result) {
         return result;
@@ -165,7 +172,13 @@ int posix_vfs_mkdir(struct task *task, const char *path, u32 mode) {
             struct kernel_object *created = vfs_create_mode(
                 parent, name, VFS_NODE_DIRECTORY, mode & ~task->umask);
             if (!created) result = POSIX_VFS_ENOSPC;
-            else object_release(created);
+            else {
+                if (vfs_chown(created, task->uid, task->gid)) {
+                    vfs_unlink(parent, name);
+                    result = POSIX_VFS_EIO;
+                }
+                object_release(created);
+            }
         }
     }
     object_release(parent);
@@ -218,6 +231,43 @@ int posix_vfs_truncate_path(struct task *task, const char *path, u32 size) {
     if (!result && !file) result = POSIX_VFS_ENFILE;
     if (!result && vfs_truncate(file, size)) result = POSIX_VFS_EIO;
     if (file) object_release(file);
+    if (node) object_release(node);
+    return result;
+}
+
+int posix_vfs_chmod(struct task *task, const char *path, u32 mode) {
+    if (mode & ~VFS_MODE_MASK) return POSIX_VFS_EINVAL;
+    if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
+    struct kernel_object *node = 0;
+    int result = posix_profile_resolve(task, path, &node);
+    struct vfs_node_info info;
+    if (!result) result = node_info(node, &info);
+    if (!result && info.readonly) result = POSIX_VFS_EROFS;
+    // chmod is the owner's call; there is no root override to lean on.
+    if (!result && info.uid != task->uid) result = POSIX_VFS_EPERM;
+    if (!result && vfs_chmod(node, mode)) result = POSIX_VFS_EIO;
+    if (node) object_release(node);
+    return result;
+}
+
+int posix_vfs_chown(struct task *task, const char *path, i32 uid, i32 gid) {
+    if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
+    struct kernel_object *node = 0;
+    int result = posix_profile_resolve(task, path, &node);
+    struct vfs_node_info info;
+    if (!result) result = node_info(node, &info);
+    if (!result && info.readonly) result = POSIX_VFS_EROFS;
+    u32 next_uid = uid < 0 ? info.uid : (u32)uid;
+    u32 next_gid = gid < 0 ? info.gid : (u32)gid;
+    if (!result && task->uid != 0) {
+        // A non-root owner cannot hand the file to a different owner and
+        // may only regroup within its own single gid.
+        if (task->uid != info.uid || next_uid != info.uid ||
+            (next_gid != task->gid && next_gid != info.gid))
+            result = POSIX_VFS_EPERM;
+    }
+    if (!result && vfs_chown(node, next_uid, next_gid))
+        result = POSIX_VFS_EIO;
     if (node) object_release(node);
     return result;
 }
