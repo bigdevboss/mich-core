@@ -1119,6 +1119,9 @@ int fork64(void) {
     child->parent_id = parent->id;
     child->capabilities = 0;
     task_set_name(child, parent->name);
+    child->uid = parent->uid;
+    child->gid = parent->gid;
+    child->umask = parent->umask;
     if (posix_fd_fork(parent, child) || posix_profile_fork(parent, child)) {
         task_free_slot(child);
         return -1;
@@ -1307,6 +1310,8 @@ int posix_execve64(u64 path_address, u64 argv_address, u64 envp_address) {
     u32 size = 0;
     if (vfs_stat(node, &info)) result = POSIX_PROCESS_ENOENT;
     else if (info.type == VFS_NODE_DIRECTORY) result = POSIX_PROCESS_EISDIR;
+    else if (!posix_mode_allows(&info, task, 0100u))
+        result = POSIX_PROCESS_EACCES;
     /* A present non-directory node without image backing is not a valid
        static Mich image; v0 maps that to EINVAL rather than inventing an
        exec-permission error surface. */

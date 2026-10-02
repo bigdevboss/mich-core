@@ -1,6 +1,7 @@
 #include "posix_vfs.h"
 #include "posix_profile.h"
 #include "posix_fd.h"
+#include "task.h"
 #include "object.h"
 
 static int profile_mutation_allowed(struct task *task) {
@@ -11,31 +12,37 @@ static int node_info(struct kernel_object *node, struct vfs_node_info *info) {
     return node && info && !vfs_stat(node, info) ? 0 : POSIX_VFS_EIO;
 }
 
-static int check_parent_mutation(struct kernel_object *parent) {
+static int check_parent_mutation(struct task *task,
+                                 struct kernel_object *parent) {
     struct vfs_node_info info;
     int result = node_info(parent, &info);
     if (result) return result;
     if (info.type != VFS_NODE_DIRECTORY) return POSIX_VFS_ENOTDIR;
     if (info.readonly) return POSIX_VFS_EROFS;
-    if ((info.mode & 0300u) != 0300u) return POSIX_VFS_EACCES;
+    // Entry creation and removal need write and search on the parent.
+    if (!posix_mode_allows(&info, task, 0300u)) return POSIX_VFS_EACCES;
     return 0;
 }
 
-static int check_file_access(const struct vfs_node_info *info, u32 access) {
+static int check_file_access(struct task *task,
+                             const struct vfs_node_info *info, u32 access) {
     // A directory opens read-only so getdents can list it; writing through
     // one stays the EISDIR POSIX requires.
     if (info->type == VFS_NODE_DIRECTORY) {
         if (access & POSIX_FD_ACCESS_WRITE) return POSIX_VFS_EISDIR;
-        if ((access & POSIX_FD_ACCESS_READ) && !(info->mode & 0400u))
+        if ((access & POSIX_FD_ACCESS_READ) &&
+            !posix_mode_allows(info, task, 0400u))
             return POSIX_VFS_EACCES;
         return 0;
     }
     if (info->type != VFS_NODE_REGULAR) return POSIX_VFS_EIO;
-    if ((access & POSIX_FD_ACCESS_READ) && !(info->mode & 0400u))
+    if ((access & POSIX_FD_ACCESS_READ) &&
+        !posix_mode_allows(info, task, 0400u))
         return POSIX_VFS_EACCES;
     if (access & POSIX_FD_ACCESS_WRITE) {
         if (info->readonly) return POSIX_VFS_EROFS;
-        if (!(info->mode & 0200u)) return POSIX_VFS_EACCES;
+        if (!posix_mode_allows(info, task, 0200u))
+            return POSIX_VFS_EACCES;
     }
     return 0;
 }
@@ -98,12 +105,13 @@ int posix_vfs_open(struct task *task, const char *path, u32 flags, u32 mode) {
     if (result == POSIX_PROFILE_ENOENT && (flags & POSIX_OPEN_CREAT)) {
         result = posix_profile_parent(task, path, &parent, name);
         if (result) return result;
-        result = check_parent_mutation(parent);
+        result = check_parent_mutation(task, parent);
         if (result) {
             object_release(parent);
             return result;
         }
-        node = vfs_create_mode(parent, name, VFS_NODE_REGULAR, mode);
+        node = vfs_create_mode(parent, name, VFS_NODE_REGULAR,
+                               mode & ~task->umask);
         if (!node) {
             node = vfs_lookup(parent, name);
             if (!node) {
@@ -118,7 +126,7 @@ int posix_vfs_open(struct task *task, const char *path, u32 flags, u32 mode) {
     }
     struct vfs_node_info info;
     result = node_info(node, &info);
-    if (!result) result = check_file_access(&info, access);
+    if (!result) result = check_file_access(task, &info, access);
     if (!result && (flags & POSIX_OPEN_TRUNC) && info.readonly)
         result = POSIX_VFS_EROFS;
     if (!result)
@@ -147,7 +155,7 @@ int posix_vfs_mkdir(struct task *task, const char *path, u32 mode) {
     char name[VFS_NAME_MAX + 1];
     int result = posix_profile_parent(task, path, &parent, name);
     if (result) return result;
-    result = check_parent_mutation(parent);
+    result = check_parent_mutation(task, parent);
     if (!result) {
         struct kernel_object *existing = vfs_lookup(parent, name);
         if (existing) {
@@ -155,7 +163,7 @@ int posix_vfs_mkdir(struct task *task, const char *path, u32 mode) {
             result = POSIX_VFS_EEXIST;
         } else {
             struct kernel_object *created = vfs_create_mode(
-                parent, name, VFS_NODE_DIRECTORY, mode);
+                parent, name, VFS_NODE_DIRECTORY, mode & ~task->umask);
             if (!created) result = POSIX_VFS_ENOSPC;
             else object_release(created);
         }
@@ -170,7 +178,7 @@ static int remove_path(struct task *task, const char *path, u32 directory) {
     char name[VFS_NAME_MAX + 1];
     int result = posix_profile_parent(task, path, &parent, name);
     if (result) return result;
-    result = check_parent_mutation(parent);
+    result = check_parent_mutation(task, parent);
     if (result) {
         object_release(parent);
         return result;
@@ -204,7 +212,8 @@ int posix_vfs_truncate_path(struct task *task, const char *path, u32 size) {
     int result = posix_profile_resolve(task, path, &node);
     struct vfs_node_info info;
     if (!result) result = node_info(node, &info);
-    if (!result) result = check_file_access(&info, POSIX_FD_ACCESS_WRITE);
+    if (!result)
+        result = check_file_access(task, &info, POSIX_FD_ACCESS_WRITE);
     struct kernel_object *file = !result ? vfs_open(node) : 0;
     if (!result && !file) result = POSIX_VFS_ENFILE;
     if (!result && vfs_truncate(file, size)) result = POSIX_VFS_EIO;

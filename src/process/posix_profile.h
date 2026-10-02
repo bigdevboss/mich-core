@@ -21,6 +21,8 @@ int posix_profile_fork(struct task *parent, struct task *child);
 void posix_profile_release(struct task *task);
 int posix_profile_admitted(const struct task *task);
 int posix_profile_vfs_authorized(const struct task *task);
+int posix_mode_allows(const struct vfs_node_info *info,
+                      const struct task *task, u32 want);
 int posix_profile_resolve(struct task *task, const char *path,
                           struct kernel_object **node);
 int posix_profile_parent(struct task *task, const char *path,

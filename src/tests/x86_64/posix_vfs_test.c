@@ -116,6 +116,32 @@ int test_posix_vfs64(struct task *owner, struct task *child) {
     valid &= listing_seen_state == 1 && listing_seen_readonly == 1 &&
         listing_seen_dir == 1 && !listing_seen_other;
     if (listing >= 0) valid &= !posix_fd_close(owner, listing);
+    // Permission columns: the owner column decides even where wider bits
+    // would allow the request, search permission gates the walk into a
+    // directory, and the umask masks both file and directory creates.
+    valid &= posix_vfs_open(owner, "/posix-api/owner-only",
+                            POSIX_OPEN_WRONLY | POSIX_OPEN_CREAT, 0006) ==
+        POSIX_VFS_EACCES;
+    valid &= posix_vfs_stat_path(owner, "/posix-api/owner-only", &info) ==
+        POSIX_PROFILE_ENOENT;
+    int masked = posix_vfs_open(owner, "/posix-api/masked",
+                                POSIX_OPEN_RDWR | POSIX_OPEN_CREAT, 0666);
+    valid &= masked >= 0;
+    valid &= !posix_vfs_stat_path(owner, "/posix-api/masked", &info) &&
+        info.mode == 0644u;
+    if (masked >= 0) valid &= !posix_fd_close(owner, masked);
+    valid &= !posix_vfs_unlink(owner, "/posix-api/masked");
+    valid &= !posix_vfs_mkdir(owner, "/posix-api/masked-dir", 0777);
+    valid &= !posix_vfs_stat_path(owner, "/posix-api/masked-dir", &info) &&
+        info.mode == 0755u;
+    valid &= !posix_vfs_rmdir(owner, "/posix-api/masked-dir");
+    valid &= !posix_vfs_mkdir(owner, "/posix-api/searchable", 0644);
+    valid &= posix_vfs_open(owner, "/posix-api/searchable/inside",
+                            POSIX_OPEN_WRONLY | POSIX_OPEN_CREAT, 0600) ==
+        POSIX_PROFILE_EACCES;
+    valid &= posix_profile_chdir(owner, "/posix-api/searchable") ==
+        POSIX_PROFILE_EACCES;
+    valid &= !posix_vfs_rmdir(owner, "/posix-api/searchable");
     valid &= !posix_vfs_mkdir(owner, "/posix-api/sealed", 0600);
     valid &= !posix_vfs_mkdir(owner, "/posix-api/no-write", 0500);
     valid &= posix_vfs_open(owner, "/posix-api/sealed/item",

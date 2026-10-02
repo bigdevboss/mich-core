@@ -46,7 +46,7 @@ int test_vfs64(void) {
         !firmware_open("../init64", &firmware_size) &&
         !vfs_stat(boot_file, &boot_info) &&
         boot_info.filesystem == VFS_FILESYSTEM_BOOTFS && boot_info.readonly &&
-        boot_info.mode == VFS_MODE_REGULAR_READONLY &&
+        boot_info.mode == 0555u &&
         !vfs_read(boot_file, 0, received, 4, &transferred) && transferred == 4 &&
         received[0] == 0x7F && received[1] == 'E' &&
         received[2] == 'L' && received[3] == 'F' &&
