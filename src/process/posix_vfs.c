@@ -218,6 +218,45 @@ int posix_vfs_rmdir(struct task *task, const char *path) {
     return remove_path(task, path, 1);
 }
 
+int posix_vfs_link(struct task *task, const char *old_path,
+                   const char *new_path) {
+    if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
+    struct kernel_object *node = 0;
+    int result = posix_profile_resolve(task, old_path, &node);
+    struct vfs_node_info info;
+    if (!result) result = node_info(node, &info);
+    // Directories never carry a second name, which POSIX reports as EPERM.
+    if (!result && info.type == VFS_NODE_DIRECTORY)
+        result = POSIX_VFS_EPERM;
+    struct kernel_object *parent = 0;
+    char name[VFS_NAME_MAX + 1];
+    if (!result) result = posix_profile_parent(task, new_path, &parent, name);
+    struct vfs_node_info parent_info;
+    if (!result) result = node_info(parent, &parent_info);
+    // One inode cannot span filesystems, so a pair on different ones is
+    // EXDEV rather than a generic refusal; this lands before the parent
+    // permission pass so a readonly cross-filesystem target still names
+    // the real reason.
+    if (!result && parent_info.filesystem != info.filesystem)
+        result = POSIX_VFS_EXDEV;
+    if (!result) result = check_parent_mutation(task, parent);
+    // The VFS alias table caps the name count, and the stat link count is
+    // that same number of names.
+    if (!result && info.links >= VFS_ALIAS_MAX) result = POSIX_VFS_EMLINK;
+    struct kernel_object *existing = 0;
+    if (!result) {
+        existing = vfs_lookup(parent, name);
+        if (existing) result = POSIX_VFS_EEXIST;
+    }
+    // Every other reject carried its own errno, so a link that still fails
+    // here is a same-type cross-mount pair, which is EXDEV too.
+    if (!result && vfs_link(node, parent, name)) result = POSIX_VFS_EXDEV;
+    if (existing) object_release(existing);
+    if (parent) object_release(parent);
+    if (node) object_release(node);
+    return result;
+}
+
 int posix_vfs_truncate_path(struct task *task, const char *path, u32 size) {
     if (size > VFS_FILE_SIZE_MAX) return POSIX_VFS_EFBIG;
     if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;

@@ -35,6 +35,7 @@
 #define POSIX_SYSCALL_FCHMOD 219u
 #define POSIX_SYSCALL_CHOWN 220u
 #define POSIX_SYSCALL_UMASK 221u
+#define POSIX_SYSCALL_LINK 222u
 
 #define POSIX_IO_MAX 512u
 #define POSIX_SEEK_SET 0u
@@ -98,6 +99,11 @@ struct posix_chown_request {
 struct posix_umask_request {
     u32 mask;
     u32 reserved;
+};
+
+struct posix_link_request {
+    char old_path[VFS_PATH_MAX];
+    char new_path[VFS_PATH_MAX];
 };
 
 struct posix_seek_request {
