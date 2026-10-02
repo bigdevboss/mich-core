@@ -199,6 +199,65 @@ int test_posix_vfs64(struct task *owner, struct task *child) {
     if (stretched_fd >= 0) valid &= !posix_fd_close(owner, stretched_fd);
     valid &= !posix_vfs_stat_path(owner, stretched, &info);
     valid &= !posix_vfs_unlink(owner, stretched);
+    // Hard links: one inode under two names, the count follows the names,
+    // and the rejects carry their POSIX errnos.
+    int linked_data = posix_vfs_open(owner, "/posix-api/linked",
+                                     POSIX_OPEN_WRONLY | POSIX_OPEN_CREAT,
+                                     0600);
+    valid &= linked_data >= 0;
+    if (linked_data >= 0) valid &= !posix_fd_close(owner, linked_data);
+    valid &= !posix_vfs_stat_path(owner, "/posix-api/linked", &info) &&
+        info.links == 1;
+    valid &= posix_vfs_link(owner, "/posix-api", "/posix-api/dir-twin") ==
+        POSIX_VFS_EPERM;
+    valid &= posix_vfs_link(owner, "/posix-api/linked", "/boot/file-twin") ==
+        POSIX_VFS_EXDEV;
+    valid &= posix_vfs_link(owner, "/posix-api/linked", "/posix-api") ==
+        POSIX_VFS_EEXIST;
+    valid &= !posix_vfs_link(owner, "/posix-api/linked",
+                             "/posix-api/linked-twin");
+    valid &= !posix_vfs_stat_path(owner, "/posix-api/linked-twin", &info) &&
+        info.links == 2;
+    valid &= !posix_vfs_stat_path(owner, "/posix-api/linked", &info) &&
+        info.links == 2;
+    valid &= !posix_vfs_unlink(owner, "/posix-api/linked");
+    valid &= posix_vfs_stat_path(owner, "/posix-api/linked", &info) ==
+        POSIX_PROFILE_ENOENT;
+    valid &= !posix_vfs_stat_path(owner, "/posix-api/linked-twin", &info) &&
+        info.links == 1;
+    valid &= !posix_vfs_unlink(owner, "/posix-api/linked-twin");
+    // The alias bound is the link count ceiling: the fifteenth extra name
+    // lands and the sixteenth takes EMLINK.
+    int bound_data = posix_vfs_open(owner, "/posix-api/bound",
+                                    POSIX_OPEN_WRONLY | POSIX_OPEN_CREAT,
+                                    0600);
+    valid &= bound_data >= 0;
+    if (bound_data >= 0) valid &= !posix_fd_close(owner, bound_data);
+    static const char twin_prefix[] = "/posix-api/twin";
+    char twin[sizeof(twin_prefix) + 2];
+    for (u32 index = 0; index < VFS_ALIAS_MAX; index++) {
+        for (u32 byte = 0; byte < sizeof(twin_prefix) - 1; byte++)
+            twin[byte] = twin_prefix[byte];
+        twin[sizeof(twin_prefix) - 1] = (char)('0' + index / 10);
+        twin[sizeof(twin_prefix)] = (char)('0' + index % 10);
+        twin[sizeof(twin_prefix) + 1] = 0;
+        int twin_result = posix_vfs_link(owner, "/posix-api/bound", twin);
+        valid &= index + 1u < VFS_ALIAS_MAX ? !twin_result :
+            twin_result == POSIX_VFS_EMLINK;
+    }
+    valid &= !posix_vfs_stat_path(owner, "/posix-api/bound", &info) &&
+        info.links == VFS_ALIAS_MAX;
+    valid &= !posix_vfs_unlink(owner, "/posix-api/bound");
+    for (u32 index = 0; index + 1u < VFS_ALIAS_MAX; index++) {
+        for (u32 byte = 0; byte < sizeof(twin_prefix) - 1; byte++)
+            twin[byte] = twin_prefix[byte];
+        twin[sizeof(twin_prefix) - 1] = (char)('0' + index / 10);
+        twin[sizeof(twin_prefix)] = (char)('0' + index % 10);
+        twin[sizeof(twin_prefix) + 1] = 0;
+        valid &= !posix_vfs_unlink(owner, twin);
+    }
+    valid &= posix_vfs_stat_path(owner, "/posix-api/bound", &info) ==
+        POSIX_PROFILE_ENOENT;
     valid &= posix_vfs_unlink(owner, "/posix-api/dir") == POSIX_VFS_EISDIR;
     valid &= posix_vfs_rmdir(owner, "/posix-api/state") == POSIX_VFS_ENOTDIR;
     valid &= !posix_vfs_rmdir(owner, "/posix-api/dir");
