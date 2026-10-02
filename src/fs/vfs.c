@@ -19,6 +19,8 @@ struct vfs_node_state {
     u32 mount_generation;
     u32 readonly;
     u32 mode;
+    u32 uid;
+    u32 gid;
     u32 special;
     u32 linked;
     u32 fs_id;
@@ -170,6 +172,8 @@ static void node_destroy(struct kernel_object *object) {
     node->mount_generation = 0;
     node->readonly = 0;
     node->mode = 0;
+    node->uid = 0;
+    node->gid = 0;
     node->special = VFS_SPECIAL_NONE;
     node->linked = 0;
     node->fs_id = 0;
@@ -360,8 +364,9 @@ int vfs_mount_bootfs(struct kernel_object *directory,
         node->mount = mount_index;
         node->mount_generation = mounts[mount_index].generation;
         node->readonly = 1;
-        node->mode = item ? VFS_MODE_REGULAR_READONLY :
-            VFS_MODE_DIRECTORY_READONLY;
+        // Boot modules are executables: read-only, but carrying X so the
+        // execve permission check admits them.
+        node->mode = item ? 0555u : VFS_MODE_DIRECTORY_READONLY;
         node->linked = 1;
         node->fs_id = 0;
         node->active = 1;
@@ -580,6 +585,8 @@ struct kernel_object *vfs_create_mode(struct kernel_object *directory,
         node->mount_generation = parent->mount_generation;
         node->readonly = 0;
         node->mode = mode;
+        node->uid = 0;
+        node->gid = 0;
         u64 created = rtc64_wall_clock();
         node->atime = created;
         node->mtime = created;
@@ -1178,8 +1185,8 @@ int vfs_stat(struct kernel_object *object, struct vfs_node_info *info) {
     info->readonly = node->readonly;
     info->mode = node->mode;
     info->links = node->type == VFS_NODE_DIRECTORY ? 2u : 1u;
-    info->uid = 0;
-    info->gid = 0;
+    info->uid = node->uid;
+    info->gid = node->gid;
     info->atime = node->atime;
     info->mtime = node->mtime;
     info->ctime = node->ctime;

@@ -87,6 +87,12 @@ struct task {
     u32 send_deadline;
     u32 capabilities;
     u32 irq_rights;
+    // POSIX credentials: a single uid and gid, no supplementary groups, and
+    // the umask the posix create paths apply. Profile admit seeds them and
+    // fork carries them; exec keeps them, as POSIX requires.
+    u32 uid;
+    u32 gid;
+    u32 umask;
     struct mmio_grant mmio[MAX_MMIO_GRANTS];
     u32 dma_page_limit;
     u32 dma_pages_used;

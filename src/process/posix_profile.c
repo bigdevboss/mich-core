@@ -137,7 +137,22 @@ static int normalize_path(const char *base, const char *path, char *normalized) 
     return append_normalized(normalized, &length, path, &components);
 }
 
-static int walk_path(const char *path, struct kernel_object **node) {
+// The honest three columns: owner, group, other. A single gid, no
+// supplementary groups, and no root override, so the columns are the whole
+// story and every task gets the same arithmetic.
+int posix_mode_allows(const struct vfs_node_info *info,
+                      const struct task *task, u32 want) {
+    // want arrives in owner-column notation (0100 is X, 0300 is W+X), the
+    // way POSIX writes permission bits, and slides into the caller's column.
+    u32 shift = info->uid == task->uid ? 6u :
+        info->gid == task->gid ? 3u : 0u;
+    u32 column = (info->mode >> shift) & 7u;
+    u32 bits = (want >> 6) & 7u;
+    return (column & bits) == bits;
+}
+
+static int walk_path(struct task *task, const char *path,
+                     struct kernel_object **node) {
     struct kernel_object *current = vfs_root();
     if (!current) return POSIX_PROFILE_ENOMEM;
     u32 offset = 1;
@@ -155,7 +170,7 @@ static int walk_path(const char *path, struct kernel_object **node) {
             object_release(current);
             return POSIX_PROFILE_ENOTDIR;
         }
-        if (!(info.mode & 0100u)) {
+        if (!posix_mode_allows(&info, task, 0100u)) {
             object_release(current);
             return POSIX_PROFILE_EACCES;
         }
@@ -189,7 +204,7 @@ static int resolve_path(struct task *task, const char *path,
     result = normalize_path(relative ? cwd_path : "/", path, normalized);
     if (cwd) object_release(cwd);
     if (result) return result;
-    return walk_path(normalized, node);
+    return walk_path(task, normalized, node);
 }
 
 void posix_profile_init(void) {
@@ -218,6 +233,12 @@ int posix_profile_admit(struct task *task) {
     profile->cwd_path[0] = '/';
     profile->cwd_path[1] = 0;
     spin_unlock(&posix_profile_lock);
+    // Credentials are seeded at admit, the POSIX birth of a task: the
+    // single-credential world starts every process at uid 0 with the 022
+    // umask POSIX defaults to.
+    task->uid = 0;
+    task->gid = 0;
+    task->umask = 022u;
     return 0;
 }
 
@@ -320,7 +341,7 @@ int posix_profile_parent(struct task *task, const char *path,
         for (u32 index = 0; index < leaf - 1; index++)
             parent_path[index] = normalized[index];
     }
-    return walk_path(parent_path, parent);
+    return walk_path(task, parent_path, parent);
 }
 
 int posix_profile_chdir(struct task *task, const char *path) {
@@ -337,7 +358,7 @@ int posix_profile_chdir(struct task *task, const char *path) {
         object_release(node);
         return POSIX_PROFILE_ENOTDIR;
     }
-    if (!(info.mode & 0100u)) {
+    if (!posix_mode_allows(&info, task, 0100u)) {
         object_release(node);
         return POSIX_PROFILE_EACCES;
     }
