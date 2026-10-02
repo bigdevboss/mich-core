@@ -37,7 +37,9 @@ and block calls require the caller to be a registered driver domain.
 
 - The number space is not contiguous. Unlisted numbers are reserved.
 - Two ABIs share one dispatcher: the native Mich ABI (below) and a POSIX profile
-  (186-209) used by the static libc. **Number 186 is shared** - the native block
+  (186-209 and 217) used by the static libc. The socket stream file calls hold
+  210 and 211, and their driver-domain helpers hold 212 through 216, so the
+  POSIX profile continues at 217. **Number 186 is shared** - the native block
   capsule interface create (`SYS_BLOCK_INTERFACE_CREATE`) and POSIX `open`
   (`POSIX_SYSCALL_OPEN`). The dispatcher disambiguates by caller: a driver domain
   gets the block-capsule register, and any other task falls through to POSIX
@@ -372,3 +374,4 @@ admitted to a POSIX profile. They are defined in `src/process/posix_abi.h`.
 | 207 | getppid | Get the parent process id. |
 | 208 | brk | Adjust the program break (heap). |
 | 209 | getrandom | Fill a buffer with random bytes. |
+| 217 | getdents | Read directory entries from an open directory descriptor. |
