@@ -52,7 +52,6 @@ static struct vfs_mount_state mounts[VFS_MOUNT_MAX];
 // Hard links keep the node table single-parent: a node carries its first
 // dentry inline, and every extra name for the same inode lives here.
 // Directories never link, so an alias always names a regular file.
-#define VFS_ALIAS_MAX 16u
 
 struct vfs_alias_state {
     u32 active;
@@ -149,6 +148,15 @@ static int mount_has_open_file(u32 mount_index, u32 generation) {
     return 0;
 }
 
+// A descriptor still holding a node keeps that node's backing alive; the
+// unlink path asks this before deciding between an eager reclaim and the
+// deferred one the final close triggers.
+static int node_has_open_file(struct kernel_object *node) {
+    for (u32 index = 0; index < VFS_FILE_MAX; index++)
+        if (files[index].active && files[index].node == node) return 1;
+    return 0;
+}
+
 static u32 child_count(u32 parent) {
     u32 count = 0;
     for (u32 index = 0; index < VFS_NODE_MAX; index++)
@@ -192,6 +200,12 @@ static void node_destroy(struct kernel_object *object) {
     if (!node->active || node->self != object) return;
     node->self = 0;
     node->external_data = 0;
+    // Names die with their node: an alias cannot outlive the inode it
+    // points at, and every teardown path that releases the node lands
+    // here, unmount included.
+    for (u32 index = 0; index < VFS_ALIAS_MAX; index++)
+        if (aliases[index].active && aliases[index].node == object->value - 1)
+            aliases[index].active = 0;
     if (node->pages) {
         // The adytumfs cache slot borrows this resource, so it must be dropped
         // before the last reference goes away.
@@ -203,6 +217,15 @@ static void node_destroy(struct kernel_object *object) {
         }
         object_release(node->pages);
         node->pages = 0;
+    }
+    if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS && !node->linked) {
+        // An unlinked inode waits for its final descriptor: the last
+        // reference dropping here is that close, so the deferred reclaim
+        // lands with it. Linked nodes die only with their mount, and a
+        // released mount already tore its volume down, so the call is a
+        // no-op unless this exact inode deferred.
+        adytumfs_inode_release(node->mount, node->fs_id,
+                               node->fs_generation);
     }
     for (u32 index = 0; index <= VFS_NAME_MAX; index++)
         node->name[index] = 0;
@@ -462,6 +485,36 @@ int vfs_mount_bootfs(struct kernel_object *directory,
     return 0;
 }
 
+// Second names the adytumfs walk reports, held in slot space until the
+// nodes exist and the pairs can materialize as VFS aliases. Mounts run one
+// at a time from the kernel side, so a single buffer serves them all.
+struct vfs_alias_scan {
+    u32 parent;
+    u32 slot;
+    char name[VFS_NAME_MAX + 1];
+};
+static struct vfs_alias_scan alias_scan[VFS_ALIAS_MAX];
+static u32 alias_scan_count;
+
+// The walk calls back with every second name for a regular inode; the
+// scan records the pair and the mount materializes the alias once the
+// nodes exist. A volume carrying more hard links than the alias bound
+// fails the mount rather than half-lists its names.
+static int vfs_alias_sink(u32 parent, u32 slot, const char *name,
+                          u32 name_len) {
+    if (alias_scan_count >= VFS_ALIAS_MAX || !name || !name_len ||
+        name_len > VFS_NAME_MAX)
+        return -1;
+    struct vfs_alias_scan *scan = &alias_scan[alias_scan_count++];
+    scan->parent = parent;
+    scan->slot = slot;
+    for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
+        scan->name[byte] = 0;
+    for (u32 byte = 0; byte < name_len; byte++)
+        scan->name[byte] = name[byte];
+    return 0;
+}
+
 int vfs_mount_adytumfs(struct kernel_object *directory,
                       struct kernel_object *device) {
     struct vfs_node_state *point = node_for(directory);
@@ -475,7 +528,10 @@ int vfs_mount_adytumfs(struct kernel_object *directory,
             mount_index = index;
             break;
         }
-    if (mount_index == VFS_MOUNT_MAX || adytumfs_attach(mount_index, device))
+    if (mount_index == VFS_MOUNT_MAX)
+        return -1;
+    alias_scan_count = 0;
+    if (adytumfs_attach(mount_index, device, vfs_alias_sink))
         return -1;
     u32 inode_count = adytumfs_inode_count(mount_index);
     u32 used[ADYTUMFS_INODE_MAX];
@@ -576,6 +632,47 @@ int vfs_mount_adytumfs(struct kernel_object *directory,
             return -1;
         }
         created++;
+    }
+    // Validate and count before filling: every scanned pair must map to a
+    // live regular node under a live directory, and the alias table must
+    // have room for the whole set, so the fill itself cannot fail halfway
+    // and leave a partial mount to undo.
+    for (u32 scan = 0; scan < alias_scan_count; scan++) {
+        u32 node_slot = alias_scan[scan].slot;
+        u32 parent_slot = alias_scan[scan].parent;
+        if (node_slot >= inode_count || parent_slot >= inode_count ||
+            !used[node_slot] || !used[parent_slot] ||
+            types[node_slot] != VFS_NODE_REGULAR ||
+            types[parent_slot] != VFS_NODE_DIRECTORY) {
+            for (u32 undo = 0; undo < created; undo++)
+                object_release(nodes[slots[undo]].self);
+            adytumfs_detach(mount_index);
+            return -1;
+        }
+    }
+    u32 free_aliases = 0;
+    for (u32 index = 0; index < VFS_ALIAS_MAX; index++)
+        if (!aliases[index].active) free_aliases++;
+    if (free_aliases < alias_scan_count) {
+        for (u32 undo = 0; undo < created; undo++)
+            object_release(nodes[slots[undo]].self);
+        adytumfs_detach(mount_index);
+        return -1;
+    }
+    for (u32 scan = 0; scan < alias_scan_count; scan++) {
+        u32 alias_slot = VFS_ALIAS_MAX;
+        for (u32 index = 0; index < VFS_ALIAS_MAX; index++)
+            if (!aliases[index].active) {
+                alias_slot = index;
+                break;
+            }
+        aliases[alias_slot].node =
+            slots[inode_item[alias_scan[scan].slot]];
+        aliases[alias_slot].parent =
+            slots[inode_item[alias_scan[scan].parent]];
+        for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
+            aliases[alias_slot].name[byte] = alias_scan[scan].name[byte];
+        aliases[alias_slot].active = 1;
     }
     struct vfs_mount_state *mount = &mounts[mount_index];
     if (object_retain(nodes[slots[0]].self) || object_retain(directory)) {
@@ -900,9 +997,19 @@ int vfs_unlink(struct kernel_object *directory, const char *name) {
         if (node->readonly || mount_for_point(node->self) ||
             (node->type == VFS_NODE_DIRECTORY && child_count(index)))
             return -1;
+        struct vfs_alias_state *alias = alias_for_node(index);
+        // The disk entry leaves before the in-memory promotion: a crash
+        // between the two leaves a stale-high link count, never a VFS
+        // name the disk no longer carries. The last name defers its
+        // reclaim to the final close when a descriptor still holds the
+        // inode.
+        if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS && node->fs_id &&
+            adytumfs_unlink(node->mount, node->fs_id, node->fs_generation,
+                            nodes[parent_index].fs_id, node->name, !alias &&
+                            node_has_open_file(node->self)))
+            return -1;
         // Losing the primary name promotes the first alias into the node,
         // so a hard link survives with one name fewer rather than dying.
-        struct vfs_alias_state *alias = alias_for_node(index);
         if (alias) {
             node->parent = alias->parent;
             for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
@@ -910,9 +1017,6 @@ int vfs_unlink(struct kernel_object *directory, const char *name) {
             alias->active = 0;
             return 0;
         }
-        if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS && node->fs_id &&
-            adytumfs_inode_remove(node->mount, node->fs_id))
-            return -1;
         node->linked = 0;
         node->parent = VFS_NODE_MAX;
         object_release(node->self);
@@ -925,6 +1029,13 @@ int vfs_unlink(struct kernel_object *directory, const char *name) {
         if (!alias->active || alias->parent != parent_index ||
             !names_equal(alias->name, name))
             continue;
+        struct vfs_node_state *node = &nodes[alias->node];
+        // The alias entry leaves the disk the same way the primary one
+        // does; the inode keeps its remaining names and their count.
+        if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS && node->fs_id &&
+            adytumfs_unlink(node->mount, node->fs_id, node->fs_generation,
+                            nodes[alias->parent].fs_id, alias->name, 0))
+            return -1;
         alias->active = 0;
         return 0;
     }
@@ -940,7 +1051,8 @@ int vfs_link(struct kernel_object *node_object,
         parent->type != VFS_NODE_DIRECTORY || !parent->linked ||
         parent->readonly || !valid_name(name) ||
         parent->filesystem != node->filesystem ||
-        node->filesystem != VFS_FILESYSTEM_RAMFS)
+        (node->filesystem != VFS_FILESYSTEM_RAMFS &&
+         node->filesystem != VFS_FILESYSTEM_ADYTUMFS))
         return -1;
     struct kernel_object *existing = vfs_lookup(directory, name);
     if (existing) {
@@ -948,6 +1060,16 @@ int vfs_link(struct kernel_object *node_object,
         return -1;
     }
     if (alias_count(node_index(node)) + 1u >= VFS_ALIAS_MAX) return -1;
+    // The disk name lands before the alias entry: a crash between the two
+    // leaves a stale-high link count, never a VFS alias without its disk
+    // name. Cross-volume links die here too: one inode cannot span two
+    // superblocks.
+    if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS &&
+        (node->mount != parent->mount ||
+         node->mount_generation != parent->mount_generation ||
+         adytumfs_inode_link(node->mount, node->fs_id, node->fs_generation,
+                             parent->fs_id, name)))
+        return -1;
     for (u32 index = 0; index < VFS_ALIAS_MAX; index++) {
         struct vfs_alias_state *alias = &aliases[index];
         if (alias->active) continue;

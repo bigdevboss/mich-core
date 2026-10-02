@@ -84,12 +84,13 @@ static u32 slot_type(const struct adytumfs_inode *inode) {
 
 // Fill the slot table by walking directories from the root. A record that
 // names a dead or out-of-range inode, a record whose type disagrees with the
-// target inode, a second name for one inode, or a name past the VFS bound
-// means the tree is inconsistent, so the mount fails rather than guesses. The
+// target inode, a second name for a directory, or a name past the VFS bound
+// means the tree is inconsistent, so the mount fails rather than guesses; a
+// second name for a regular inode is a hard link the sink reports. The
 // queue is bounded by the slot count because every directory owns a slot
 // before it is queued, and a parent always owns a lower slot than its
 // children, so the table cannot express a cycle.
-static int walk_tree(struct adytumfs_mount *m) {
+static int walk_tree(struct adytumfs_mount *m, adytumfs_alias_sink sink) {
     struct adytumfs_inode root;
     if (adytumfs_inode_read(m->device, &m->super, m->super.root_inode, &root))
         return -1;
@@ -133,8 +134,21 @@ static int walk_tree(struct adytumfs_mount *m) {
                                                      ADYTUMFS_DTYPE_REG;
             if (type != expect) return -1;
             if (!name_len || name_len > VFS_NAME_MAX) return -1;
+            u32 found = ADYTUMFS_INODE_MAX;
             for (u32 slot = 0; slot < used; slot++)
-                if (m->slots[slot].inode == target) return -1;
+                if (m->slots[slot].inode == target) {
+                    found = slot;
+                    break;
+                }
+            if (found != ADYTUMFS_INODE_MAX) {
+                // A second name for a regular inode is a hard link the
+                // caller records through the sink; a directory can never
+                // carry one, so that stays a structural reject.
+                if (bits != ADYTUMFS_MODE_REG || !sink ||
+                    sink(dir_slot, found, name, name_len))
+                    return -1;
+                continue;
+            }
             if (used >= ADYTUMFS_INODE_MAX) return -1;
             u32 slot = used++;
             m->slots[slot].inode = target;
@@ -423,7 +437,8 @@ int adytumfs_format(struct kernel_object *device) {
     return adytumfs_make(device);
 }
 
-int adytumfs_attach(u32 mount, struct kernel_object *device) {
+int adytumfs_attach(u32 mount, struct kernel_object *device,
+                    adytumfs_alias_sink sink) {
     if (!mount || mount >= ADYTUMFS_MOUNT_MAX || mount_at(mount) || !device)
         return -1;
     // One active mount per device: a second window on the same volume would
@@ -462,7 +477,7 @@ int adytumfs_attach(u32 mount, struct kernel_object *device) {
     }
     m->super = super;
     m->device = device;
-    if (walk_tree(m)) {
+    if (walk_tree(m, sink)) {
         m->device = 0;
         object_release(device);
         return -1;
@@ -670,6 +685,147 @@ int adytumfs_inode_create(u32 mount, const char *name, u32 parent, u32 type,
     return 0;
 }
 
+// One name measured against the VFS bound; the walk and the VFS callers
+// keep names short and terminated, so an overlong or empty name is a
+// caller bug and reads back as the reject length.
+static u32 bounded_name_len(const char *name) {
+    u32 len = 0;
+    while (len < VFS_NAME_MAX && name[len]) len++;
+    return name[len] ? VFS_NAME_MAX + 1u : len;
+}
+
+int adytumfs_inode_link(u32 mount, u32 inode, u64 generation, u32 parent,
+                        const char *name) {
+    // Slot zero is the mount root and a legitimate link parent; the
+    // linked inode itself is always a regular file below it.
+    struct adytumfs_mount *m = slot_mount(mount, inode, generation);
+    if (!m || !name || parent >= ADYTUMFS_INODE_MAX) return -1;
+    u32 name_len = bounded_name_len(name);
+    if (!name_len || name_len > VFS_NAME_MAX) return -1;
+    struct adytumfs_inode in;
+    if (slot_inode_read(m, inode, &in) ||
+        (in.mode & ADYTUMFS_MODE_REG) == 0)
+        return -1;
+    struct adytumfs_inode dir;
+    if (slot_inode_read(m, parent, &dir) ||
+        (dir.mode & ADYTUMFS_MODE_DIR) == 0)
+        return -1;
+    // The on-disk count is a u16 and stops there; the VFS alias bound is
+    // far lower, so this only guards a volume edited by hand.
+    if (in.links == 0xFFFFu) return -1;
+    // The count rises before the name lands: a crash between the two
+    // leaves a stale-high count the next mount reports, while the reverse
+    // order could reclaim an inode a surviving name still points at.
+    in.links++;
+    in.ctime = rtc64_wall_clock();
+    if (adytumfs_inode_write(m->device, &m->super, m->slots[inode].inode,
+                             &in))
+        return -1;
+    if (adytumfs_dir_add(m->device, &m->super, m->slots[parent].inode, name,
+                         name_len, m->slots[inode].inode,
+                         ADYTUMFS_DTYPE_REG)) {
+        // The name could not land, so the count goes back down; a failed
+        // rollback write just leaves the stale-high drift above.
+        in.links--;
+        adytumfs_inode_write(m->device, &m->super, m->slots[inode].inode,
+                             &in);
+        return -1;
+    }
+    adytumfs_touch(mount, parent, m->slots[parent].generation,
+                   ADYTUMFS_TOUCH_MTIME | ADYTUMFS_TOUCH_CTIME);
+    return 0;
+}
+
+// Reclaim the data and persist the emptied inode before the slot goes; the
+// caller removes the name first, so a crash inside leaves an orphan with
+// its data intact, never a live name over blocks a later allocation can
+// reuse.
+static int inode_reclaim(u32 mount, struct adytumfs_mount *m, u32 inode) {
+    struct adytumfs_inode in;
+    if (slot_inode_read(m, inode, &in)) return -1;
+    adytumfs_pages_detach(mount, inode, m->slots[inode].generation);
+    if (adytumfs_inode_truncate(m->device, &m->super, &in, 0)) return -1;
+    in.size = 0;
+    if (adytumfs_inode_write(m->device, &m->super, m->slots[inode].inode,
+                             &in))
+        return -1;
+    if (adytumfs_inode_free(m->device, &m->super, m->slots[inode].inode))
+        return -1;
+    m->slots[inode].inode = 0;
+    m->slots[inode].parent = 0;
+    for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
+        m->slots[inode].name[byte] = 0;
+    return 0;
+}
+
+int adytumfs_unlink(u32 mount, u32 inode, u64 generation, u32 parent,
+                    const char *name, int last_close) {
+    // Slot zero is the mount root and a legitimate unlink parent; the
+    // unlinked inode below it can be either kind.
+    struct adytumfs_mount *m = slot_mount(mount, inode, generation);
+    if (!m || !name || parent >= ADYTUMFS_INODE_MAX) return -1;
+    u32 name_len = bounded_name_len(name);
+    if (!name_len || name_len > VFS_NAME_MAX) return -1;
+    struct adytumfs_inode in;
+    if (slot_inode_read(m, inode, &in)) return -1;
+    u32 bits = in.mode & (ADYTUMFS_MODE_DIR | ADYTUMFS_MODE_REG);
+    if (bits != ADYTUMFS_MODE_DIR && bits != ADYTUMFS_MODE_REG) return -1;
+    struct adytumfs_inode dir;
+    if (slot_inode_read(m, parent, &dir) ||
+        (dir.mode & ADYTUMFS_MODE_DIR) == 0)
+        return -1;
+    if (bits == ADYTUMFS_MODE_DIR) {
+        // The VFS only unlinks directories it sees as empty; hold the disk
+        // to the same rule, because tombstoned records still own a data
+        // block.
+        char probe[ADYTUMFS_NAME_MAX];
+        u32 probe_len = 0;
+        u64 target = 0;
+        u8 type = 0;
+        u64 cursor = 0;
+        if (adytumfs_dir_iter(m->device, &m->super, m->slots[inode].inode,
+                              &cursor, probe, &probe_len, &target,
+                              &type) != 1)
+            return -1;
+    }
+    // The name goes before the count: a crash between the two leaves a
+    // stale-high count, never a live name over blocks a later allocation
+    // can reuse.
+    if (adytumfs_dir_remove(m->device, &m->super, m->slots[parent].inode,
+                            name, name_len))
+        return -1;
+    adytumfs_touch(mount, parent, m->slots[parent].generation,
+                   ADYTUMFS_TOUCH_MTIME | ADYTUMFS_TOUCH_CTIME);
+    if (bits == ADYTUMFS_MODE_REG && in.links > 1) {
+        // A regular inode keeps its remaining names; the count on disk
+        // says how many.
+        in.links--;
+        in.ctime = rtc64_wall_clock();
+        return adytumfs_inode_write(m->device, &m->super,
+                                    m->slots[inode].inode, &in);
+    }
+    if (last_close) {
+        // The last name is gone but a descriptor still holds the inode:
+        // zero the count now and leave pages, data, and the slot to the
+        // reclaim the final close triggers.
+        in.links = 0;
+        in.ctime = rtc64_wall_clock();
+        return adytumfs_inode_write(m->device, &m->super,
+                                    m->slots[inode].inode, &in);
+    }
+    return inode_reclaim(mount, m, inode);
+}
+
+int adytumfs_inode_release(u32 mount, u32 inode, u64 generation) {
+    struct adytumfs_mount *m = mount_at(mount);
+    if (!m || !m->active || !inode || inode >= ADYTUMFS_INODE_MAX)
+        return -1;
+    if (!m->slots[inode].inode ||
+        m->slots[inode].generation != generation)
+        return 0;
+    return inode_reclaim(mount, m, inode);
+}
+
 int adytumfs_inode_remove(u32 mount, u32 inode) {
     struct adytumfs_mount *m = mount_at(mount);
     if (!m || !inode || inode >= ADYTUMFS_INODE_MAX ||
@@ -691,25 +847,15 @@ int adytumfs_inode_remove(u32 mount, u32 inode) {
                               &cursor, name, &name_len, &target, &type) != 1)
             return -1;
     }
-    adytumfs_pages_detach(mount, inode, m->slots[inode].generation);
     u32 parent = m->slots[inode].parent;
-    u64 real = m->slots[inode].inode;
-    // Reclaim the data and persist the emptied inode before the name and the
-    // inode slot go: a crash then leaves an emptied file or an orphan, never
-    // a live name over blocks a later allocation can reuse.
-    if (adytumfs_inode_truncate(m->device, &m->super, &in, 0)) return -1;
-    in.size = 0;
-    if (adytumfs_inode_write(m->device, &m->super, real, &in)) return -1;
+    // The name goes before the reclaim, so a crash between the two leaves
+    // an orphan with its data intact rather than a live name over blocks
+    // a later allocation can reuse.
     if (adytumfs_dir_remove(m->device, &m->super, m->slots[parent].inode,
                             m->slots[inode].name,
                             slot_name_len(&m->slots[inode])))
         return -1;
-    if (adytumfs_inode_free(m->device, &m->super, real)) return -1;
-    m->slots[inode].inode = 0;
-    m->slots[inode].parent = 0;
-    for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
-        m->slots[inode].name[byte] = 0;
-    return 0;
+    return inode_reclaim(mount, m, inode);
 }
 
 int adytumfs_truncate(u32 mount, u32 inode, u64 generation, u32 size,

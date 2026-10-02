@@ -9,7 +9,13 @@
 #define ADYTUMFS_FILE_SIZE_MAX (ADYTUMFS_FILE_PAGES * 4096u)
 
 int adytumfs_format(struct kernel_object *device);
-int adytumfs_attach(u32 mount, struct kernel_object *device);
+// The walk calls this for every second name a regular inode carries,
+// handing over the parent and the target in slot space; a nonzero return
+// fails the mount.
+typedef int (*adytumfs_alias_sink)(u32 parent, u32 slot, const char *name,
+                                   u32 name_len);
+int adytumfs_attach(u32 mount, struct kernel_object *device,
+                    adytumfs_alias_sink sink);
 void adytumfs_detach(u32 mount);
 u32 adytumfs_inode_count(u32 mount);
 int adytumfs_inode_get(u32 mount, u32 inode, u32 *used, u32 *type, u32 *size,
@@ -17,6 +23,19 @@ int adytumfs_inode_get(u32 mount, u32 inode, u32 *used, u32 *type, u32 *size,
 int adytumfs_inode_create(u32 mount, const char *name, u32 parent, u32 type,
                          u32 mode, u32 *inode, u64 *generation);
 int adytumfs_inode_remove(u32 mount, u32 inode);
+// Add a directory name for a regular inode. The on-disk link count rises
+// before the name lands, so a crash between the two leaves a stale-high
+// count rather than a name the count cannot vouch for.
+int adytumfs_inode_link(u32 mount, u32 inode, u64 generation, u32 parent,
+                        const char *name);
+// Remove one directory name and drop the link count with it. A regular
+// inode with names left keeps them; the last name reclaims the inode
+// unless last_close defers that to the final descriptor close.
+int adytumfs_unlink(u32 mount, u32 inode, u64 generation, u32 parent,
+                    const char *name, int last_close);
+// The deferred reclaim an unlinked inode's final close triggers; a slot
+// already reclaimed or since reused makes it a no-op.
+int adytumfs_inode_release(u32 mount, u32 inode, u64 generation);
 // Stamp inode times through the open window. MTIME and CTIME follow data
 // writes and metadata edits; ATIME applies the relatime-lite rule and only
 // refreshes while atime trails mtime, so a steady-state read stages nothing.

@@ -6,6 +6,9 @@
 #include "resource.h"
 
 #define VFS_NODE_MAX 64
+// Hard-link names beyond the primary dentry: one alias table entry per extra
+// name, shared by every filesystem the VFS fronts.
+#define VFS_ALIAS_MAX 16u
 #define VFS_FILE_MAX 32
 #define VFS_MOUNT_MAX 8
 /* Longest path component, POSIX NAME_MAX; name buffers hold one more
