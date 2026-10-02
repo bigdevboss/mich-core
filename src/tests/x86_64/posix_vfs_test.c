@@ -142,6 +142,35 @@ int test_posix_vfs64(struct task *owner, struct task *child) {
     valid &= posix_profile_chdir(owner, "/posix-api/searchable") ==
         POSIX_PROFILE_EACCES;
     valid &= !posix_vfs_rmdir(owner, "/posix-api/searchable");
+    // Mode and ownership edits: chmod reshapes the columns, fchmod reaches
+    // through a descriptor, chown moves the owner, and the owner-only rule
+    // holds with no root override.
+    valid &= !posix_vfs_mkdir(owner, "/posix-api/perm", 0755);
+    int owned = posix_vfs_open(owner, "/posix-api/perm/file",
+                               POSIX_OPEN_RDWR | POSIX_OPEN_CREAT, 0600);
+    valid &= owned >= 0;
+    valid &= !posix_vfs_chmod(owner, "/posix-api/perm/file", 0);
+    valid &= posix_vfs_open(owner, "/posix-api/perm/file",
+                            POSIX_OPEN_RDONLY, 0) == POSIX_VFS_EACCES;
+    if (owned >= 0) valid &= !posix_fd_fchmod(owner, owned, 0400);
+    valid &= !posix_vfs_chown(owner, "/posix-api/perm/file", 1, 1);
+    valid &= !posix_vfs_stat_path(owner, "/posix-api/perm/file", &info) &&
+        info.uid == 1 && info.gid == 1 && info.mode == 0400;
+    valid &= posix_vfs_open(owner, "/posix-api/perm/file",
+                            POSIX_OPEN_RDONLY, 0) == POSIX_VFS_EACCES;
+    valid &= posix_vfs_chmod(owner, "/posix-api/perm/file", 0600) ==
+        POSIX_VFS_EPERM;
+    valid &= !posix_vfs_chown(owner, "/posix-api/perm/file", -1, 0);
+    valid &= !posix_vfs_stat_path(owner, "/posix-api/perm/file", &info) &&
+        info.uid == 1 && info.gid == 0;
+    valid &= !posix_vfs_chown(owner, "/posix-api/perm/file", 0, 0);
+    valid &= !posix_vfs_chmod(owner, "/posix-api/perm/file", 0600);
+    valid &= !posix_vfs_stat_path(owner, "/posix-api/perm/file", &info) &&
+        info.mode == 0600;
+    if (owned >= 0) valid &= !posix_fd_close(owner, owned);
+    valid &= !posix_vfs_unlink(owner, "/posix-api/perm/file");
+    valid &= !posix_vfs_rmdir(owner, "/posix-api/perm");
+    valid &= posix_vfs_chmod(owner, "/boot/init64", 0755) == POSIX_VFS_EROFS;
     valid &= !posix_vfs_mkdir(owner, "/posix-api/sealed", 0600);
     valid &= !posix_vfs_mkdir(owner, "/posix-api/no-write", 0500);
     valid &= posix_vfs_open(owner, "/posix-api/sealed/item",

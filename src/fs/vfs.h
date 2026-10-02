@@ -100,6 +100,8 @@ int vfs_stat(struct kernel_object *object, struct vfs_node_info *info);
 // end, -1 on error. The cursor is opaque and advances past the entry.
 int vfs_read_dir(struct kernel_object *file, u64 *cursor, char *name,
                  u32 *name_len, u64 *inode, u32 *type);
+int vfs_chmod(struct kernel_object *object, u32 mode);
+int vfs_chown(struct kernel_object *object, u32 uid, u32 gid);
 struct kernel_object *vfs_node_pages(struct kernel_object *node,
                                       u32 *size);
 struct kernel_object *vfs_file_pages(struct kernel_object *file,

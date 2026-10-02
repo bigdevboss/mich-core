@@ -24,6 +24,13 @@ int adytumfs_inode_remove(u32 mount, u32 inode);
 #define ADYTUMFS_TOUCH_MTIME 2u
 #define ADYTUMFS_TOUCH_CTIME 4u
 int adytumfs_touch(u32 mount, u32 inode, u64 generation, u32 flags);
+// Permission and ownership edits through the same window. The flags name
+// the fields to replace, and a call that changes nothing stages no write.
+#define ADYTUMFS_SET_MODE 1u
+#define ADYTUMFS_SET_UID 2u
+#define ADYTUMFS_SET_GID 4u
+int adytumfs_inode_update(u32 mount, u32 inode, u64 generation, u32 flags,
+                          u32 mode, u32 uid, u32 gid);
 // The live ownership, link count, and time picture of one inode, read
 // through the window staging.
 int adytumfs_inode_meta(u32 mount, u32 inode, u64 generation, u16 *links,

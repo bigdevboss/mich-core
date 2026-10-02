@@ -1207,6 +1207,44 @@ int vfs_stat(struct kernel_object *object, struct vfs_node_info *info) {
     return 0;
 }
 
+int vfs_chmod(struct kernel_object *object, u32 mode) {
+    struct vfs_node_state *node = node_for(object);
+    if (!node) {
+        struct vfs_file_state *file = file_for(object);
+        node = file ? node_for(file->node) : 0;
+    }
+    if (!node || !node_backing_live(node) || (mode & ~VFS_MODE_MASK))
+        return -1;
+    if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS)
+        return adytumfs_inode_update(node->mount, node->fs_id,
+                                     node->fs_generation, ADYTUMFS_SET_MODE,
+                                     mode, 0, 0);
+    node->mode = mode;
+    node->ctime = rtc64_wall_clock();
+    return 0;
+}
+
+int vfs_chown(struct kernel_object *object, u32 uid, u32 gid) {
+    struct vfs_node_state *node = node_for(object);
+    if (!node) {
+        struct vfs_file_state *file = file_for(object);
+        node = file ? node_for(file->node) : 0;
+    }
+    if (!node || !node_backing_live(node)) return -1;
+    if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS)
+        return adytumfs_inode_update(node->mount, node->fs_id,
+                                     node->fs_generation,
+                                     ADYTUMFS_SET_UID | ADYTUMFS_SET_GID, 0,
+                                     uid, gid);
+    // chown to the ids the node already carries is a no-op, so the posix
+    // create path can stamp ownership without dirtying a fresh node.
+    if (node->uid == uid && node->gid == gid) return 0;
+    node->uid = uid;
+    node->gid = gid;
+    node->ctime = rtc64_wall_clock();
+    return 0;
+}
+
 int vfs_read_dir(struct kernel_object *object, u64 *cursor, char *name,
                  u32 *name_len, u64 *inode_out, u32 *type_out) {
     struct vfs_file_state *file = file_for(object);
