@@ -178,6 +178,17 @@ int test_adytumfs64(void) {
         opened = 0;
     }
 
+    // A hard link lands a second disk name on one inode: the VFS reports
+    // the shared count, a directory or a cross-filesystem target refuses,
+    // and the remount below proves the pair walked back in.
+    struct kernel_object *alias = node ?
+        (vfs_link(node, disk, "hello-alias") ? 0 :
+         vfs_lookup(disk, "hello-alias")) : 0;
+    valid = valid && alias == node && !vfs_stat(node, &info) &&
+        info.links == 2 && vfs_link(folder, disk, "folder-alias") < 0 &&
+        vfs_link(node, root, "cross") < 0 &&
+        vfs_link(node, disk, "folder") < 0;
+
     int first_unmount = mnt && !vfs_unmount(mnt);
     int remounted = first_unmount && !vfs_mount_adytumfs(mnt, dev);
     struct kernel_object *fresh_directory = remounted ?
@@ -188,10 +199,13 @@ int test_adytumfs64(void) {
         vfs_lookup(fresh_directory, "folder") : 0;
     struct kernel_object *fresh_nested = fresh_folder ?
         vfs_lookup(fresh_folder, "nested") : 0;
+    struct kernel_object *fresh_alias = fresh_directory ?
+        vfs_lookup(fresh_directory, "hello-alias") : 0;
     struct kernel_object *reopened = fresh ? vfs_open(fresh) : 0;
     valid = valid && first_unmount && remounted && fresh_directory && fresh &&
-        fresh_folder && fresh_nested && !vfs_stat(fresh, &info) &&
-        info.mode == 0604 && info.size == 4 && info.links == 1 &&
+        fresh_folder && fresh_nested && fresh_alias == fresh &&
+        !vfs_stat(fresh, &info) &&
+        info.mode == 0604 && info.size == 4 && info.links == 2 &&
         info.uid == 0 && info.gid == 0 && info.atime && info.mtime &&
         info.ctime &&
         !vfs_stat(fresh_folder, &info) && info.mode == 0711 &&
@@ -199,6 +213,12 @@ int test_adytumfs64(void) {
         !vfs_stat(fresh_nested, &info) && info.mode == 0620 && reopened &&
         vfs_unmount(mnt) < 0;
 
+    if (!vfs_stat(fresh, &info)) {
+    }
+    if (!vfs_stat(fresh_folder, &info)) {
+    }
+    if (!vfs_stat(fresh_nested, &info)) {
+    }
     // Ask the backend for the slot picture the way the mount scan does: the
     // slot table carries the name and parent the walk rebuilt, the inode
     // carries the type, mode, and the truncated size that reached the disk.
@@ -229,6 +249,9 @@ int test_adytumfs64(void) {
     }
     int second_unmount = fresh_directory && fresh_folder &&
         !vfs_unlink(fresh_directory, "hello") &&
+        !vfs_stat(fresh, &info) && info.links == 1 && info.linked &&
+        !vfs_lookup(fresh_directory, "hello") &&
+        !vfs_unlink(fresh_directory, "hello-alias") &&
         !vfs_unlink(fresh_folder, "nested") &&
         !vfs_unlink(fresh_directory, "folder") && !vfs_unmount(mnt);
     int final_remount = second_unmount && !vfs_mount_adytumfs(mnt, dev);
@@ -236,13 +259,64 @@ int test_adytumfs64(void) {
         vfs_lookup(root, "disk") : 0;
     struct kernel_object *missing = final_directory ?
         vfs_lookup(final_directory, "hello") : 0;
+    struct kernel_object *missing_alias = final_directory ?
+        vfs_lookup(final_directory, "hello-alias") : 0;
     struct kernel_object *stale = final_remount && node ? vfs_open(node) : 0;
     valid = valid && second_unmount && final_remount &&
-        vfs_stat(node, &info) < 0 && !stale && !missing;
+        vfs_stat(node, &info) < 0 && !stale && !missing &&
+        !missing_alias;
     if (stale) object_release(stale);
     if (missing) object_release(missing);
+    // A file keeps its data and its inode while a descriptor stays open
+    // past the last unlink; the reclaim lands with the final close, and
+    // the slot picture a later mount would scan is root only.
+    struct kernel_object *ghost = final_directory ?
+        vfs_create(final_directory, "ghost", VFS_NODE_REGULAR) : 0;
+    struct kernel_object *ghost_fd = ghost ? vfs_open(ghost) : 0;
+    valid = valid && ghost && ghost_fd &&
+        !vfs_write(ghost_fd, 0, payload + 8, 4, &transferred) &&
+        transferred == 4 && !vfs_unlink(final_directory, "ghost") &&
+        !vfs_lookup(final_directory, "ghost") &&
+        !vfs_read(ghost_fd, 0, received, 4, &transferred) &&
+        transferred == 4 && received[0] == payload[8] &&
+        !vfs_stat(ghost_fd, &info) && info.size == 4 && !info.linked &&
+        !info.links && vfs_unmount(mnt) < 0;
+    if (ghost_fd) {
+        object_release(ghost_fd);
+        ghost_fd = 0;
+    }
+    if (ghost) {
+        object_release(ghost);
+        ghost = 0;
+    }
+    u32 ghost_mount = 0;
+    for (u32 probe = 1; probe < VFS_MOUNT_MAX; probe++)
+        if (adytumfs_inode_count(probe)) {
+            ghost_mount = probe;
+            break;
+        }
+    u32 ghost_used = 0;
+    u32 ghost_root = 0;
+    char ghost_name[VFS_NAME_MAX + 1];
+    for (u32 probe = 0; probe < ADYTUMFS_INODE_MAX; probe++) {
+        u32 ghost_slot_used = 0;
+        u32 ghost_type = 0;
+        u32 ghost_size = 0;
+        u32 ghost_parent = 0;
+        u32 ghost_mode = 0;
+        if (adytumfs_inode_get(ghost_mount, probe, &ghost_slot_used,
+                               &ghost_type, &ghost_size, &ghost_parent,
+                               &ghost_mode, ghost_name, 0))
+            ghost_slot_used = 1;
+        if (probe) ghost_used += ghost_slot_used ? 1 : 0;
+        else ghost_root = ghost_slot_used;
+    }
+    valid = valid && ghost_mount && ghost_root && !ghost_used;
     if (final_directory) object_release(final_directory);
     if (final_remount && vfs_unmount(mnt)) valid = 0;
+    if (alias) object_release(alias);
+    if (fresh_alias) object_release(fresh_alias);
+    if (missing_alias) object_release(missing_alias);
     if (fresh_nested) object_release(fresh_nested);
     if (fresh_folder) object_release(fresh_folder);
     if (fresh) object_release(fresh);
@@ -488,8 +562,9 @@ int test_adytumfs_policy64(void) {
         if (dev) object_release(dev);
     }
 
-    // Two names for one inode would alias one file under two vnodes, so the
-    // mount must fail.
+    // Two names for one directory stay structural corruption: a regular
+    // inode's second name is a hard link now, but a directory can never
+    // carry one, so the mount must fail.
     {
         struct kernel_object *dev = block_create(320, 0);
         struct kernel_object *point = root ?
@@ -498,9 +573,9 @@ int test_adytumfs_policy64(void) {
             !vfs_mount_adytumfs(point, dev);
         struct kernel_object *disk = ok ? vfs_lookup(root, "policy") : 0;
         struct kernel_object *first = disk ?
-            vfs_create(disk, "a", VFS_NODE_REGULAR) : 0;
+            vfs_create(disk, "a", VFS_NODE_DIRECTORY) : 0;
         struct kernel_object *second = disk ?
-            vfs_create(disk, "b", VFS_NODE_REGULAR) : 0;
+            vfs_create(disk, "b", VFS_NODE_DIRECTORY) : 0;
         ok = ok && disk && first && second;
         if (first) object_release(first);
         if (second) object_release(second);
@@ -618,8 +693,10 @@ int test_adytumfs_policy64(void) {
         if (dev) object_release(dev);
     }
 
-    // A name longer than the VFS bound is legal on disk but cannot be
-    // surfaced, so the mount must fail rather than truncate the name.
+    // More hard-link names than the VFS alias bound must fail the mount
+    // rather than half-list the names: the sink counts the pairs and
+    // refuses the seventeenth. The names go in through the format layer
+    // directly because the VFS link path enforces the same bound upstream.
     {
         struct kernel_object *dev = block_create(320, 0);
         struct kernel_object *point = root ?
@@ -633,18 +710,22 @@ int test_adytumfs_policy64(void) {
         if (node) object_release(node);
         if (disk) object_release(disk);
         ok = ok && !vfs_unmount(point);
-        static const char long_name[] =
-            "abcdefghijklmnopqrstuvwxyz0123456789xyz";
         struct adytumfs_superblock super;
         u64 target = 0;
         ok = ok && !policy_super(dev, &super) &&
             !adytumfs_dir_lookup(dev, &super, super.root_inode, "hello", 5,
                                  &target) &&
-            target &&
-            !adytumfs_dir_add(dev, &super, super.root_inode, long_name,
-                              sizeof(long_name) - 1, target,
-                              ADYTUMFS_DTYPE_REG) &&
-            !adytumfs_commit(dev, &super);
+            target;
+        for (u32 index = 0; ok && index <= VFS_ALIAS_MAX; index++) {
+            char label[4];
+            label[0] = 'l';
+            label[1] = (char)('0' + index / 10);
+            label[2] = (char)('0' + index % 10);
+            label[3] = 0;
+            ok = !adytumfs_dir_add(dev, &super, super.root_inode, label, 3,
+                                   target, ADYTUMFS_DTYPE_REG);
+        }
+        ok = ok && !adytumfs_commit(dev, &super);
         if (dev) block_cache_drop_device((u32)dev->value);
         ok = ok && vfs_mount_adytumfs(point, dev) < 0;
         valid = valid && ok;
@@ -716,8 +797,10 @@ int test_adytumfs_reuse64(void) {
         u8 payload[16];
         u8 received[16];
 
-        // Slot 1: a stale handle with a live page cache must fail its reads
-        // and writes once another file owns the slot.
+        // Slot 1: an open descriptor holds the unlinked inode alive, so
+        // the slot frees with the final close and the next create reuses
+        // it. The data stays readable through the descriptor for exactly
+        // as long as the descriptor stays open.
         struct kernel_object *first = disk ?
             vfs_create(disk, "first", VFS_NODE_REGULAR) : 0;
         struct kernel_object *first_file = first ? vfs_open(first) : 0;
@@ -729,36 +812,15 @@ int test_adytumfs_reuse64(void) {
             first_generation;
         ok = ok &&
             !vfs_write(first_file, 0, payload, sizeof(payload), &moved) &&
-            moved == sizeof(payload);
-        ok = ok && !vfs_unlink(disk, "first");
-        struct kernel_object *second = disk ?
-            vfs_create(disk, "second", VFS_NODE_REGULAR) : 0;
-        struct kernel_object *second_file = second ? vfs_open(second) : 0;
-        reuse_fill(payload, sizeof(payload), 0x20);
-        ok = ok && second && second_file;
-        ok = ok &&
+            moved == sizeof(payload) && !vfs_sync(first_file);
+        ok = ok && !vfs_unlink(disk, "first") &&
+            !vfs_lookup(disk, "first") &&
             !adytumfs_inode_get(mount_id, 1, &used, &type, &size, &parent,
-                               &mode, name, &second_generation) &&
-            used == 1 && probe_name_equals(name, "second") &&
-            second_generation && second_generation != first_generation;
-        ok = ok &&
-            !vfs_write(second_file, 0, payload, sizeof(payload), &moved) &&
-            moved == sizeof(payload);
-        ok = ok && !vfs_sync(second_file);
-        ok = ok &&
-            vfs_read(first_file, 0, received, sizeof(received), &moved) < 0 &&
-            vfs_write(first_file, 0, payload, sizeof(payload), &moved) < 0;
-        ok = ok &&
-            !vfs_read(second_file, 0, received, sizeof(received), &moved) &&
+                               &mode, name, 0) &&
+            used == 1 && probe_name_equals(name, "first") &&
+            !vfs_read(first_file, 0, received, sizeof(received), &moved) &&
             moved == sizeof(received) &&
-            reuse_matches(received, sizeof(received), 0x20);
-
-        // Slot 1 teardown: releasing the stale vnode must not detach the new
-        // owner's cache, or its dirty pages would never reach the disk.
-        reuse_fill(payload, sizeof(payload), 0x30);
-        ok = ok && !vfs_write(second_file, 4096, payload, sizeof(payload),
-                              &moved) &&
-            moved == sizeof(payload);
+            reuse_matches(received, sizeof(received), 0x10);
         if (first_file) {
             object_release(first_file);
             first_file = 0;
@@ -767,14 +829,35 @@ int test_adytumfs_reuse64(void) {
             object_release(first);
             first = 0;
         }
-        ok = ok && !vfs_sync(second_file) &&
+        struct kernel_object *second = disk ?
+            vfs_create(disk, "second", VFS_NODE_REGULAR) : 0;
+        struct kernel_object *second_file = second ? vfs_open(second) : 0;
+        reuse_fill(payload, sizeof(payload), 0x20);
+        ok = ok && second && second_file &&
+            !adytumfs_inode_get(mount_id, 1, &used, &type, &size, &parent,
+                               &mode, name, &second_generation) &&
+            used == 1 && probe_name_equals(name, "second") &&
+            second_generation && second_generation != first_generation;
+        ok = ok &&
+            !vfs_write(second_file, 0, payload, sizeof(payload), &moved) &&
+            moved == sizeof(payload) && !vfs_sync(second_file) &&
+            !vfs_read(second_file, 0, received, sizeof(received), &moved) &&
+            moved == sizeof(received) &&
+            reuse_matches(received, sizeof(received), 0x20);
+        // The grown write lands on the slot whose previous life ended in a
+        // deferred release, and the dirty page reaches the disk.
+        reuse_fill(payload, sizeof(payload), 0x30);
+        ok = ok && !vfs_write(second_file, 4096, payload, sizeof(payload),
+                              &moved) &&
+            moved == sizeof(payload) && !vfs_sync(second_file) &&
             !vfs_read(second_file, 4096, received, sizeof(received), &moved) &&
             moved == sizeof(received) &&
             reuse_matches(received, sizeof(received), 0x30);
 
-        // Slot 2: a handle that never touched the disk before its unlink is
-        // the sharpest form of the hazard, because its first write would
-        // attach a page cache over the reused slot's new inode.
+        // Slot 2: a handle that never touched the disk still holds its
+        // inode past the unlink, so the slot cannot be reused under a live
+        // descriptor and the write-through-a-stale-cache hazard cannot
+        // arise in the first place.
         struct kernel_object *third = disk ?
             vfs_create(disk, "third", VFS_NODE_REGULAR) : 0;
         struct kernel_object *third_file = third ? vfs_open(third) : 0;
@@ -782,28 +865,9 @@ int test_adytumfs_reuse64(void) {
             !adytumfs_inode_get(mount_id, 2, &used, &type, &size, &parent,
                                &mode, name, &third_generation) &&
             used == 1 && third_generation &&
-            !vfs_unlink(disk, "third");
-        struct kernel_object *fourth = disk ?
-            vfs_create(disk, "fourth", VFS_NODE_REGULAR) : 0;
-        struct kernel_object *fourth_file = fourth ? vfs_open(fourth) : 0;
-        reuse_fill(payload, sizeof(payload), 0x40);
-        ok = ok && fourth && fourth_file &&
-            !adytumfs_inode_get(mount_id, 2, &used, &type, &size, &parent,
-                               &mode, name, &fourth_generation) &&
-            used == 1 && fourth_generation &&
-            fourth_generation != third_generation &&
-            vfs_write(third_file, 0, payload, sizeof(payload), &moved) < 0;
-        reuse_fill(payload, sizeof(payload), 0x50);
-        ok = ok && !vfs_write(fourth_file, 0, payload, sizeof(payload),
-                              &moved) &&
-            moved == sizeof(payload) &&
-            !vfs_sync(fourth_file) &&
-            !vfs_read(fourth_file, 0, received, sizeof(received), &moved) &&
-            moved == sizeof(received) &&
-            reuse_matches(received, sizeof(received), 0x50);
-
-        // The stale slot 2 handle must also drop without touching the new
-        // owner, and both files must come back whole after a remount.
+            !vfs_unlink(disk, "third") &&
+            !vfs_read(third_file, 0, received, sizeof(received), &moved) &&
+            moved == 0;
         if (third_file) {
             object_release(third_file);
             third_file = 0;
@@ -812,7 +876,22 @@ int test_adytumfs_reuse64(void) {
             object_release(third);
             third = 0;
         }
-        ok = ok && !vfs_sync(fourth_file);
+        struct kernel_object *fourth = disk ?
+            vfs_create(disk, "fourth", VFS_NODE_REGULAR) : 0;
+        struct kernel_object *fourth_file = fourth ? vfs_open(fourth) : 0;
+        reuse_fill(payload, sizeof(payload), 0x50);
+        ok = ok && fourth && fourth_file &&
+            !adytumfs_inode_get(mount_id, 2, &used, &type, &size, &parent,
+                               &mode, name, &fourth_generation) &&
+            used == 1 && probe_name_equals(name, "fourth") &&
+            fourth_generation && fourth_generation != third_generation;
+        ok = ok && !vfs_write(fourth_file, 0, payload, sizeof(payload),
+                              &moved) &&
+            moved == sizeof(payload) && !vfs_sync(fourth_file) &&
+            !vfs_read(fourth_file, 0, received, sizeof(received), &moved) &&
+            moved == sizeof(received) &&
+            reuse_matches(received, sizeof(received), 0x50);
+
         if (fourth_file) object_release(fourth_file);
         if (fourth) object_release(fourth);
         if (second_file) object_release(second_file);
