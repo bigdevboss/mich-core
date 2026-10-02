@@ -84,6 +84,67 @@ int test_vfs64(void) {
         transferred == 11 && received[8] == append_first[0] &&
         received[9] == append_second[0] && received[10] == append_second[1] &&
         !vfs_unlink(root, "etc");
+    // Hard links: one inode under two names, the primary name promotes an
+    // alias on unlink, and the listing shows both names with one inode.
+    struct kernel_object *hard = root ?
+        vfs_create(root, "hard", VFS_NODE_REGULAR) : 0;
+    struct kernel_object *alias_lookup = hard && !vfs_link(hard, root, "alias")
+        ? vfs_lookup(root, "alias") : 0;
+    valid = valid && hard && alias_lookup == hard &&
+        !vfs_stat(hard, &info) && info.links == 2 &&
+        !vfs_unlink(root, "hard") &&
+        !vfs_stat(hard, &info) && info.links == 1 && info.linked &&
+        !vfs_unlink(root, "alias") && !vfs_lookup(root, "alias") &&
+        vfs_link(hard, root, "busy") < 0;
+    if (alias_lookup) object_release(alias_lookup);
+    if (hard) object_release(hard);
+    struct kernel_object *linked_dir = root ?
+        vfs_create(root, "linked", VFS_NODE_DIRECTORY) : 0;
+    struct kernel_object *linked_file = linked_dir ?
+        vfs_create(linked_dir, "one", VFS_NODE_REGULAR) : 0;
+    struct kernel_object *linked_listing = 0;
+    u64 linked_cursor = 0;
+    u32 linked_seen_one = 0;
+    u32 linked_seen_two = 0;
+    u64 linked_inode = 0;
+    if (linked_file && !vfs_link(linked_file, linked_dir, "two"))
+        linked_listing = vfs_open(linked_dir);
+    for (;;) {
+        char linked_name[VFS_NAME_MAX + 1];
+        u32 linked_len = 0;
+        u64 entry_inode = 0;
+        u32 entry_type = 0;
+        if (!linked_listing) break;
+        int step = vfs_read_dir(linked_listing, &linked_cursor, linked_name,
+                                &linked_len, &entry_inode, &entry_type);
+        if (step == 1) break;
+        if (step) {
+            valid = 0;
+            break;
+        }
+        if (entry_type != VFS_NODE_REGULAR) valid = 0;
+        if (linked_name[0] == 'o' && linked_name[1] == 'n' &&
+            linked_name[2] == 'e' && !linked_name[3]) {
+            linked_seen_one++;
+        } else if (linked_name[0] == 't' && linked_name[1] == 'w' &&
+                   linked_name[2] == 'o' && !linked_name[3]) {
+            linked_seen_two++;
+        } else {
+            valid = 0;
+        }
+        if (!linked_inode) linked_inode = entry_inode;
+        else if (entry_inode != linked_inode) valid = 0;
+    }
+    valid = valid && linked_dir && linked_file && linked_listing &&
+        linked_seen_one == 1 && linked_seen_two == 1 &&
+        !vfs_stat(linked_file, &info) && info.links == 2 &&
+        !vfs_unlink(linked_dir, "one") &&
+        !vfs_stat(linked_file, &info) && info.links == 1 &&
+        !vfs_unlink(linked_dir, "two");
+    if (linked_listing) object_release(linked_listing);
+    if (linked_file) object_release(linked_file);
+    valid = valid && linked_dir && !vfs_unlink(root, "linked");
+    if (linked_dir) object_release(linked_dir);
     struct kernel_object *usr = root ?
         vfs_create_path(root, "/usr", VFS_NODE_DIRECTORY) : 0;
     struct kernel_object *lib = root ?

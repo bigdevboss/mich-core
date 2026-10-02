@@ -48,6 +48,20 @@ struct vfs_mount_state {
 static struct vfs_node_state nodes[VFS_NODE_MAX];
 static struct vfs_file_state files[VFS_FILE_MAX];
 static struct vfs_mount_state mounts[VFS_MOUNT_MAX];
+
+// Hard links keep the node table single-parent: a node carries its first
+// dentry inline, and every extra name for the same inode lives here.
+// Directories never link, so an alias always names a regular file.
+#define VFS_ALIAS_MAX 16u
+
+struct vfs_alias_state {
+    u32 active;
+    u32 node;
+    u32 parent;
+    char name[VFS_NAME_MAX + 1];
+};
+
+static struct vfs_alias_state aliases[VFS_ALIAS_MAX];
 /* Pairs file-table admission/final close with adytumfs unmount preflight. */
 static struct spinlock vfs_file_lock = SPINLOCK_INIT;
 /* One VFS domain makes EOF selection and append write indivisible. */
@@ -140,6 +154,34 @@ static u32 child_count(u32 parent) {
     for (u32 index = 0; index < VFS_NODE_MAX; index++)
         if (nodes[index].active && nodes[index].linked &&
             nodes[index].parent == parent)
+            count++;
+    for (u32 index = 0; index < VFS_ALIAS_MAX; index++)
+        if (aliases[index].active && aliases[index].parent == parent)
+            count++;
+    return count;
+}
+
+static u32 alias_count(u32 node) {
+    u32 count = 0;
+    for (u32 index = 0; index < VFS_ALIAS_MAX; index++)
+        if (aliases[index].active && aliases[index].node == node)
+            count++;
+    return count;
+}
+
+static struct vfs_alias_state *alias_for_node(u32 node) {
+    for (u32 index = 0; index < VFS_ALIAS_MAX; index++)
+        if (aliases[index].active && aliases[index].node == node)
+            return &aliases[index];
+    return 0;
+}
+
+static u32 directory_children(u32 parent) {
+    u32 count = 0;
+    for (u32 index = 0; index < VFS_NODE_MAX; index++)
+        if (nodes[index].active && nodes[index].linked &&
+            nodes[index].parent == parent &&
+            nodes[index].type == VFS_NODE_DIRECTORY)
             count++;
     return count;
 }
@@ -253,6 +295,13 @@ void vfs_init(void) {
     for (u32 index = 0; index < VFS_FILE_MAX; index++) {
         files[index].node = 0;
         files[index].active = 0;
+    }
+    for (u32 index = 0; index < VFS_ALIAS_MAX; index++) {
+        aliases[index].active = 0;
+        aliases[index].node = 0;
+        aliases[index].parent = 0;
+        for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
+            aliases[index].name[byte] = 0;
     }
     for (u32 index = 0; index < VFS_MOUNT_MAX; index++) {
         mounts[index].self = 0;
@@ -664,6 +713,16 @@ struct kernel_object *vfs_lookup(struct kernel_object *directory,
         if (object_retain(result)) return 0;
         return result;
     }
+    // An extra hard-link name resolves to the same inode object.
+    for (u32 index = 0; index < VFS_ALIAS_MAX; index++) {
+        struct vfs_alias_state *alias = &aliases[index];
+        if (!alias->active || alias->parent != parent_index ||
+            !names_equal(alias->name, name))
+            continue;
+        struct kernel_object *result = nodes[alias->node].self;
+        if (!result || object_retain(result)) return 0;
+        return result;
+    }
     return 0;
 }
 
@@ -841,12 +900,64 @@ int vfs_unlink(struct kernel_object *directory, const char *name) {
         if (node->readonly || mount_for_point(node->self) ||
             (node->type == VFS_NODE_DIRECTORY && child_count(index)))
             return -1;
+        // Losing the primary name promotes the first alias into the node,
+        // so a hard link survives with one name fewer rather than dying.
+        struct vfs_alias_state *alias = alias_for_node(index);
+        if (alias) {
+            node->parent = alias->parent;
+            for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
+                node->name[byte] = alias->name[byte];
+            alias->active = 0;
+            return 0;
+        }
         if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS && node->fs_id &&
             adytumfs_inode_remove(node->mount, node->fs_id))
             return -1;
         node->linked = 0;
         node->parent = VFS_NODE_MAX;
         object_release(node->self);
+        return 0;
+    }
+    // The name may belong to an alias rather than the node itself; the
+    // primary name keeps the inode alive behind it.
+    for (u32 index = 0; index < VFS_ALIAS_MAX; index++) {
+        struct vfs_alias_state *alias = &aliases[index];
+        if (!alias->active || alias->parent != parent_index ||
+            !names_equal(alias->name, name))
+            continue;
+        alias->active = 0;
+        return 0;
+    }
+    return -1;
+}
+
+int vfs_link(struct kernel_object *node_object,
+             struct kernel_object *directory, const char *name) {
+    struct vfs_node_state *node = node_for(node_object);
+    struct vfs_node_state *parent = node_for(directory);
+    if (!node || !node_backing_live(node) || !node->linked ||
+        node->type != VFS_NODE_REGULAR || !parent ||
+        parent->type != VFS_NODE_DIRECTORY || !parent->linked ||
+        parent->readonly || !valid_name(name) ||
+        parent->filesystem != node->filesystem ||
+        node->filesystem != VFS_FILESYSTEM_RAMFS)
+        return -1;
+    struct kernel_object *existing = vfs_lookup(directory, name);
+    if (existing) {
+        object_release(existing);
+        return -1;
+    }
+    if (alias_count(node_index(node)) + 1u >= VFS_ALIAS_MAX) return -1;
+    for (u32 index = 0; index < VFS_ALIAS_MAX; index++) {
+        struct vfs_alias_state *alias = &aliases[index];
+        if (alias->active) continue;
+        alias->node = node_index(node);
+        alias->parent = node_index(parent);
+        for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
+            alias->name[byte] = 0;
+        for (u32 byte = 0; name[byte]; byte++)
+            alias->name[byte] = name[byte];
+        alias->active = 1;
         return 0;
     }
     return -1;
@@ -1184,7 +1295,8 @@ int vfs_stat(struct kernel_object *object, struct vfs_node_info *info) {
     info->filesystem = node->filesystem;
     info->readonly = node->readonly;
     info->mode = node->mode;
-    info->links = node->type == VFS_NODE_DIRECTORY ? 2u : 1u;
+    info->links = node->type == VFS_NODE_DIRECTORY ? 2u :
+        1u + alias_count(node_index(node));
     info->uid = node->uid;
     info->gid = node->gid;
     info->atime = node->atime;
@@ -1202,6 +1314,11 @@ int vfs_stat(struct kernel_object *object, struct vfs_node_info *info) {
             return -1;
         info->links = links;
     }
+    // A directory reports 2 at creation (self plus the parent entry) plus
+    // one per subdirectory, counted from the live table both filesystems
+    // keep in sync.
+    if (node->type == VFS_NODE_DIRECTORY)
+        info->links = 2u + directory_children(node_index(node));
     for (u32 index = 0; index <= VFS_NAME_MAX; index++)
         info->name[index] = node->name[index];
     return 0;
@@ -1280,7 +1397,24 @@ int vfs_read_dir(struct kernel_object *object, u64 *cursor, char *name,
         *cursor = index + 1;
         return 0;
     }
-    *cursor = VFS_NODE_MAX;
+    // Hard-link names continue the cursor past the node table and report
+    // the inode number of the node they name.
+    u32 alias_cursor = (u32)*cursor;
+    alias_cursor = alias_cursor > VFS_NODE_MAX ?
+        alias_cursor - VFS_NODE_MAX : 0;
+    for (u32 index = alias_cursor; index < VFS_ALIAS_MAX; index++) {
+        struct vfs_alias_state *alias = &aliases[index];
+        if (!alias->active || alias->parent != parent) continue;
+        for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
+            name[byte] = alias->name[byte];
+        *name_len = 0;
+        while (name[*name_len]) (*name_len)++;
+        *inode_out = alias->node + 1;
+        *type_out = nodes[alias->node].type;
+        *cursor = VFS_NODE_MAX + index + 1;
+        return 0;
+    }
+    *cursor = VFS_NODE_MAX + VFS_ALIAS_MAX;
     return 1;
 }
 
