@@ -173,6 +173,17 @@ int test_adytumfs64(void) {
         !vfs_stat(node, &info) && info.size == 4 &&
         !vfs_read(opened, 0, received, sizeof(received), &transferred) &&
         transferred == 4 && vfs_unmount(mnt) < 0;
+    // A write past the end lands through the transport on a block the
+    // allocator handed back, and the truncate redirect writes it again: a
+    // cached image of that block must not survive either write.
+    valid = valid &&
+        !vfs_write(opened, 516, payload, 4, &transferred) &&
+        transferred == 4 &&
+        !vfs_truncate(opened, 4) &&
+        !vfs_read(opened, 0, received, 4, &transferred) &&
+        transferred == 4 && received[0] == payload[0] &&
+        received[3] == payload[3] &&
+        !vfs_stat(node, &info) && info.size == 4;
     if (opened) {
         object_release(opened);
         opened = 0;
