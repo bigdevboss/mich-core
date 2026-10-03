@@ -45,6 +45,7 @@
 #define POSIX_SYSCALL_PWRITE 229u
 #define POSIX_SYSCALL_FSYNC 230u
 #define POSIX_SYSCALL_FDATASYNC 231u
+#define POSIX_SYSCALL_ACCESS 232u
 
 #define POSIX_IO_MAX 512u
 #define POSIX_SEEK_SET 0u
@@ -88,6 +89,13 @@ struct posix_getdents_request {
 };
 
 struct posix_chmod_request {
+    u32 mode;
+    char path[VFS_PATH_MAX];
+};
+
+// The mode carries the POSIX R_OK, W_OK, X_OK set with F_OK as a bare
+// existence probe; the constants live with the resolver in posix_vfs.h.
+struct posix_access_request {
     u32 mode;
     char path[VFS_PATH_MAX];
 };
