@@ -10,6 +10,10 @@ struct vfs_node_state {
     const u8 *external_data;
     struct kernel_object *pages;
     char name[VFS_NAME_MAX + 1];
+    // The target a symlink name resolves through; empty for every other
+    // node. The disk copy is the truth for adytumfs, this is the runtime
+    // mirror the mount scan and readlink read from.
+    char target[VFS_PATH_MAX];
     u32 parent;
     u32 type;
     u32 generation;
@@ -709,7 +713,8 @@ struct kernel_object *vfs_create_mode(struct kernel_object *directory,
     struct vfs_node_state *parent = node_for(directory);
     if (!parent || parent->type != VFS_NODE_DIRECTORY || !parent->linked ||
         parent->readonly || !valid_name(name) ||
-        (type != VFS_NODE_REGULAR && type != VFS_NODE_DIRECTORY) ||
+        (type != VFS_NODE_REGULAR && type != VFS_NODE_DIRECTORY &&
+         type != VFS_NODE_SYMLINK) ||
         (mode & ~VFS_MODE_MASK))
         return 0;
     u32 parent_index = node_index(parent);
@@ -745,6 +750,8 @@ struct kernel_object *vfs_create_mode(struct kernel_object *directory,
         for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
             node->name[byte] = 0;
         for (u32 byte = 0; name[byte]; byte++) node->name[byte] = name[byte];
+        for (u32 byte = 0; byte < VFS_PATH_MAX; byte++)
+            node->target[byte] = 0;
         if (parent->filesystem == VFS_FILESYSTEM_ADYTUMFS &&
             adytumfs_inode_create(parent->mount, name, parent->fs_id, type,
                                  mode, &node->fs_id, &node->fs_generation)) {
@@ -792,6 +799,43 @@ struct kernel_object *vfs_create_urandom(struct kernel_object *directory) {
     node->readonly = 1;
     node->size = VFS_FILE_SIZE_MAX;
     return object;
+}
+
+struct kernel_object *vfs_symlink(struct kernel_object *directory,
+                                  const char *name, const char *target) {
+    // The target lives inline in the node, so it is bounded by the path
+    // bound: a longer one could never be resolved anyway.
+    if (!target || !target[0]) return 0;
+    u32 length = 0;
+    while (length < VFS_PATH_MAX && target[length]) length++;
+    if (length >= VFS_PATH_MAX) return 0;
+    struct kernel_object *object = vfs_create_mode(
+        directory, name, VFS_NODE_SYMLINK, VFS_MODE_SYMLINK_DEFAULT);
+    if (!object) return 0;
+    struct vfs_node_state *node = node_for(object);
+    for (u32 byte = 0; byte < length; byte++)
+        node->target[byte] = target[byte];
+    node->target[length] = 0;
+    node->size = length;
+    return object;
+}
+
+int vfs_readlink(struct kernel_object *node_object, char *buffer, u32 size,
+                 u32 *length) {
+    struct vfs_node_state *node = node_for(node_object);
+    if (!node || node->type != VFS_NODE_SYMLINK || !buffer || !size ||
+        !length)
+        return -1;
+    u32 count = 0;
+    while (node->target[count] && count < VFS_PATH_MAX) count++;
+    // The caller owns a buffer of the path bound; a shorter one is a
+    // contract violation rather than the truncation POSIX readlink does.
+    if (count + 1u > size) return -1;
+    for (u32 byte = 0; byte < count; byte++)
+        buffer[byte] = node->target[byte];
+    buffer[count] = 0;
+    *length = count;
+    return 0;
 }
 
 struct kernel_object *vfs_lookup(struct kernel_object *directory,
