@@ -158,6 +158,14 @@ int test_posix_vfs64(struct task *owner, struct task *child) {
         info.uid == 1 && info.gid == 1 && info.mode == 0400;
     valid &= posix_vfs_open(owner, "/posix-api/perm/file",
                             POSIX_OPEN_RDONLY, 0) == POSIX_VFS_EACCES;
+    // access answers through the calling uid, so a 0400 file another uid
+    // owns is closed to this one even though the file exists.
+    valid &= !posix_vfs_access(owner, "/posix-api/perm/file",
+                               POSIX_ACCESS_F_OK);
+    valid &= posix_vfs_access(owner, "/posix-api/perm/file",
+                              POSIX_ACCESS_R_OK) == POSIX_VFS_EACCES;
+    valid &= posix_vfs_access(owner, "/posix-api/perm/file",
+                              POSIX_ACCESS_X_OK) == POSIX_VFS_EACCES;
     valid &= posix_vfs_chmod(owner, "/posix-api/perm/file", 0600) ==
         POSIX_VFS_EPERM;
     valid &= !posix_vfs_chown(owner, "/posix-api/perm/file", -1, 0);
@@ -167,10 +175,29 @@ int test_posix_vfs64(struct task *owner, struct task *child) {
     valid &= !posix_vfs_chmod(owner, "/posix-api/perm/file", 0600);
     valid &= !posix_vfs_stat_path(owner, "/posix-api/perm/file", &info) &&
         info.mode == 0600;
+    // Back home the read and write columns open, the execute one stays
+    // closed until an x bit exists, and the directory answers for the
+    // columns a lookup or a create would need.
+    valid &= !posix_vfs_access(owner, "/posix-api/perm/file",
+                               POSIX_ACCESS_R_OK | POSIX_ACCESS_W_OK);
+    valid &= posix_vfs_access(owner, "/posix-api/perm/file",
+                              POSIX_ACCESS_X_OK) == POSIX_VFS_EACCES;
+    valid &= !posix_vfs_chmod(owner, "/posix-api/perm/file", 0700);
+    valid &= !posix_vfs_access(owner, "/posix-api/perm/file",
+                               POSIX_ACCESS_X_OK);
+    valid &= !posix_vfs_access(owner, "/posix-api/perm",
+                               POSIX_ACCESS_R_OK | POSIX_ACCESS_W_OK |
+                               POSIX_ACCESS_X_OK);
+    valid &= posix_vfs_access(owner, "/posix-api/perm/missing",
+                              POSIX_ACCESS_F_OK) == POSIX_PROFILE_ENOENT;
+    valid &= posix_vfs_access(owner, "/posix-api/perm/file", 8u) ==
+        POSIX_VFS_EINVAL;
     if (owned >= 0) valid &= !posix_fd_close(owner, owned);
     valid &= !posix_vfs_unlink(owner, "/posix-api/perm/file");
     valid &= !posix_vfs_rmdir(owner, "/posix-api/perm");
     valid &= posix_vfs_chmod(owner, "/boot/init64", 0755) == POSIX_VFS_EROFS;
+    valid &= posix_vfs_access(owner, "/boot/init64", POSIX_ACCESS_W_OK) ==
+        POSIX_VFS_EROFS;
     valid &= !posix_vfs_mkdir(owner, "/posix-api/sealed", 0600);
     valid &= !posix_vfs_mkdir(owner, "/posix-api/no-write", 0500);
     valid &= posix_vfs_open(owner, "/posix-api/sealed/item",

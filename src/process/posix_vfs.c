@@ -419,6 +419,31 @@ int posix_vfs_chmod(struct task *task, const char *path, u32 mode) {
     return result;
 }
 
+int posix_vfs_access(struct task *task, const char *path, u32 mode) {
+    if (mode & ~(POSIX_ACCESS_R_OK | POSIX_ACCESS_W_OK | POSIX_ACCESS_X_OK))
+        return POSIX_VFS_EINVAL;
+    struct kernel_object *node = 0;
+    int result = posix_profile_resolve(task, path, &node);
+    struct vfs_node_info info;
+    if (!result) result = node_info(node, &info);
+    // access answers for the real uid, and with no setuid path in the
+    // kernel the real and effective ids are the same value, so the column
+    // walk below is already the real-uid one.
+    if (!result && (mode & POSIX_ACCESS_R_OK) &&
+        !posix_mode_allows(&info, task, 0400u))
+        result = POSIX_VFS_EACCES;
+    if (!result && (mode & POSIX_ACCESS_W_OK)) {
+        if (info.readonly) result = POSIX_VFS_EROFS;
+        if (!result && !posix_mode_allows(&info, task, 0200u))
+            result = POSIX_VFS_EACCES;
+    }
+    if (!result && (mode & POSIX_ACCESS_X_OK) &&
+        !posix_mode_allows(&info, task, 0100u))
+        result = POSIX_VFS_EACCES;
+    if (node) object_release(node);
+    return result;
+}
+
 int posix_vfs_chown(struct task *task, const char *path, i32 uid, i32 gid) {
     if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
     struct kernel_object *node = 0;

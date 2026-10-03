@@ -7,6 +7,12 @@
 #define POSIX_OPEN_RDONLY 0u
 #define POSIX_OPEN_WRONLY 1u
 #define POSIX_OPEN_RDWR 2u
+// access asks whether the calling uid may reach a path: F_OK is a bare
+// existence probe and the rest are the classic permission questions.
+#define POSIX_ACCESS_F_OK 0u
+#define POSIX_ACCESS_R_OK 4u
+#define POSIX_ACCESS_W_OK 2u
+#define POSIX_ACCESS_X_OK 1u
 #define POSIX_OPEN_ACCMODE 3u
 #define POSIX_OPEN_CREAT 0x40u
 #define POSIX_OPEN_TRUNC 0x200u
@@ -53,6 +59,7 @@ int posix_vfs_lstat_path(struct task *task, const char *path,
 int posix_vfs_rmdir(struct task *task, const char *path);
 int posix_vfs_truncate_path(struct task *task, const char *path, u32 size);
 int posix_vfs_chmod(struct task *task, const char *path, u32 mode);
+int posix_vfs_access(struct task *task, const char *path, u32 mode);
 int posix_vfs_chown(struct task *task, const char *path, i32 uid, i32 gid);
 
 #endif
