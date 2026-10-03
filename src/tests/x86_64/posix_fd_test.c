@@ -134,7 +134,10 @@ int test_posix_fd64(struct task *owner, struct task *child) {
         posix_fd_pwrite(owner, first, -1, pinned, 1, &moved) ==
             POSIX_VFS_EINVAL &&
         posix_fd_ftruncate(owner, first, -1) == POSIX_VFS_EINVAL &&
-        posix_fd_ftruncate(owner, preserved, 1) == POSIX_VFS_EBADF;
+        posix_fd_ftruncate(owner, preserved, 1) == POSIX_VFS_EBADF &&
+        !posix_fd_fsync(owner, first) &&
+        !posix_fd_fsync(owner, preserved) &&
+        posix_fd_fsync(owner, 99) == -1;
 
     file = node ? vfs_open(node) : 0;
     int revoked = file ? posix_fd_install_vfs(

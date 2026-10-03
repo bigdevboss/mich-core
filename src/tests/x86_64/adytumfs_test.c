@@ -179,6 +179,7 @@ int test_adytumfs64(void) {
     valid = valid &&
         !vfs_write(opened, 516, payload, 4, &transferred) &&
         transferred == 4 &&
+        !vfs_fsync(opened) &&
         !vfs_truncate(opened, 4) &&
         !vfs_read(opened, 0, received, 4, &transferred) &&
         transferred == 4 && received[0] == payload[0] &&

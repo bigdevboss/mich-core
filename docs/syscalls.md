@@ -387,3 +387,5 @@ admitted to a POSIX profile. They are defined in `src/process/posix_abi.h`.
 | 227 | ftruncate | Resize an open file, extending it with zeroes. |
 | 228 | pread | Read at an explicit offset without moving the cursor. |
 | 229 | pwrite | Write at an explicit offset; O_APPEND is ignored. |
+| 230 | fsync | Push a file's dirty pages through the staging commit. |
+| 231 | fdatasync | Same staging path; the commit lands data and metadata together. |
