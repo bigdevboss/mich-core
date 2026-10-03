@@ -816,6 +816,90 @@ int adytumfs_unlink(u32 mount, u32 inode, u64 generation, u32 parent,
     return inode_reclaim(mount, m, inode);
 }
 
+int adytumfs_rename(u32 mount, u32 inode, u64 generation, u32 old_parent,
+                    const char *name, u32 new_parent, const char *new_name) {
+    // The VFS settles names, kinds, mountpoints, and cycles; this layer
+    // holds the disk to the same story and lands the move in one commit.
+    struct adytumfs_mount *m = slot_mount(mount, inode, generation);
+    if (!m || !name || !new_name || !inode ||
+        old_parent >= ADYTUMFS_INODE_MAX || new_parent >= ADYTUMFS_INODE_MAX)
+        return -1;
+    u32 name_len = bounded_name_len(name);
+    u32 new_len = bounded_name_len(new_name);
+    if (!name_len || name_len > VFS_NAME_MAX || !new_len ||
+        new_len > VFS_NAME_MAX)
+        return -1;
+    struct adytumfs_inode in;
+    if (slot_inode_read(m, inode, &in)) return -1;
+    u32 bits = in.mode & (ADYTUMFS_MODE_DIR | ADYTUMFS_MODE_REG);
+    if (bits != ADYTUMFS_MODE_DIR && bits != ADYTUMFS_MODE_REG) return -1;
+    struct adytumfs_inode old_dir, new_dir;
+    if (slot_inode_read(m, old_parent, &old_dir) ||
+        (old_dir.mode & ADYTUMFS_MODE_DIR) == 0 ||
+        slot_inode_read(m, new_parent, &new_dir) ||
+        (new_dir.mode & ADYTUMFS_MODE_DIR) == 0)
+        return -1;
+    // The moved name must live under the old parent and point here, and the
+    // new name must be free: anything else is a stale VFS view.
+    u64 present = 0;
+    if (adytumfs_dir_lookup(m->device, &m->super, m->slots[old_parent].inode, name,
+                            name_len, &present) ||
+        present != m->slots[inode].inode)
+        return -1;
+    u64 taken = 0;
+    if (adytumfs_dir_lookup(m->device, &m->super, m->slots[new_parent].inode, new_name,
+                            new_len, &taken) == 0)
+        return -1;
+    // A rename never touches the link count: the moved name keeps vouching
+    // for the same inode, so only the ctime and the two directory times
+    // move. The staged ctime lands first, like the count before a link
+    // name: a failure past this point leaves a stale-new time, never a
+    // name the metadata cannot vouch for.
+    in.ctime = rtc64_wall_clock();
+    if (adytumfs_inode_write(m->device, &m->super, m->slots[inode].inode,
+                             &in))
+        return -1;
+    // The old name leaves before the new one lands: a crash between the
+    // two leaves an orphan holding its data, never one inode under two
+    // names the link count cannot vouch for.
+    if (adytumfs_dir_remove(m->device, &m->super, m->slots[old_parent].inode, name,
+                            name_len))
+        return -1;
+    u8 dtype = bits == ADYTUMFS_MODE_DIR ?
+        ADYTUMFS_DTYPE_DIR : ADYTUMFS_DTYPE_REG;
+    if (adytumfs_dir_add(m->device, &m->super, m->slots[new_parent].inode, new_name,
+                         new_len, m->slots[inode].inode, dtype)) {
+        // The rename never happened, so put the old name back before
+        // failing: the VFS view must keep matching the disk. A failed
+        // rollback leaves the accepted orphan form.
+        adytumfs_dir_add(m->device, &m->super, m->slots[old_parent].inode, name,
+                         name_len, m->slots[inode].inode, dtype);
+        return -1;
+    }
+    adytumfs_touch(mount, old_parent, m->slots[old_parent].generation,
+                   ADYTUMFS_TOUCH_MTIME | ADYTUMFS_TOUCH_CTIME);
+    adytumfs_touch(mount, new_parent, m->slots[new_parent].generation,
+                   ADYTUMFS_TOUCH_MTIME | ADYTUMFS_TOUCH_CTIME);
+    // The slot cache carries the primary name the mount scan asks for;
+    // when the moved name was an alias, the primary keeps its slot.
+    if (m->slots[inode].parent == old_parent &&
+        slot_name_len(&m->slots[inode]) == name_len) {
+        int primary = 1;
+        for (u32 byte = 0; byte < name_len; byte++)
+            if (m->slots[inode].name[byte] != name[byte]) primary = 0;
+        if (primary) {
+            m->slots[inode].parent = new_parent;
+            for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
+                m->slots[inode].name[byte] = 0;
+            for (u32 byte = 0; byte < new_len; byte++)
+                m->slots[inode].name[byte] = new_name[byte];
+        }
+    }
+    // One commit lands the move, its times, and any target removal the
+    // caller staged before this call: the whole rename is a single flip.
+    return adytumfs_commit(m->device, &m->super);
+}
+
 int adytumfs_inode_release(u32 mount, u32 inode, u64 generation) {
     struct adytumfs_mount *m = mount_at(mount);
     if (!m || !m->active || !inode || inode >= ADYTUMFS_INODE_MAX)

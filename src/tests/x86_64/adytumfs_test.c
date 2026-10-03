@@ -314,6 +314,95 @@ int test_adytumfs64(void) {
     valid = valid && ghost_mount && ghost_root && !ghost_used;
     if (final_directory) object_release(final_directory);
     if (final_remount && vfs_unmount(mnt)) valid = 0;
+    // Rename reaches the disk: the moved name, the replaced target, and
+    // the renamed directory all walk back in after a remount, a
+    // mountpoint keeps its name, and a descriptor stays usable across
+    // the move of its name.
+    int rename_mounted = mnt && !vfs_mount_adytumfs(mnt, dev);
+    struct kernel_object *rename_dir = rename_mounted ?
+        vfs_lookup(root, "disk") : 0;
+    struct kernel_object *rename_folder = rename_dir ?
+        vfs_create(rename_dir, "folder", VFS_NODE_DIRECTORY) : 0;
+    struct kernel_object *rename_file = rename_folder ?
+        vfs_create(rename_folder, "file", VFS_NODE_REGULAR) : 0;
+    struct kernel_object *rename_victim = rename_dir ?
+        vfs_create(rename_dir, "victim", VFS_NODE_REGULAR) : 0;
+    struct kernel_object *rename_fd = rename_file ? vfs_open(rename_file) : 0;
+    valid = valid && rename_mounted && rename_dir && rename_folder &&
+        rename_file && rename_victim && rename_fd &&
+        vfs_rename(root, "disk", root, "volume") < 0 &&
+        !vfs_write(rename_fd, 0, payload, 4, &transferred) &&
+        transferred == 4 &&
+        !vfs_rename(rename_folder, "file", rename_dir, "moved");
+    struct kernel_object *replaced = valid ?
+        vfs_lookup(rename_dir, "victim") : 0;
+    struct kernel_object *arrived = valid ?
+        vfs_lookup(rename_dir, "moved") : 0;
+    valid = valid && !vfs_stat(rename_fd, &info) && info.size == 4 &&
+        info.linked && arrived == rename_file &&
+        !vfs_rename(rename_dir, "moved", rename_dir, "victim") &&
+        replaced == rename_victim && !vfs_lookup(rename_dir, "moved") &&
+        !vfs_rename(rename_dir, "folder", rename_dir, "archive");
+    if (replaced) object_release(replaced);
+    if (arrived) object_release(arrived);
+    if (rename_fd) {
+        object_release(rename_fd);
+        rename_fd = 0;
+    }
+    int rename_unmount = rename_dir && !vfs_unmount(mnt);
+    int rename_remount = rename_unmount && !vfs_mount_adytumfs(mnt, dev);
+    struct kernel_object *disk_again = rename_remount ?
+        vfs_lookup(root, "disk") : 0;
+    struct kernel_object *archive_again = disk_again ?
+        vfs_lookup(disk_again, "archive") : 0;
+    struct kernel_object *victim_again = disk_again ?
+        vfs_lookup(disk_again, "victim") : 0;
+    valid = valid && rename_unmount && rename_remount && disk_again &&
+        archive_again && victim_again && !vfs_lookup(disk_again, "moved") &&
+        !vfs_lookup(disk_again, "folder") &&
+        !vfs_stat(victim_again, &info) && info.size == 4 &&
+        info.type == VFS_NODE_REGULAR && info.links == 1 &&
+        !vfs_stat(archive_again, &info) &&
+        info.type == VFS_NODE_DIRECTORY && info.links == 2;
+    // The slot picture a later mount would scan: the moved file kept its
+    // inode under the replaced name, the renamed directory kept its own,
+    // and the replaced inode is gone.
+    u32 rename_mount = 0;
+    for (u32 probe = 1; probe < VFS_MOUNT_MAX; probe++)
+        if (adytumfs_inode_count(probe)) {
+            rename_mount = probe;
+            break;
+        }
+    u32 rename_used = 0;
+    u32 rename_type = 0;
+    u32 rename_size = 0;
+    u32 rename_parent = 0;
+    u32 rename_mode = 0;
+    char rename_name[VFS_NAME_MAX + 1];
+    valid = valid && rename_mount &&
+        !adytumfs_inode_get(rename_mount, 1, &rename_used, &rename_type,
+                           &rename_size, &rename_parent, &rename_mode,
+                           rename_name, 0) &&
+        rename_used == 1 && rename_type == VFS_NODE_DIRECTORY &&
+        rename_parent == 0 && probe_name_equals(rename_name, "archive") &&
+        !adytumfs_inode_get(rename_mount, 2, &rename_used, &rename_type,
+                           &rename_size, &rename_parent, &rename_mode,
+                           rename_name, 0) &&
+        rename_used == 1 && rename_type == VFS_NODE_REGULAR &&
+        rename_size == 4 && rename_parent == 0 &&
+        probe_name_equals(rename_name, "victim") &&
+        !adytumfs_inode_get(rename_mount, 3, &rename_used, &rename_type,
+                           &rename_size, &rename_parent, &rename_mode,
+                           rename_name, 0) &&
+        !rename_used;
+    if (victim_again) object_release(victim_again);
+    if (archive_again) object_release(archive_again);
+    if (disk_again) object_release(disk_again);
+    if (rename_remount && vfs_unmount(mnt)) valid = 0;
+    if (rename_victim) object_release(rename_victim);
+    if (rename_file) object_release(rename_file);
+    if (rename_folder) object_release(rename_folder);
+    if (rename_dir) object_release(rename_dir);
     if (alias) object_release(alias);
     if (fresh_alias) object_release(fresh_alias);
     if (missing_alias) object_release(missing_alias);

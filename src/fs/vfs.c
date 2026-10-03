@@ -1160,13 +1160,15 @@ int vfs_rename(struct kernel_object *old_directory, const char *name,
          (node->mount != new_parent->mount ||
           node->mount_generation != new_parent->mount_generation)))
         return -1;
-    // The adytumfs window is not wired into the rename yet; a volume mount
-    // keeps its names where the format layer put them for now.
-    if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) return -1;
-    // The replaced name leaves first and uncommitted, so the coming
-    // adytumfs move can land in the same staging window and commit both
+    // The replaced name leaves first and uncommitted, so the adytumfs
+    // move below can land in the same staging window and commit both
     // edits under one superblock flip.
     if (target && vfs_unlink(new_directory, new_name)) return -1;
+    if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS &&
+        adytumfs_rename(node->mount, node->fs_id, node->fs_generation,
+                        nodes[old_index].fs_id, name,
+                        nodes[new_index].fs_id, new_name))
+        return -1;
     node->ctime = rtc64_wall_clock();
     if (source_alias) {
         source_alias->parent = new_index;
