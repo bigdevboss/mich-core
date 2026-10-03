@@ -3,6 +3,7 @@
 #include "task.h"
 #include "vfs.h"
 #include "posix_fd.h"
+#include "posix_vfs.h"
 #include "tests64.h"
 
 int test_posix_fd64(struct task *owner, struct task *child) {
@@ -110,6 +111,30 @@ int test_posix_fd64(struct task *owner, struct task *child) {
         object_release(file);
         file = 0;
     }
+
+    // The positioned calls address an explicit offset and leave the shared
+    // cursor alone; pwrite also ignores O_APPEND, which POSIX allows to
+    // coexist with it.
+    u8 pinned[4];
+    u32 moved = 0;
+    u32 cursor = 0;
+    valid = valid &&
+        !posix_fd_pwrite(owner, first, 2, "yz", 2, &moved) && moved == 2 &&
+        !posix_fd_seek(owner, first, 0, 1, &cursor) && cursor == 4 &&
+        !posix_fd_pread(owner, first, 1, pinned, 3, &moved) && moved == 3 &&
+        pinned[0] == 'B' && pinned[1] == 'y' && pinned[2] == 'z' &&
+        !posix_fd_seek(owner, first, 0, 1, &cursor) && cursor == 4 &&
+        !posix_fd_pwrite(owner, appended, 0, "q", 1, &moved) && moved == 1 &&
+        !posix_fd_stat(owner, first, &info) && info.size == 5 &&
+        !posix_fd_pread(owner, first, 8, pinned, 1, &moved) && !moved &&
+        !posix_fd_ftruncate(owner, first, 8) &&
+        !posix_fd_stat(owner, first, &info) && info.size == 8 &&
+        !posix_fd_ftruncate(owner, first, 2) &&
+        !posix_fd_stat(owner, first, &info) && info.size == 2 &&
+        posix_fd_pwrite(owner, first, -1, pinned, 1, &moved) ==
+            POSIX_VFS_EINVAL &&
+        posix_fd_ftruncate(owner, first, -1) == POSIX_VFS_EINVAL &&
+        posix_fd_ftruncate(owner, preserved, 1) == POSIX_VFS_EBADF;
 
     file = node ? vfs_open(node) : 0;
     int revoked = file ? posix_fd_install_vfs(

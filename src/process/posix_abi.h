@@ -40,6 +40,9 @@
 #define POSIX_SYSCALL_SYMLINK 224u
 #define POSIX_SYSCALL_READLINK 225u
 #define POSIX_SYSCALL_LSTAT 226u
+#define POSIX_SYSCALL_FTRUNCATE 227u
+#define POSIX_SYSCALL_PREAD 228u
+#define POSIX_SYSCALL_PWRITE 229u
 
 #define POSIX_IO_MAX 512u
 #define POSIX_SEEK_SET 0u
@@ -189,6 +192,25 @@ struct posix_getcwd_request {
 struct posix_truncate_request {
     u32 size;
     char path[VFS_PATH_MAX];
+};
+
+// ftruncate takes a signed length because POSIX makes a negative one
+// EINVAL; the path-based truncate above keeps its unsigned ABI.
+struct posix_ftruncate_request {
+    i32 descriptor;
+    u32 reserved;
+    i64 length;
+};
+
+// pread and pwrite address the file at an explicit offset and leave the
+// descriptor position alone, so concurrent operations never interleave
+// through a shared cursor.
+struct posix_pio_request {
+    i32 descriptor;
+    u32 reserved;
+    i64 offset;
+    u32 length;
+    u8 data[POSIX_IO_MAX];
 };
 
 #endif

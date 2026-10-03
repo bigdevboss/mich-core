@@ -316,6 +316,45 @@ int posix_fd_write(struct task *task, int descriptor, const void *buffer,
     return result;
 }
 
+int posix_fd_pread(struct task *task, int descriptor, i64 offset,
+                   void *buffer, u32 length, u32 *transferred) {
+    if (!buffer || !transferred) return -1;
+    // A read past the end of the file answers zero bytes, so an offset
+    // beyond the size bound needs no error of its own.
+    if (offset < 0) return POSIX_VFS_EINVAL;
+    if (offset > (i64)VFS_FILE_SIZE_MAX) {
+        *transferred = 0;
+        return 0;
+    }
+    struct posix_ofd *ofd = retain_descriptor(task, descriptor,
+                                               POSIX_FD_ACCESS_READ);
+    if (!ofd) return -1;
+    spin_lock(&ofd->lock);
+    int result = vfs_read(ofd->file, (u32)offset, buffer, length, transferred);
+    spin_unlock(&ofd->lock);
+    release_ofd(ofd);
+    return result;
+}
+
+int posix_fd_pwrite(struct task *task, int descriptor, i64 offset,
+                    const void *buffer, u32 length, u32 *transferred) {
+    if (!buffer || !transferred) return -1;
+    if (offset < 0) return POSIX_VFS_EINVAL;
+    // POSIX lets O_APPEND and pwrite coexist: the explicit offset wins and
+    // the shared cursor never moves.
+    if (offset > (i64)VFS_FILE_SIZE_MAX ||
+        (u64)offset + length > VFS_FILE_SIZE_MAX)
+        return POSIX_VFS_EFBIG;
+    struct posix_ofd *ofd = retain_descriptor(task, descriptor,
+                                               POSIX_FD_ACCESS_WRITE);
+    if (!ofd) return -1;
+    spin_lock(&ofd->lock);
+    int result = vfs_write(ofd->file, (u32)offset, buffer, length, transferred);
+    spin_unlock(&ofd->lock);
+    release_ofd(ofd);
+    return result;
+}
+
 int posix_fd_seek(struct task *task, int descriptor, i64 offset, u32 whence,
                   u32 *position) {
     if (!position || whence > 2) return -1;
@@ -413,13 +452,17 @@ int posix_fd_getdents(struct task *task, int descriptor, u8 *buffer,
     return 0;
 }
 
-int posix_fd_truncate(struct task *task, int descriptor, u32 size) {
+int posix_fd_ftruncate(struct task *task, int descriptor, i64 length) {
+    // POSIX folds a descriptor that is not open for writing into EBADF
+    // rather than EACCES, unlike the read and write paths.
+    if (length < 0) return POSIX_VFS_EINVAL;
+    if (length > (i64)VFS_FILE_SIZE_MAX) return POSIX_VFS_EFBIG;
     struct posix_ofd *ofd = retain_descriptor(task, descriptor,
                                                POSIX_FD_ACCESS_WRITE);
-    if (!ofd) return -1;
-    int result = vfs_truncate(ofd->file, size);
+    if (!ofd) return POSIX_VFS_EBADF;
+    int result = vfs_truncate(ofd->file, (u32)length);
     release_ofd(ofd);
-    return result;
+    return result ? POSIX_VFS_EIO : 0;
 }
 
 int posix_fd_stat(struct task *task, int descriptor, struct vfs_node_info *info) {
