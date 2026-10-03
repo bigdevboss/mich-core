@@ -257,6 +257,73 @@ int posix_vfs_link(struct task *task, const char *old_path,
     return result;
 }
 
+int posix_vfs_rename(struct task *task, const char *old_path,
+                     const char *new_path) {
+    if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
+    struct kernel_object *node = 0;
+    int result = posix_profile_resolve(task, old_path, &node);
+    struct vfs_node_info info;
+    if (!result) result = node_info(node, &info);
+    struct kernel_object *old_parent = 0;
+    char old_name[VFS_NAME_MAX + 1];
+    if (!result)
+        result = posix_profile_parent(task, old_path, &old_parent, old_name);
+    if (!result) result = check_parent_mutation(task, old_parent);
+    struct kernel_object *new_parent = 0;
+    char new_name[VFS_NAME_MAX + 1];
+    if (!result)
+        result = posix_profile_parent(task, new_path, &new_parent, new_name);
+    // One inode cannot span filesystems, so a pair on different ones is
+    // EXDEV rather than a generic refusal; this lands before the new
+    // parent permission pass so a readonly cross-filesystem target still
+    // names the real reason.
+    struct vfs_node_info parent_info;
+    if (!result) result = node_info(new_parent, &parent_info);
+    if (!result && parent_info.filesystem != info.filesystem)
+        result = POSIX_VFS_EXDEV;
+    if (!result) result = check_parent_mutation(task, new_parent);
+    // The name being replaced, when it exists, decides the errno matrix.
+    struct kernel_object *target = 0;
+    if (!result) target = vfs_lookup(new_parent, new_name);
+    // Renaming a name onto itself is a quiet success, even for a
+    // directory with children, which the matrix below would otherwise
+    // reject as nonempty.
+    if (!result && target == node) {
+        if (target) object_release(target);
+        if (new_parent) object_release(new_parent);
+        if (old_parent) object_release(old_parent);
+        if (node) object_release(node);
+        return 0;
+    }
+    struct vfs_node_info target_info;
+    if (!result && target) {
+        result = node_info(target, &target_info);
+        // A file cannot land on a directory, and a directory cannot land
+        // on a file; POSIX reports the first as EISDIR and the second as
+        // ENOTDIR.
+        if (!result && info.type == VFS_NODE_REGULAR &&
+            target_info.type == VFS_NODE_DIRECTORY)
+            result = POSIX_VFS_EISDIR;
+        if (!result && info.type == VFS_NODE_DIRECTORY &&
+            target_info.type == VFS_NODE_REGULAR)
+            result = POSIX_VFS_ENOTDIR;
+        if (!result && info.type == VFS_NODE_DIRECTORY &&
+            target_info.type == VFS_NODE_DIRECTORY &&
+            target_info.child_count)
+            result = POSIX_VFS_ENOTEMPTY;
+    }
+    // The VFS refuses the rest: mountpoints, directory cycles, and pairs
+    // inside two mounts of one volume. The POSIX profile sees none of
+    // them, so a failure here reads as EINVAL.
+    if (!result && vfs_rename(old_parent, old_name, new_parent, new_name))
+        result = POSIX_VFS_EINVAL;
+    if (target) object_release(target);
+    if (new_parent) object_release(new_parent);
+    if (old_parent) object_release(old_parent);
+    if (node) object_release(node);
+    return result;
+}
+
 int posix_vfs_truncate_path(struct task *task, const char *path, u32 size) {
     if (size > VFS_FILE_SIZE_MAX) return POSIX_VFS_EFBIG;
     if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;

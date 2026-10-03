@@ -30,6 +30,7 @@
 #define POSIX_VFS_EMLINK (-31)
 #define POSIX_VFS_EROFS (-30)
 #define POSIX_VFS_ERANGE (-34)
+#define POSIX_VFS_ENOTEMPTY (-39)
 
 struct task;
 
@@ -40,6 +41,8 @@ int posix_vfs_mkdir(struct task *task, const char *path, u32 mode);
 int posix_vfs_unlink(struct task *task, const char *path);
 int posix_vfs_link(struct task *task, const char *old_path,
                    const char *new_path);
+int posix_vfs_rename(struct task *task, const char *old_path,
+                     const char *new_path);
 int posix_vfs_rmdir(struct task *task, const char *path);
 int posix_vfs_truncate_path(struct task *task, const char *path, u32 size);
 int posix_vfs_chmod(struct task *task, const char *path, u32 mode);
