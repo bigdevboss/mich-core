@@ -90,6 +90,8 @@ int vfs_unlink_path(struct kernel_object *start, const char *path);
 int vfs_unlink(struct kernel_object *directory, const char *name);
 int vfs_link(struct kernel_object *node, struct kernel_object *directory,
              const char *name);
+int vfs_rename(struct kernel_object *old_directory, const char *name,
+               struct kernel_object *new_directory, const char *new_name);
 struct kernel_object *vfs_open(struct kernel_object *node);
 int vfs_image(struct kernel_object *node, const u8 **data, u32 *size);
 int vfs_read(struct kernel_object *file, u32 offset,
