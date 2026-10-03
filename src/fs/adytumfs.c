@@ -217,6 +217,11 @@ static int page_transfer(struct adytumfs_mount *m, struct adytumfs_cache *slot,
         sg_resource_create(pages, indices, offsets, lengths, count);
     if (!sg) return -1;
     u32 sectors = count * (4096u / BLOCK_SECTOR_SIZE);
+    // The transfer moves bytes through the transport, not the block cache,
+    // so a cached image of the target sectors would keep serving the
+    // previous contents behind the write. Drop it the way block_zero does.
+    if (op == BLOCK_OP_WRITE)
+        block_cache_invalidate(m->device, lba, sectors);
     u64 id = 0;
     i32 status = -1;
     u32 transferred = 0;
