@@ -21,6 +21,7 @@
 
 #define VFS_NODE_REGULAR 1
 #define VFS_NODE_DIRECTORY 2
+#define VFS_NODE_SYMLINK 3
 
 /* Special nodes generate their content at read time instead of storing
    it, so size and offset carry no meaning for them. */
@@ -36,6 +37,9 @@
 #define VFS_MODE_MASK 0777u
 #define VFS_MODE_REGULAR_DEFAULT 0666u
 #define VFS_MODE_DIRECTORY_DEFAULT 0777u
+/* POSIX ignores the mode a symlink is created with, so it keeps the
+   permissive default rather than a second meaning of the same bits. */
+#define VFS_MODE_SYMLINK_DEFAULT 0777u
 #define VFS_MODE_REGULAR_READONLY 0444u
 #define VFS_MODE_DIRECTORY_READONLY 0555u
 
@@ -92,6 +96,10 @@ int vfs_link(struct kernel_object *node, struct kernel_object *directory,
              const char *name);
 int vfs_rename(struct kernel_object *old_directory, const char *name,
                struct kernel_object *new_directory, const char *new_name);
+struct kernel_object *vfs_symlink(struct kernel_object *directory,
+                                  const char *name, const char *target);
+int vfs_readlink(struct kernel_object *node, char *buffer, u32 size,
+                 u32 *length);
 struct kernel_object *vfs_open(struct kernel_object *node);
 int vfs_image(struct kernel_object *node, const u8 **data, u32 *size);
 int vfs_read(struct kernel_object *file, u32 offset,

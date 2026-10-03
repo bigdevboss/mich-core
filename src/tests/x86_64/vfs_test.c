@@ -200,6 +200,44 @@ int test_vfs64(void) {
     if (file) object_release(file);
     if (away) object_release(away);
     if (home) object_release(home);
+    // A symlink is a name whose node carries a target string: lookup
+    // finds the link itself, the kernel resolver leaves it alone, and
+    // rename and unlink move it like any other name.
+    const char guide_target[] = "/boot/nowhere";
+    struct kernel_object *guide = root ?
+        vfs_symlink(root, "guide", guide_target) : 0;
+    struct kernel_object *link_found = guide ? vfs_lookup(root, "guide") : 0;
+    struct kernel_object *link_resolved = guide ?
+        vfs_resolve(root, "/guide") : 0;
+    struct kernel_object *second_link = guide ?
+        vfs_symlink(root, "guide", guide_target) : 0;
+    char stretched_target[VFS_PATH_MAX];
+    for (u32 index = 0; index < VFS_PATH_MAX; index++)
+        stretched_target[index] = (char)('a' + (index % 26));
+    struct kernel_object *long_link = guide ?
+        vfs_symlink(root, "stretch", stretched_target) : 0;
+    char link_target[VFS_PATH_MAX];
+    u32 link_length = 0;
+    int rc_readlink = vfs_readlink(guide, link_target,
+                                   sizeof(link_target), &link_length);
+    int target_matches = !rc_readlink &&
+        link_length == sizeof(guide_target) - 1;
+    for (u32 index = 0; target_matches && index < link_length; index++)
+        if (link_target[index] != guide_target[index]) target_matches = 0;
+    int rc_link_stat = vfs_stat(guide, &info);
+    int rc_rename = vfs_rename(root, "guide", root, "moved");
+    int rc_reread = vfs_readlink(guide, link_target,
+                                 sizeof(link_target), &link_length);
+    int rc_unlink = vfs_unlink(root, "moved");
+    valid = valid && guide && link_found == guide &&
+        link_resolved == guide && !second_link && !long_link &&
+        !rc_readlink && target_matches && !rc_link_stat &&
+        info.type == VFS_NODE_SYMLINK &&
+        info.size == sizeof(guide_target) - 1 && info.links == 1 &&
+        !rc_rename && !rc_reread && !rc_unlink;
+    if (link_resolved) object_release(link_resolved);
+    if (link_found) object_release(link_found);
+    if (guide) object_release(guide);
     struct kernel_object *usr = root ?
         vfs_create_path(root, "/usr", VFS_NODE_DIRECTORY) : 0;
     struct kernel_object *lib = root ?
