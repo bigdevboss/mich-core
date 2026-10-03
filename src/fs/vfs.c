@@ -557,7 +557,8 @@ int vfs_mount_adytumfs(struct kernel_object *directory,
         }
         if (!used[inode]) continue;
         if ((inode && (types[inode] != VFS_NODE_REGULAR &&
-                       types[inode] != VFS_NODE_DIRECTORY)) ||
+                       types[inode] != VFS_NODE_DIRECTORY &&
+                       types[inode] != VFS_NODE_SYMLINK)) ||
             (modes[inode] & ~VFS_MODE_MASK) ||
             (inode && (!names[inode][0] ||
                        names[inode][VFS_NAME_MAX] ||
@@ -621,6 +622,17 @@ int vfs_mount_adytumfs(struct kernel_object *directory,
         node->fs_id = inode;
         node->fs_generation = generations[inode];
         node->active = 1;
+        // A symlink node mirrors the target the volume carries in its
+        // file body, the way the alias table mirrors extra names.
+        if (types[inode] == VFS_NODE_SYMLINK &&
+            adytumfs_symlink_target(mount_index, inode,
+                                    generations[inode], node->target)) {
+            node->active = 0;
+            for (u32 undo = 0; undo < created; undo++)
+                object_release(nodes[slots[undo]].self);
+            adytumfs_detach(mount_index);
+            return -1;
+        }
         const char *name = inode ? names[inode] : point->name;
         for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
             node->name[byte] = 0;
@@ -813,6 +825,17 @@ struct kernel_object *vfs_symlink(struct kernel_object *directory,
         directory, name, VFS_NODE_SYMLINK, VFS_MODE_SYMLINK_DEFAULT);
     if (!object) return 0;
     struct vfs_node_state *node = node_for(object);
+    // The volume keeps the string in the inode's file body and one commit
+    // lands the whole link; failing that unwinds the fresh inode rather
+    // than leaving a link without a target on the disk.
+    if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS &&
+        adytumfs_symlink_write(node->mount, node->fs_id,
+                               node->fs_generation, target)) {
+        node->linked = 0;
+        adytumfs_inode_remove(node->mount, node->fs_id);
+        object_release(object);
+        return 0;
+    }
     for (u32 byte = 0; byte < length; byte++)
         node->target[byte] = target[byte];
     node->target[length] = 0;

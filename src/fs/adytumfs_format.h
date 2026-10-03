@@ -113,9 +113,13 @@ int adytumfs_super_unpack(struct adytumfs_superblock *super, const u8 *block);
 int adytumfs_super_valid(const struct adytumfs_superblock *super,
                          u64 device_blocks);
 
-// Inode type bits, laid over the low permission bits inside mode (POSIX style).
+// Inode type bits, laid over the low permission bits inside mode (POSIX
+// style). The symlink keeps its own bit rather than the POSIX S_IFLNK
+// value, because that value shares a bit with S_IFREG and every existing
+// mode test reads a single bit.
 #define ADYTUMFS_MODE_DIR 0x4000u
 #define ADYTUMFS_MODE_REG 0x8000u
+#define ADYTUMFS_MODE_LNK 0x2000u
 #define ADYTUMFS_INODE_CHECKSUM_OFFSET 252u
 
 struct adytumfs_extent {
@@ -304,6 +308,7 @@ int adytumfs_inode_truncate(struct kernel_object *device,
 #define ADYTUMFS_DIR_HEADER 12u
 #define ADYTUMFS_DTYPE_REG 1u
 #define ADYTUMFS_DTYPE_DIR 2u
+#define ADYTUMFS_DTYPE_LNK 3u
 
 int adytumfs_dir_lookup(struct kernel_object *device,
                         const struct adytumfs_superblock *super, u64 dir_inode,

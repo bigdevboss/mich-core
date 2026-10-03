@@ -61,8 +61,11 @@ int adytumfs_verify(struct kernel_object *device,
             free_inodes++;
             continue;
         }
-        u32 bits = in.mode & (ADYTUMFS_MODE_DIR | ADYTUMFS_MODE_REG);
-        if (bits != ADYTUMFS_MODE_DIR && bits != ADYTUMFS_MODE_REG) return -1;
+        u32 bits = in.mode & (ADYTUMFS_MODE_DIR | ADYTUMFS_MODE_REG |
+                              ADYTUMFS_MODE_LNK);
+        if (bits != ADYTUMFS_MODE_DIR && bits != ADYTUMFS_MODE_REG &&
+            bits != ADYTUMFS_MODE_LNK)
+            return -1;
         u32 terminated = 0;
         u64 mapped = 0;
         for (u32 index = 0; index < ADYTUMFS_DIRECT_EXTENTS; index++) {

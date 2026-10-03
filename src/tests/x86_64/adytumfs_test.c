@@ -403,6 +403,47 @@ int test_adytumfs64(void) {
     if (rename_file) object_release(rename_file);
     if (rename_folder) object_release(rename_folder);
     if (rename_dir) object_release(rename_dir);
+    // A symlink on the volume keeps its target in the file body: the
+    // link survives a remount with the same string, the same length, and
+    // the same inode, and the slot picture reports the type.
+    int link_mounted = mnt && !vfs_mount_adytumfs(mnt, dev);
+    struct kernel_object *link_dir = link_mounted ?
+        vfs_lookup(root, "disk") : 0;
+    struct kernel_object *guide = link_dir ?
+        vfs_symlink(link_dir, "guide", "/volume/landing") : 0;
+    char link_target[VFS_PATH_MAX];
+    u32 link_length = 0;
+    int rc_link_read = vfs_readlink(guide, link_target,
+                                    sizeof(link_target), &link_length);
+    int rc_link_stat = vfs_stat(guide, &info);
+    int link_unmount = link_dir && !vfs_unmount(mnt);
+    int link_remount = link_unmount && !vfs_mount_adytumfs(mnt, dev);
+    struct kernel_object *link_dir_again = link_remount ?
+        vfs_lookup(root, "disk") : 0;
+    struct kernel_object *guide_again = link_dir_again ?
+        vfs_lookup(link_dir_again, "guide") : 0;
+    char target_again[VFS_PATH_MAX];
+    u32 again_length = 0;
+    int rc_read_again = vfs_readlink(guide_again, target_again,
+                                     sizeof(target_again), &again_length);
+    int targets_equal = !rc_read_again && !rc_link_read &&
+        again_length == link_length;
+    for (u32 index = 0; targets_equal && index < again_length; index++)
+        if (target_again[index] != link_target[index]) targets_equal = 0;
+    int rc_again_stat = vfs_stat(guide_again, &info);
+    int rc_guide_unlink = vfs_unlink(link_dir_again, "guide");
+    valid = valid && link_mounted && link_dir && guide && !rc_link_read &&
+        link_length == 15 && !rc_link_stat &&
+        info.type == VFS_NODE_SYMLINK && info.size == 15 &&
+        link_unmount && link_remount && link_dir_again && guide_again &&
+        !rc_read_again && targets_equal && !rc_again_stat &&
+        info.type == VFS_NODE_SYMLINK && info.size == 15 &&
+        !rc_guide_unlink;
+    if (guide_again) object_release(guide_again);
+    if (link_dir_again) object_release(link_dir_again);
+    if (guide) object_release(guide);
+    if (link_dir) object_release(link_dir);
+    if (link_remount && vfs_unmount(mnt)) valid = 0;
     if (alias) object_release(alias);
     if (fresh_alias) object_release(fresh_alias);
     if (missing_alias) object_release(missing_alias);
