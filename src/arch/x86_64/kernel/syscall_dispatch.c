@@ -2072,7 +2072,8 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         object_release(object);
         return handle ? handle : (u64)-1;
     }
-    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_PWRITE) {
+    if (number >= POSIX_SYSCALL_OPEN &&
+        number <= POSIX_SYSCALL_FDATASYNC) {
         struct task *task = &task_pool[current_task_slot];
         if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
         if (number == POSIX_SYSCALL_OPEN) {
@@ -2339,6 +2340,21 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                 vm64_copy_to(task->page_dir, arg0, &request, sizeof(request)))
                 return (u64)(i64)POSIX_VFS_EIO;
             return (u64)(i64)transferred;
+        }
+        if (number == POSIX_SYSCALL_FSYNC ||
+            number == POSIX_SYSCALL_FDATASYNC) {
+            struct posix_fd_request request;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 0) ||
+                vm64_copy_from(task->page_dir, &request, arg0,
+                               sizeof(request)) ||
+                request.reserved)
+                return (u64)(i64)POSIX_VFS_EINVAL;
+            int error = posix_fd_error(task, request.descriptor, 0);
+            if (error) return (u64)(i64)error;
+            if (!posix_profile_vfs_authorized(task))
+                return (u64)(i64)POSIX_VFS_EACCES;
+            int result = posix_fd_fsync(task, request.descriptor);
+            return result ? (u64)(i64)POSIX_VFS_EIO : 0;
         }
         if (number == POSIX_SYSCALL_STAT) {
             struct posix_stat_path_request request;

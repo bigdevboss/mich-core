@@ -465,6 +465,20 @@ int posix_fd_ftruncate(struct task *task, int descriptor, i64 length) {
     return result ? POSIX_VFS_EIO : 0;
 }
 
+// fdatasync may skip metadata a later read does not need, but the format
+// lands data and metadata in a single commit window, so both calls ride the
+// same staging path. The commit flushes the block cache and flips the
+// generation, which is durable as far as the emulated disk goes; a real
+// device write cache would still need a flush command, and that barrier is
+// not built yet.
+int posix_fd_fsync(struct task *task, int descriptor) {
+    struct posix_ofd *ofd = retain_descriptor(task, descriptor, 0);
+    if (!ofd) return -1;
+    int result = vfs_fsync(ofd->file);
+    release_ofd(ofd);
+    return result;
+}
+
 int posix_fd_stat(struct task *task, int descriptor, struct vfs_node_info *info) {
     if (!info) return -1;
     struct posix_ofd *ofd = retain_descriptor(task, descriptor, 0);

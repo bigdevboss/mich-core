@@ -1569,6 +1569,26 @@ int vfs_truncate(struct kernel_object *object, u32 size) {
     return result;
 }
 
+int vfs_fsync(struct kernel_object *object) {
+    struct vfs_file_state *file = file_for(object);
+    struct vfs_node_state *node = file ? node_for(file->node) : 0;
+    if (!node || !node_backing_live(node)) return -1;
+    if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) {
+        spin_lock(&vfs_write_lock);
+        // pages_sync is the staging path: it moves the dirty pages of this
+        // file through the redirect machinery, and the commit it ends with
+        // lands the whole open window, so the disk copy is durable up to
+        // this call.
+        int result = adytumfs_pages_sync(node->mount, node->fs_id,
+                                         node->fs_generation);
+        spin_unlock(&vfs_write_lock);
+        return result;
+    }
+    // The ramfs keeps its bytes in memory only, so a durability call has
+    // nothing further to push.
+    return 0;
+}
+
 int vfs_stat(struct kernel_object *object, struct vfs_node_info *info) {
     struct vfs_node_state *node = node_for(object);
     if (!node) {
