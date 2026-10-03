@@ -145,6 +145,61 @@ int test_vfs64(void) {
     if (linked_file) object_release(linked_file);
     valid = valid && linked_dir && !vfs_unlink(root, "linked");
     if (linked_dir) object_release(linked_dir);
+    // Rename moves one name, the primary dentry or an alias, across
+    // directories or in place, replaces a same-kind target, and refuses
+    // to loop a directory into its own subtree.
+    struct kernel_object *home = root ?
+        vfs_create(root, "home", VFS_NODE_DIRECTORY) : 0;
+    struct kernel_object *away = root ?
+        vfs_create(root, "away", VFS_NODE_DIRECTORY) : 0;
+    struct kernel_object *file = home ?
+        vfs_create(home, "file", VFS_NODE_REGULAR) : 0;
+    struct kernel_object *taken = home ?
+        vfs_create(home, "taken", VFS_NODE_REGULAR) : 0;
+    struct kernel_object *folder = home ?
+        vfs_create(home, "folder", VFS_NODE_DIRECTORY) : 0;
+    struct kernel_object *elsewhere = 0;
+    struct kernel_object *reached = 0;
+    struct kernel_object *leaf_found = 0;
+    struct kernel_object *leaf_made = 0;
+    int rc_noop = vfs_rename(home, "file", home, "file");
+    int rc_link = vfs_link(file, home, "twin");
+    int rc_self = vfs_rename(home, "file", home, "twin");
+    int rc_move = vfs_rename(home, "twin", away, "elsewhere");
+    elsewhere = vfs_lookup(away, "elsewhere");
+    int rc_replace = vfs_rename(away, "elsewhere", home, "taken");
+    reached = vfs_lookup(home, "taken");
+    int rc_stat = vfs_stat(file, &info);
+    u32 link_count = info.links;
+    leaf_made = vfs_create(folder, "leaf", VFS_NODE_REGULAR);
+    int rc_dir = vfs_rename(home, "folder", root, "parked");
+    leaf_found = vfs_resolve(root, "/parked/leaf");
+    int rc_cycle = vfs_rename(root, "parked", folder, "deeper");
+    int rc_dots = vfs_rename(root, ".", home, "dot");
+    int rc_dir_onto_file = vfs_rename(root, "parked", home, "file");
+    int rc_file_onto_dir = vfs_rename(home, "file", root, "parked");
+    valid = valid && home && away && file && taken && folder && leaf_made &&
+        !rc_noop && !rc_link && !rc_self && !rc_move && !rc_replace &&
+        elsewhere == file && reached == file && !rc_stat &&
+        link_count == 2 && !rc_dir && leaf_found && rc_cycle < 0 &&
+        rc_dots < 0 && rc_dir_onto_file < 0 && rc_file_onto_dir < 0;
+    if (reached) object_release(reached);
+    if (elsewhere) object_release(elsewhere);
+    if (leaf_found) object_release(leaf_found);
+    if (leaf_made) object_release(leaf_made);
+    int rc_leaf = vfs_unlink_path(root, "/parked/leaf");
+    int rc_parked = vfs_unlink(root, "parked");
+    int rc_taken = vfs_unlink(home, "taken");
+    int rc_file = vfs_unlink(home, "file");
+    int rc_home = vfs_unlink(root, "home");
+    int rc_away = vfs_unlink(root, "away");
+    valid = valid && !rc_leaf && !rc_parked && !rc_taken && !rc_file &&
+        !rc_home && !rc_away;
+    if (folder) object_release(folder);
+    if (taken) object_release(taken);
+    if (file) object_release(file);
+    if (away) object_release(away);
+    if (home) object_release(home);
     struct kernel_object *usr = root ?
         vfs_create_path(root, "/usr", VFS_NODE_DIRECTORY) : 0;
     struct kernel_object *lib = root ?

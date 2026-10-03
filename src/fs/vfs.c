@@ -1085,6 +1085,105 @@ int vfs_link(struct kernel_object *node_object,
     return -1;
 }
 
+int vfs_rename(struct kernel_object *old_directory, const char *name,
+               struct kernel_object *new_directory, const char *new_name) {
+    struct vfs_node_state *old_parent = node_for(old_directory);
+    struct vfs_node_state *new_parent = node_for(new_directory);
+    if (!old_parent || old_parent->type != VFS_NODE_DIRECTORY ||
+        !old_parent->linked || !valid_name(name) || !new_parent ||
+        new_parent->type != VFS_NODE_DIRECTORY || !new_parent->linked ||
+        !valid_name(new_name) || old_parent->readonly ||
+        new_parent->readonly)
+        return -1;
+    u32 old_index = node_index(old_parent);
+    u32 new_index = node_index(new_parent);
+    // The name being moved is either the primary dentry or an alias.
+    struct vfs_node_state *node = 0;
+    for (u32 index = 1; index < VFS_NODE_MAX && !node; index++) {
+        struct vfs_node_state *scan = &nodes[index];
+        if (scan->active && scan->linked && scan->parent == old_index &&
+            names_equal(scan->name, name))
+            node = scan;
+    }
+    struct vfs_alias_state *source_alias = 0;
+    if (!node) {
+        for (u32 index = 0; index < VFS_ALIAS_MAX && !source_alias; index++) {
+            struct vfs_alias_state *alias = &aliases[index];
+            if (alias->active && alias->parent == old_index &&
+                names_equal(alias->name, name)) {
+                source_alias = alias;
+                node = &nodes[alias->node];
+            }
+        }
+    }
+    if (!node || !node->active) return -1;
+    // The name being replaced, when it exists, is either kind too.
+    struct vfs_node_state *target = 0;
+    for (u32 index = 1; index < VFS_NODE_MAX && !target; index++) {
+        struct vfs_node_state *scan = &nodes[index];
+        if (scan->active && scan->linked && scan->parent == new_index &&
+            names_equal(scan->name, new_name))
+            target = scan;
+    }
+    if (!target) {
+        for (u32 index = 0; index < VFS_ALIAS_MAX; index++) {
+            struct vfs_alias_state *alias = &aliases[index];
+            if (!alias->active || alias->parent != new_index ||
+                !names_equal(alias->name, new_name))
+                continue;
+            target = &nodes[alias->node];
+            break;
+        }
+    }
+    // Renaming onto itself, under either of its names, is a quiet success
+    // that changes nothing, and so is the literal same dentry.
+    if (target == node) return 0;
+    if (old_index == new_index && names_equal(name, new_name)) return 0;
+    // A mountpoint keeps its name while the mount lives on it.
+    if (mount_for_point(node->self)) return -1;
+    if (node->type == VFS_NODE_DIRECTORY) {
+        // The global root and every mount root sit outside any parent and
+        // cannot be picked up by name.
+        if (node->parent == VFS_NODE_MAX) return -1;
+        // A directory cannot land inside its own subtree.
+        for (u32 ancestor = new_index; ancestor != VFS_NODE_MAX;
+             ancestor = nodes[ancestor].parent)
+            if (ancestor == node_index(node)) return -1;
+    }
+    if (target) {
+        if (mount_for_point(target->self)) return -1;
+        if (target->type != node->type) return -1;
+    }
+    // One inode cannot span filesystems, or two mounts of the same one.
+    if (node->filesystem != new_parent->filesystem ||
+        (node->filesystem == VFS_FILESYSTEM_ADYTUMFS &&
+         (node->mount != new_parent->mount ||
+          node->mount_generation != new_parent->mount_generation)))
+        return -1;
+    // The adytumfs window is not wired into the rename yet; a volume mount
+    // keeps its names where the format layer put them for now.
+    if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) return -1;
+    // The replaced name leaves first and uncommitted, so the coming
+    // adytumfs move can land in the same staging window and commit both
+    // edits under one superblock flip.
+    if (target && vfs_unlink(new_directory, new_name)) return -1;
+    node->ctime = rtc64_wall_clock();
+    if (source_alias) {
+        source_alias->parent = new_index;
+        for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
+            source_alias->name[byte] = 0;
+        for (u32 byte = 0; new_name[byte]; byte++)
+            source_alias->name[byte] = new_name[byte];
+        return 0;
+    }
+    node->parent = new_index;
+    for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
+        node->name[byte] = 0;
+    for (u32 byte = 0; new_name[byte]; byte++)
+        node->name[byte] = new_name[byte];
+    return 0;
+}
+
 int vfs_image(struct kernel_object *object, const u8 **data, u32 *size) {
     struct vfs_node_state *node = node_for(object);
     if (!node || !node_backing_live(node) ||
