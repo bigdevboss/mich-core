@@ -384,3 +384,6 @@ admitted to a POSIX profile. They are defined in `src/process/posix_abi.h`.
 | 224 | symlink | Give a path a second name that resolves to a target string. |
 | 225 | readlink | Read the target string a symlink carries, without following it. |
 | 226 | lstat | Stat a path without following a final symlink. |
+| 227 | ftruncate | Resize an open file, extending it with zeroes. |
+| 228 | pread | Read at an explicit offset without moving the cursor. |
+| 229 | pwrite | Write at an explicit offset; O_APPEND is ignored. |

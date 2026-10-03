@@ -35,7 +35,11 @@ int posix_fd_seek(struct task *task, int descriptor, i64 offset, u32 whence,
                   u32 *position);
 int posix_fd_getdents(struct task *task, int descriptor, u8 *buffer,
                       u32 length, u32 *transferred);
-int posix_fd_truncate(struct task *task, int descriptor, u32 size);
+int posix_fd_ftruncate(struct task *task, int descriptor, i64 length);
+int posix_fd_pread(struct task *task, int descriptor, i64 offset,
+                   void *buffer, u32 length, u32 *transferred);
+int posix_fd_pwrite(struct task *task, int descriptor, i64 offset,
+                    const void *buffer, u32 length, u32 *transferred);
 int posix_fd_stat(struct task *task, int descriptor,
                   struct vfs_node_info *info);
 int posix_fd_fork(struct task *parent, struct task *child);
