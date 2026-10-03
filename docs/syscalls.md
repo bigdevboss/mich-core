@@ -381,3 +381,6 @@ admitted to a POSIX profile. They are defined in `src/process/posix_abi.h`.
 | 221 | umask | Set the process create mask and return the previous one. |
 | 222 | link | Give one inode a second name on the same filesystem. |
 | 223 | rename | Move one name within or across directories, replacing a same-kind target. |
+| 224 | symlink | Give a path a second name that resolves to a target string. |
+| 225 | readlink | Read the target string a symlink carries, without following it. |
+| 226 | lstat | Stat a path without following a final symlink. |

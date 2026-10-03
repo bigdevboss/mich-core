@@ -37,6 +37,9 @@
 #define POSIX_SYSCALL_UMASK 221u
 #define POSIX_SYSCALL_LINK 222u
 #define POSIX_SYSCALL_RENAME 223u
+#define POSIX_SYSCALL_SYMLINK 224u
+#define POSIX_SYSCALL_READLINK 225u
+#define POSIX_SYSCALL_LSTAT 226u
 
 #define POSIX_IO_MAX 512u
 #define POSIX_SEEK_SET 0u
@@ -70,6 +73,7 @@ struct posix_io_request {
 // 4-byte POSIX_DT_* type, then the NUL-terminated name padded to 8 bytes.
 #define POSIX_DT_REG 1u
 #define POSIX_DT_DIR 2u
+#define POSIX_DT_LNK 3u
 
 struct posix_getdents_request {
     i32 descriptor;
@@ -110,6 +114,19 @@ struct posix_link_request {
 struct posix_rename_request {
     char old_path[VFS_PATH_MAX];
     char new_path[VFS_PATH_MAX];
+};
+
+struct posix_symlink_request {
+    char target[VFS_PATH_MAX];
+    char path[VFS_PATH_MAX];
+};
+
+// readlink fills the data buffer and the length; the copy back to the
+// caller carries both, the way getdents does.
+struct posix_readlink_request {
+    char path[VFS_PATH_MAX];
+    u32 length;
+    char data[VFS_PATH_MAX];
 };
 
 struct posix_seek_request {

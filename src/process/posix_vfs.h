@@ -31,6 +31,7 @@
 #define POSIX_VFS_EROFS (-30)
 #define POSIX_VFS_ERANGE (-34)
 #define POSIX_VFS_ENOTEMPTY (-39)
+#define POSIX_VFS_ELOOP (-40)
 
 struct task;
 
@@ -43,6 +44,12 @@ int posix_vfs_link(struct task *task, const char *old_path,
                    const char *new_path);
 int posix_vfs_rename(struct task *task, const char *old_path,
                      const char *new_path);
+int posix_vfs_symlink(struct task *task, const char *target,
+                      const char *path);
+int posix_vfs_readlink(struct task *task, const char *path, char *buffer,
+                       u32 size, u32 *length);
+int posix_vfs_lstat_path(struct task *task, const char *path,
+                         struct vfs_node_info *info);
 int posix_vfs_rmdir(struct task *task, const char *path);
 int posix_vfs_truncate_path(struct task *task, const char *path, u32 size);
 int posix_vfs_chmod(struct task *task, const char *path, u32 mode);
