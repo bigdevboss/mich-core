@@ -2072,7 +2072,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         object_release(object);
         return handle ? handle : (u64)-1;
     }
-    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_LINK) {
+    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_RENAME) {
         struct task *task = &task_pool[current_task_slot];
         if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
         if (number == POSIX_SYSCALL_OPEN) {
@@ -2245,6 +2245,18 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                 return (u64)(i64)POSIX_VFS_EINVAL;
             int result = posix_vfs_link(task, request.old_path,
                                         request.new_path);
+            return result ? (u64)(i64)result : 0;
+        }
+        if (number == POSIX_SYSCALL_RENAME) {
+            struct posix_rename_request request;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 0) ||
+                vm64_copy_from(task->page_dir, &request, arg0,
+                               sizeof(request)) ||
+                request.old_path[VFS_PATH_MAX - 1] ||
+                request.new_path[VFS_PATH_MAX - 1])
+                return (u64)(i64)POSIX_VFS_EINVAL;
+            int result = posix_vfs_rename(task, request.old_path,
+                                          request.new_path);
             return result ? (u64)(i64)result : 0;
         }
         if (number == POSIX_SYSCALL_STAT) {
