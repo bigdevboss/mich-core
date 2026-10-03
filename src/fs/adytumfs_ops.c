@@ -36,8 +36,9 @@ int adytumfs_create_at(struct kernel_object *device,
 
     u64 target;
     if (adytumfs_inode_alloc(device, super, mode, &target)) return -1;
-    u8 type = (mode & ADYTUMFS_MODE_DIR) ? (u8)ADYTUMFS_DTYPE_DIR
-                                         : (u8)ADYTUMFS_DTYPE_REG;
+    u8 type = (mode & ADYTUMFS_MODE_DIR) ? (u8)ADYTUMFS_DTYPE_DIR :
+        (mode & ADYTUMFS_MODE_LNK) ? (u8)ADYTUMFS_DTYPE_LNK :
+        (u8)ADYTUMFS_DTYPE_REG;
     // dir_add rejects a duplicate name; roll the inode back so a failed create
     // does not leak an allocated slot.
     if (adytumfs_dir_add(device, super, parent_inode, name, name_len, target,

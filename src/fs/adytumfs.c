@@ -78,8 +78,10 @@ static int slot_inode_read(struct adytumfs_mount *m, u32 slot,
 
 // The format stores the VFS node type in the POSIX type bits of the mode.
 static u32 slot_type(const struct adytumfs_inode *inode) {
-    return (inode->mode & ADYTUMFS_MODE_DIR) ? VFS_NODE_DIRECTORY :
-                                               VFS_NODE_REGULAR;
+    u32 bits = inode->mode & (ADYTUMFS_MODE_DIR | ADYTUMFS_MODE_REG |
+                              ADYTUMFS_MODE_LNK);
+    return bits == ADYTUMFS_MODE_DIR ? VFS_NODE_DIRECTORY :
+        bits == ADYTUMFS_MODE_LNK ? VFS_NODE_SYMLINK : VFS_NODE_REGULAR;
 }
 
 // Fill the slot table by walking directories from the root. A record that
@@ -127,11 +129,14 @@ static int walk_tree(struct adytumfs_mount *m, adytumfs_alias_sink sink) {
             if (adytumfs_inode_read(m->device, &m->super, target, &child) ||
                 child.mode == 0)
                 return -1;
-            u32 bits = child.mode & (ADYTUMFS_MODE_DIR | ADYTUMFS_MODE_REG);
-            if (bits != ADYTUMFS_MODE_DIR && bits != ADYTUMFS_MODE_REG)
+            u32 bits = child.mode & (ADYTUMFS_MODE_DIR | ADYTUMFS_MODE_REG |
+                                     ADYTUMFS_MODE_LNK);
+            if (bits != ADYTUMFS_MODE_DIR && bits != ADYTUMFS_MODE_REG &&
+                bits != ADYTUMFS_MODE_LNK)
                 return -1;
             u32 expect = bits == ADYTUMFS_MODE_DIR ? ADYTUMFS_DTYPE_DIR :
-                                                     ADYTUMFS_DTYPE_REG;
+                bits == ADYTUMFS_MODE_LNK ? ADYTUMFS_DTYPE_LNK :
+                ADYTUMFS_DTYPE_REG;
             if (type != expect) return -1;
             if (!name_len || name_len > VFS_NAME_MAX) return -1;
             u32 found = ADYTUMFS_INODE_MAX;
@@ -644,7 +649,8 @@ int adytumfs_inode_create(u32 mount, const char *name, u32 parent, u32 type,
                          u32 mode, u32 *inode, u64 *generation) {
     struct adytumfs_mount *m = mount_at(mount);
     if (!m || !name || !name[0] || !inode || parent >= ADYTUMFS_INODE_MAX ||
-        (type != VFS_NODE_REGULAR && type != VFS_NODE_DIRECTORY) ||
+        (type != VFS_NODE_REGULAR && type != VFS_NODE_DIRECTORY &&
+         type != VFS_NODE_SYMLINK) ||
         (mode & ~VFS_MODE_MASK))
         return -1;
     u32 name_len = 0;
@@ -663,7 +669,8 @@ int adytumfs_inode_create(u32 mount, const char *name, u32 parent, u32 type,
         }
     if (!slot) return -1;
     u16 disk_mode = (u16)(mode | (type == VFS_NODE_DIRECTORY ?
-                                      ADYTUMFS_MODE_DIR : ADYTUMFS_MODE_REG));
+        ADYTUMFS_MODE_DIR : type == VFS_NODE_SYMLINK ?
+        ADYTUMFS_MODE_LNK : ADYTUMFS_MODE_REG));
     u64 target = 0;
     if (adytumfs_create_at(m->device, &m->super, m->slots[parent].inode, name,
                            name_len, disk_mode, &target))
@@ -768,8 +775,11 @@ int adytumfs_unlink(u32 mount, u32 inode, u64 generation, u32 parent,
     if (!name_len || name_len > VFS_NAME_MAX) return -1;
     struct adytumfs_inode in;
     if (slot_inode_read(m, inode, &in)) return -1;
-    u32 bits = in.mode & (ADYTUMFS_MODE_DIR | ADYTUMFS_MODE_REG);
-    if (bits != ADYTUMFS_MODE_DIR && bits != ADYTUMFS_MODE_REG) return -1;
+    u32 bits = in.mode & (ADYTUMFS_MODE_DIR | ADYTUMFS_MODE_REG |
+                          ADYTUMFS_MODE_LNK);
+    if (bits != ADYTUMFS_MODE_DIR && bits != ADYTUMFS_MODE_REG &&
+        bits != ADYTUMFS_MODE_LNK)
+        return -1;
     struct adytumfs_inode dir;
     if (slot_inode_read(m, parent, &dir) ||
         (dir.mode & ADYTUMFS_MODE_DIR) == 0)
@@ -831,8 +841,11 @@ int adytumfs_rename(u32 mount, u32 inode, u64 generation, u32 old_parent,
         return -1;
     struct adytumfs_inode in;
     if (slot_inode_read(m, inode, &in)) return -1;
-    u32 bits = in.mode & (ADYTUMFS_MODE_DIR | ADYTUMFS_MODE_REG);
-    if (bits != ADYTUMFS_MODE_DIR && bits != ADYTUMFS_MODE_REG) return -1;
+    u32 bits = in.mode & (ADYTUMFS_MODE_DIR | ADYTUMFS_MODE_REG |
+                          ADYTUMFS_MODE_LNK);
+    if (bits != ADYTUMFS_MODE_DIR && bits != ADYTUMFS_MODE_REG &&
+        bits != ADYTUMFS_MODE_LNK)
+        return -1;
     struct adytumfs_inode old_dir, new_dir;
     if (slot_inode_read(m, old_parent, &old_dir) ||
         (old_dir.mode & ADYTUMFS_MODE_DIR) == 0 ||
@@ -865,8 +878,9 @@ int adytumfs_rename(u32 mount, u32 inode, u64 generation, u32 old_parent,
     if (adytumfs_dir_remove(m->device, &m->super, m->slots[old_parent].inode, name,
                             name_len))
         return -1;
-    u8 dtype = bits == ADYTUMFS_MODE_DIR ?
-        ADYTUMFS_DTYPE_DIR : ADYTUMFS_DTYPE_REG;
+    u8 dtype = bits == ADYTUMFS_MODE_DIR ? ADYTUMFS_DTYPE_DIR :
+        bits == ADYTUMFS_MODE_LNK ? ADYTUMFS_DTYPE_LNK :
+        ADYTUMFS_DTYPE_REG;
     if (adytumfs_dir_add(m->device, &m->super, m->slots[new_parent].inode, new_name,
                          new_len, m->slots[inode].inode, dtype)) {
         // The rename never happened, so put the old name back before
@@ -900,6 +914,68 @@ int adytumfs_rename(u32 mount, u32 inode, u64 generation, u32 old_parent,
     return adytumfs_commit(m->device, &m->super);
 }
 
+// Write the target into a freshly created symlink inode's file body. The
+// write joins the create in the same staging window, so one commit lands
+// the inode, its name, and the string together.
+int adytumfs_symlink_write(u32 mount, u32 inode, u64 generation,
+                           const char *target) {
+    struct adytumfs_mount *m = slot_mount(mount, inode, generation);
+    if (!m || !target || !target[0]) return -1;
+    u32 length = 0;
+    while (length < VFS_PATH_MAX && target[length]) length++;
+    if (length >= VFS_PATH_MAX) return -1;
+    struct adytumfs_inode in;
+    if (slot_inode_read(m, inode, &in)) return -1;
+    u32 bits = in.mode & (ADYTUMFS_MODE_DIR | ADYTUMFS_MODE_REG |
+                          ADYTUMFS_MODE_LNK);
+    // Only a fresh link takes a body this way; anything else is a stale
+    // VFS view writing over real data.
+    if (bits != ADYTUMFS_MODE_LNK || in.blocks || in.size) return -1;
+    for (u32 index = 0; index < ADYTUMFS_BLOCK_SIZE; index++)
+        adytumfs_backend_scratch[index] = 0;
+    for (u32 index = 0; index < length; index++)
+        adytumfs_backend_scratch[index] = (u8)target[index];
+    if (adytumfs_inode_grow(m->device, &m->super, &in, 1)) return -1;
+    u64 physical = 0;
+    if (adytumfs_inode_map(&in, 0, &physical) ||
+        adytumfs_data_write(m->device, &m->super, physical,
+                            adytumfs_backend_scratch))
+        return -1;
+    u64 now = rtc64_wall_clock();
+    in.mtime = now;
+    in.ctime = now;
+    in.size = length;
+    if (adytumfs_inode_write(m->device, &m->super, m->slots[inode].inode,
+                             &in))
+        return -1;
+    return adytumfs_commit(m->device, &m->super);
+}
+
+// Read a symlink's target out of its data block for the mount scan: the
+// string is bounded by the path bound, so one block is the whole extent.
+int adytumfs_symlink_target(u32 mount, u32 inode, u64 generation,
+                            char *target) {
+    struct adytumfs_mount *m = slot_mount(mount, inode, generation);
+    if (!m || !target) return -1;
+    struct adytumfs_inode in;
+    if (slot_inode_read(m, inode, &in)) return -1;
+    u32 bits = in.mode & (ADYTUMFS_MODE_DIR | ADYTUMFS_MODE_REG |
+                          ADYTUMFS_MODE_LNK);
+    if (bits != ADYTUMFS_MODE_LNK) return -1;
+    if (!in.size || in.size >= VFS_PATH_MAX || !in.blocks) return -1;
+    u64 physical = 0;
+    if (adytumfs_inode_map(&in, 0, &physical) ||
+        adytumfs_data_read(m->device, &m->super, physical,
+                           adytumfs_backend_scratch))
+        return -1;
+    for (u32 index = 0; index < in.size; index++)
+        target[index] = (char)adytumfs_backend_scratch[index];
+    target[in.size] = 0;
+    // A body the first byte of which is empty is not a target anything
+    // could resolve; the format layer refuses to mirror it.
+    return target[0] ? 0 : -1;
+}
+
 int adytumfs_inode_release(u32 mount, u32 inode, u64 generation) {
     struct adytumfs_mount *m = mount_at(mount);
     if (!m || !m->active || !inode || inode >= ADYTUMFS_INODE_MAX)
@@ -917,8 +993,11 @@ int adytumfs_inode_remove(u32 mount, u32 inode) {
         return -1;
     struct adytumfs_inode in;
     if (slot_inode_read(m, inode, &in)) return -1;
-    u32 bits = in.mode & (ADYTUMFS_MODE_DIR | ADYTUMFS_MODE_REG);
-    if (bits != ADYTUMFS_MODE_DIR && bits != ADYTUMFS_MODE_REG) return -1;
+    u32 bits = in.mode & (ADYTUMFS_MODE_DIR | ADYTUMFS_MODE_REG |
+                          ADYTUMFS_MODE_LNK);
+    if (bits != ADYTUMFS_MODE_DIR && bits != ADYTUMFS_MODE_REG &&
+        bits != ADYTUMFS_MODE_LNK)
+        return -1;
     if (bits == ADYTUMFS_MODE_DIR) {
         // The VFS only unlinks directories it sees as empty; hold the disk to
         // the same rule, because tombstoned records still own a data block.

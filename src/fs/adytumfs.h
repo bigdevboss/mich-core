@@ -38,6 +38,13 @@ int adytumfs_unlink(u32 mount, u32 inode, u64 generation, u32 parent,
 // both edits land in the one staging window this commits at the end.
 int adytumfs_rename(u32 mount, u32 inode, u64 generation, u32 old_parent,
                     const char *name, u32 new_parent, const char *new_name);
+// Write a fresh symlink inode's target string into its file body and land
+// the whole link under one commit, or read that string back for the mount
+// scan once the volume walks back in.
+int adytumfs_symlink_write(u32 mount, u32 inode, u64 generation,
+                           const char *target);
+int adytumfs_symlink_target(u32 mount, u32 inode, u64 generation,
+                            char *target);
 // The deferred reclaim an unlinked inode's final close triggers; a slot
 // already reclaimed or since reused makes it a no-op.
 int adytumfs_inode_release(u32 mount, u32 inode, u64 generation);
