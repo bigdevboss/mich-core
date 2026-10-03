@@ -5,12 +5,14 @@ set -eu
 # image against a persistent NVMe drive, cuts power at chosen serial points,
 # and requires every next boot to mount whatever the crash left behind. The
 # first four cuts hit the commit windows the in-battery fault injector covers
-# deterministically; the cuts after that land at arbitrary moments. The last
-# boot must run the whole workload to its end marker.
+# deterministically; the next two cut inside the rename phase windows, where
+# at most one of the shuttle names may survive; the cuts after that land at
+# arbitrary moments. The last boot must run the whole workload to its end
+# marker.
 
 image=${1:?missing image}
 memory=${2:?missing memory}
-runs=${3:-7}
+runs=${3:-9}
 
 case "$runs" in
     ''|*[!0-9]*)
@@ -56,6 +58,8 @@ plan_for() {
         4) echo "marker:10:point .* committed" ;;
         5) echo "sleep:3" ;;
         6) echo "sleep:1" ;;
+        7) echo "marker:1:rename point .* open" ;;
+        8) echo "marker:4:rename point .* committed" ;;
         *) echo "sleep:2" ;;
     esac
 }
@@ -68,6 +72,11 @@ expect_for() {
         3) echo "4 5" ;;
         4) echo "6 7" ;;
         5) echo "10 11" ;;
+        # The rename phase runs after every round committed, so a boot that
+        # reached it recovers the full count; its own shuttle survivor is
+        # checked by the workload's invariant, not by this range.
+        8) echo "24 24" ;;
+        9) echo "24 24" ;;
         *) echo "" ;;
     esac
 }
