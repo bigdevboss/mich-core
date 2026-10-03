@@ -140,7 +140,7 @@ static struct kernel_object *wait_event_for(struct kernel_object *object) {
 static void posix_stat_record(const struct vfs_node_info *info,
                               struct posix_stat_record *stat) {
     stat->st_mode = info->mode | (info->type == VFS_NODE_DIRECTORY ?
-        0040000u : 0100000u);
+        0040000u : info->type == VFS_NODE_SYMLINK ? 0120000u : 0100000u);
     stat->st_size = info->size;
     stat->st_nlink = info->links;
     stat->st_uid = info->uid;
@@ -2072,7 +2072,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         object_release(object);
         return handle ? handle : (u64)-1;
     }
-    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_RENAME) {
+    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_LSTAT) {
         struct task *task = &task_pool[current_task_slot];
         if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
         if (number == POSIX_SYSCALL_OPEN) {
@@ -2258,6 +2258,47 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             int result = posix_vfs_rename(task, request.old_path,
                                           request.new_path);
             return result ? (u64)(i64)result : 0;
+        }
+        if (number == POSIX_SYSCALL_SYMLINK) {
+            struct posix_symlink_request request;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 0) ||
+                vm64_copy_from(task->page_dir, &request, arg0,
+                               sizeof(request)) ||
+                request.target[VFS_PATH_MAX - 1] ||
+                request.path[VFS_PATH_MAX - 1])
+                return (u64)(i64)POSIX_VFS_EINVAL;
+            int result = posix_vfs_symlink(task, request.target,
+                                       request.path);
+            return result ? (u64)(i64)result : 0;
+        }
+        if (number == POSIX_SYSCALL_READLINK) {
+            struct posix_readlink_request request;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+                vm64_copy_from(task->page_dir, &request, arg0,
+                               sizeof(request)) ||
+                request.path[VFS_PATH_MAX - 1])
+                return (u64)(i64)POSIX_VFS_EINVAL;
+            int result = posix_vfs_readlink(task, request.path, request.data,
+                                        VFS_PATH_MAX, &request.length);
+            if (result) return (u64)(i64)result;
+            return vm64_copy_to(task->page_dir, arg0, &request,
+                                sizeof(request)) ?
+                (u64)(i64)POSIX_VFS_EIO : (u64)request.length;
+        }
+        if (number == POSIX_SYSCALL_LSTAT) {
+            struct posix_stat_path_request request;
+            struct vfs_node_info info;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+                vm64_copy_from(task->page_dir, &request, arg0,
+                               sizeof(request)) ||
+                request.path[VFS_PATH_MAX - 1])
+                return (u64)(i64)POSIX_VFS_EINVAL;
+            int result = posix_vfs_lstat_path(task, request.path, &info);
+            if (result) return (u64)(i64)result;
+            posix_stat_record(&info, &request.stat);
+            return vm64_copy_to(task->page_dir, arg0, &request,
+                                sizeof(request)) ?
+                (u64)(i64)POSIX_VFS_EIO : 0;
         }
         if (number == POSIX_SYSCALL_STAT) {
             struct posix_stat_path_request request;

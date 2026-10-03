@@ -766,6 +766,7 @@ case "$profile" in
             "Mich x86_64: POSIX entropy pass" \
             "Mich x86_64: POSIX application link pass" \
             "Mich x86_64: POSIX application rename pass" \
+            "Mich x86_64: POSIX application symlink pass" \
             "Mich x86_64: POSIX static application pass"
         do
             require_marker "$marker"

@@ -324,6 +324,69 @@ int posix_vfs_rename(struct task *task, const char *old_path,
     return result;
 }
 
+int posix_vfs_symlink(struct task *task, const char *target,
+                      const char *path) {
+    if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
+    // The target is bounded by the path bound, the same rule the node
+    // applies when it stores the string inline.
+    if (!target || !target[0]) return POSIX_VFS_EINVAL;
+    u32 length = 0;
+    while (length < VFS_PATH_MAX && target[length]) length++;
+    if (length >= VFS_PATH_MAX) return POSIX_PROFILE_ENAMETOOLONG;
+    struct kernel_object *parent = 0;
+    char name[VFS_NAME_MAX + 1];
+    int result = posix_profile_parent(task, path, &parent, name);
+    if (result) return result;
+    result = check_parent_mutation(task, parent);
+    struct kernel_object *existing = 0;
+    if (!result) {
+        existing = vfs_lookup(parent, name);
+        if (existing) result = POSIX_VFS_EEXIST;
+        else if (!vfs_symlink(parent, name, target))
+            result = POSIX_VFS_ENOSPC;
+    }
+    if (existing) object_release(existing);
+    if (parent) object_release(parent);
+    return result;
+}
+
+int posix_vfs_readlink(struct task *task, const char *path, char *buffer,
+                       u32 size, u32 *length) {
+    if (!buffer || !size || !length) return POSIX_VFS_EINVAL;
+    // readlink never follows the final name: the link itself is the
+    // answer, so the parent walk plus a plain lookup is the whole story.
+    struct kernel_object *parent = 0;
+    char name[VFS_NAME_MAX + 1];
+    int result = posix_profile_parent(task, path, &parent, name);
+    struct kernel_object *node = result ? 0 : vfs_lookup(parent, name);
+    if (!result && !node) result = POSIX_PROFILE_ENOENT;
+    struct vfs_node_info info;
+    if (!result) result = node_info(node, &info);
+    if (!result && info.type != VFS_NODE_SYMLINK)
+        result = POSIX_VFS_EINVAL;
+    if (!result && vfs_readlink(node, buffer, size, length))
+        result = POSIX_VFS_EIO;
+    if (node) object_release(node);
+    if (parent) object_release(parent);
+    return result;
+}
+
+int posix_vfs_lstat_path(struct task *task, const char *path,
+                         struct vfs_node_info *info) {
+    if (!info) return POSIX_VFS_EINVAL;
+    // lstat is the no-follow twin of stat: the final name must resolve to
+    // the node itself, symlink or not.
+    struct kernel_object *parent = 0;
+    char name[VFS_NAME_MAX + 1];
+    int result = posix_profile_parent(task, path, &parent, name);
+    struct kernel_object *node = result ? 0 : vfs_lookup(parent, name);
+    if (!result && !node) result = POSIX_PROFILE_ENOENT;
+    if (!result) result = node_info(node, info);
+    if (node) object_release(node);
+    if (parent) object_release(parent);
+    return result;
+}
+
 int posix_vfs_truncate_path(struct task *task, const char *path, u32 size) {
     if (size > VFS_FILE_SIZE_MAX) return POSIX_VFS_EFBIG;
     if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;

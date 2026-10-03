@@ -151,8 +151,39 @@ int posix_mode_allows(const struct vfs_node_info *info,
     return (column & bits) == bits;
 }
 
+// Splice a symlink target into the walk: an absolute target restarts the
+// walk at the root, a relative one takes the place of the component the
+// link was found under. The spliced string can outgrow the path bound
+// before normalization shrinks it, so the working buffer is twice as wide.
 static int walk_path(struct task *task, const char *path,
-                     struct kernel_object **node) {
+                     struct kernel_object **node, u32 depth);
+
+static int follow_link(struct task *task, const char *base,
+                       const char *target, const char *rest,
+                       struct kernel_object **node, u32 depth) {
+    char input[VFS_PATH_MAX * 2];
+    u32 used = 0;
+    while (target[used] && used < sizeof(input)) {
+        input[used] = target[used];
+        used++;
+    }
+    if (used >= sizeof(input)) return POSIX_PROFILE_ENAMETOOLONG;
+    while (*rest == '/') rest++;
+    if (rest[0] && used + 1u < sizeof(input)) {
+        input[used++] = '/';
+        while (*rest && used < sizeof(input)) input[used++] = *rest++;
+    }
+    if (used >= sizeof(input)) return POSIX_PROFILE_ENAMETOOLONG;
+    input[used] = 0;
+    char normalized[VFS_PATH_MAX];
+    int result = normalize_path(target[0] == '/' ? "/" : base, input,
+                                normalized);
+    if (result) return result;
+    return walk_path(task, normalized, node, depth + 1u);
+}
+
+static int walk_path(struct task *task, const char *path,
+                     struct kernel_object **node, u32 depth) {
     struct kernel_object *current = vfs_root();
     if (!current) return POSIX_PROFILE_ENOMEM;
     u32 offset = 1;
@@ -176,6 +207,7 @@ static int walk_path(struct task *task, const char *path,
         }
         char component[VFS_NAME_MAX + 1];
         u32 length = 0;
+        u32 start = offset;
         while (path[offset] && path[offset] != '/') {
             if (length >= VFS_NAME_MAX) {
                 object_release(current);
@@ -187,6 +219,30 @@ static int walk_path(struct task *task, const char *path,
         struct kernel_object *next = vfs_lookup(current, component);
         object_release(current);
         if (!next) return POSIX_PROFILE_ENOENT;
+        // A symlink hands the rest of the walk to its target, whether it
+        // was met as a component or as the final one. The hop budget is
+        // the POSIX symloop bound; every further hop is ELOOP.
+        struct vfs_node_info link_info;
+        if (vfs_stat(next, &link_info)) {
+            object_release(next);
+            return POSIX_PROFILE_EIO;
+        }
+        if (link_info.type == VFS_NODE_SYMLINK) {
+            char target[VFS_PATH_MAX];
+            u32 target_length = 0;
+            int broken = vfs_readlink(next, target, sizeof(target),
+                                      &target_length);
+            object_release(next);
+            if (broken) return POSIX_PROFILE_EIO;
+            if (depth >= 8u) return POSIX_PROFILE_ELOOP;
+            char base[VFS_PATH_MAX];
+            u32 kept = start > 1u ? start - 1u : 1u;
+            for (u32 index = 0; index < kept; index++)
+                base[index] = path[index];
+            base[kept] = 0;
+            return follow_link(task, base, target, path + offset, node,
+                               depth);
+        }
         current = next;
         if (path[offset] == '/') offset++;
     }
@@ -204,7 +260,7 @@ static int resolve_path(struct task *task, const char *path,
     result = normalize_path(relative ? cwd_path : "/", path, normalized);
     if (cwd) object_release(cwd);
     if (result) return result;
-    return walk_path(task, normalized, node);
+    return walk_path(task, normalized, node, 0u);
 }
 
 void posix_profile_init(void) {
@@ -341,7 +397,7 @@ int posix_profile_parent(struct task *task, const char *path,
         for (u32 index = 0; index < leaf - 1; index++)
             parent_path[index] = normalized[index];
     }
-    return walk_path(task, parent_path, parent);
+    return walk_path(task, parent_path, parent, 0u);
 }
 
 int posix_profile_chdir(struct task *task, const char *path) {
