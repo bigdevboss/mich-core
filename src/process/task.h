@@ -20,6 +20,7 @@ struct mmio_grant {
 #define TASK_BLOCKED_WAIT 5
 #define TASK_BLOCKED_EVENT 6
 #define TASK_SUSPENDED 7
+#define TASK_BLOCKED_SLEEP 8
 
 // Spawn flag (syscall arg1): the child is created but held off the scheduler
 // until its parent resumes it, so the parent can delegate capabilities before
@@ -85,6 +86,9 @@ struct task {
     int send_result;
     u32 send_to;
     u32 send_deadline;
+    // Absolute tick the nanosleep dispatch parks the task until. The timer
+    // tick owns the wake, so a sleep can never outlive its deadline.
+    u32 sleep_deadline;
     u32 capabilities;
     u32 irq_rights;
     // POSIX credentials: a single uid and gid, no supplementary groups, and

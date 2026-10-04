@@ -48,6 +48,9 @@ int tests64_run(const struct test64_env *env) {
     if (test_report_record(TEST_ID_POSIX_PROCESS, test_posix_process64()))
         return -1;
     serial64_write("Mich test64: POSIX process stack layout pass\n");
+    if (test_report_record(TEST_ID_POSIX_TIME, test_posix_time64()))
+        return -1;
+    serial64_write("Mich test64: POSIX clocks and sleep pass\n");
     if (test_report_record(TEST_ID_BLOCK, test_block64())) return -1;
     serial64_write("Mich test64: block device objects pass\n");
     serial64_write("Mich test64: ramdisk read and write pass\n");

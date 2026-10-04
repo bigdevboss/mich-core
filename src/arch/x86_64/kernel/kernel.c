@@ -8,6 +8,7 @@
 #include "posix_fd.h"
 #include "posix_profile.h"
 #include "posix_process.h"
+#include "posix_time.h"
 #include "entropy.h"
 #include "spinlock.h"
 #include "scheduler.h"
@@ -1718,6 +1719,7 @@ void timer64_dispatch(struct interrupt_frame64 *frame) {
     interrupt_load(frame, &task_contexts[current_task_slot]);
     timer_ticks++;
     ipc64_tick(timer_ticks);
+    posix_time_tick(timer_ticks);
     event_tick(timer_ticks, ETIMEDOUT);
     completion_tick(timer_ticks, ETIMEDOUT);
     timer_object_tick(timer_ticks);

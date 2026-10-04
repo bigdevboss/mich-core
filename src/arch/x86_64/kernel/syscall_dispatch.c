@@ -73,6 +73,7 @@
 #include "posix_profile.h"
 #include "posix_vfs.h"
 #include "posix_process.h"
+#include "posix_time.h"
 #include "entropy.h"
 #include "kernel64_internal.h"
 
@@ -2074,7 +2075,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         object_release(object);
         return handle ? handle : (u64)-1;
     }
-    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_FUTIMENS) {
+    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_NANOSLEEP) {
         struct task *task = &task_pool[current_task_slot];
         if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
         if (number == POSIX_SYSCALL_OPEN) {
@@ -2230,6 +2231,48 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                                            request.mtime_sec,
                                            request.mtime_nsec);
             return result ? (u64)(i64)result : 0;
+        }
+        if (number == POSIX_SYSCALL_CLOCK_GETTIME ||
+            number == POSIX_SYSCALL_CLOCK_GETRES) {
+            struct posix_clock_request request;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+                vm64_copy_from(task->page_dir, &request, arg0,
+                               sizeof(request)) || request.reserved)
+                return (u64)(i64)POSIX_VFS_EINVAL;
+            u64 sec = 0;
+            u32 nsec = 0;
+            int result = number == POSIX_SYSCALL_CLOCK_GETTIME ?
+                posix_time_read(request.clock, &sec, &nsec) :
+                posix_time_resolution(request.clock, &sec, &nsec);
+            if (result) return (u64)(i64)POSIX_VFS_EINVAL;
+            request.sec = (i64)sec;
+            request.nsec = (i64)nsec;
+            return vm64_copy_to(task->page_dir, arg0, &request,
+                                sizeof(request)) ?
+                (u64)(i64)POSIX_VFS_EIO : 0;
+        }
+        if (number == POSIX_SYSCALL_NANOSLEEP) {
+            struct posix_nanosleep_request request;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+                vm64_copy_from(task->page_dir, &request, arg0,
+                               sizeof(request)))
+                return (u64)(i64)POSIX_VFS_EINVAL;
+            u32 ticks = 0;
+            if (posix_sleep_ticks(request.sec, request.nsec, &ticks))
+                return (u64)(i64)POSIX_VFS_EINVAL;
+            // Nothing can interrupt the park yet, so the caller sees a zero
+            // remainder before the task ever leaves the CPU; the sleep has
+            // no early wake source until signals arrive.
+            request.remaining_sec = 0;
+            request.remaining_nsec = 0;
+            if (vm64_copy_to(task->page_dir, arg0, &request,
+                             sizeof(request)))
+                return (u64)(i64)POSIX_VFS_EIO;
+            if (!ticks) return 0;
+            task->state = TASK_BLOCKED_SLEEP;
+            task->sleep_deadline = timer_ticks + ticks;
+            scheduler64_switch();
+            return task_contexts[current_task_slot].rax;
         }
         if (number == POSIX_SYSCALL_CHMOD) {
             struct posix_chmod_request request;

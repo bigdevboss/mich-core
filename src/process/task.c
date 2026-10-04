@@ -25,6 +25,7 @@ static void task_clear_dynamic(struct task *t) {
     t->send_result = 0;
     t->send_to = 0;
     t->send_deadline = 0;
+    t->sleep_deadline = 0;
     t->capabilities = 0;
     t->irq_rights = 0;
     for (int i = 0; i < MAX_MMIO_GRANTS; i++) {
@@ -86,6 +87,7 @@ void task_mark_zombie(struct task *t, int code) {
     t->pending_msg = 0;
     t->send_to = 0;
     t->send_deadline = 0;
+    t->sleep_deadline = 0;
     t->next = 0;
     t->wait_pid = -1;
     t->wait_posix = 0;

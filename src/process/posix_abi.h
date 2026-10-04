@@ -48,6 +48,9 @@
 #define POSIX_SYSCALL_ACCESS 232u
 #define POSIX_SYSCALL_UTIMENSAT 233u
 #define POSIX_SYSCALL_FUTIMENS 234u
+#define POSIX_SYSCALL_CLOCK_GETTIME 235u
+#define POSIX_SYSCALL_CLOCK_GETRES 236u
+#define POSIX_SYSCALL_NANOSLEEP 237u
 
 #define POSIX_IO_MAX 512u
 #define POSIX_SEEK_SET 0u
@@ -212,6 +215,26 @@ struct posix_futimens_request {
     i64 atime_nsec;
     i64 mtime_sec;
     i64 mtime_nsec;
+};
+
+// clock_gettime and clock_getres answer with seconds plus nanoseconds for
+// the clock the request names. The kernel answer moves in timer ticks, so
+// getres reports one tick rather than pretending at finer granularity.
+struct posix_clock_request {
+    u32 clock;
+    u32 reserved;
+    i64 sec;
+    i64 nsec;
+};
+
+// The interval is copied in, the remaining interval copied out, which keeps
+// one user pointer pair out of the ABI. Nothing reports a remainder yet:
+// the sleep has no interrupt source until signals arrive.
+struct posix_nanosleep_request {
+    i64 sec;
+    i64 nsec;
+    i64 remaining_sec;
+    i64 remaining_nsec;
 };
 
 struct posix_path_request {
