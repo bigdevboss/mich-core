@@ -390,3 +390,5 @@ admitted to a POSIX profile. They are defined in `src/process/posix_abi.h`.
 | 230 | fsync | Push a file's dirty pages through the staging commit. |
 | 231 | fdatasync | Same staging path; the commit lands data and metadata together. |
 | 232 | access | Ask whether the calling uid may read, write, or execute a path. |
+| 233 | utimensat | Set atime and mtime on a path with nanosecond halves. |
+| 234 | futimens | Set atime and mtime on an open descriptor with nanosecond halves. |

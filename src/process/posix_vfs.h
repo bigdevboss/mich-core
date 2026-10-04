@@ -3,6 +3,7 @@
 
 #include "types.h"
 #include "vfs.h"
+#include "posix_abi.h"
 
 #define POSIX_OPEN_RDONLY 0u
 #define POSIX_OPEN_WRONLY 1u
@@ -61,5 +62,20 @@ int posix_vfs_truncate_path(struct task *task, const char *path, u32 size);
 int posix_vfs_chmod(struct task *task, const char *path, u32 mode);
 int posix_vfs_access(struct task *task, const char *path, u32 mode);
 int posix_vfs_chown(struct task *task, const char *path, i32 uid, i32 gid);
+int posix_vfs_utimensat(struct task *task, const char *path, i64 atime_sec,
+                        i64 atime_nsec, i64 mtime_sec, i64 mtime_nsec);
+
+// The shared half of utimensat and futimens: check both tv_nsec spellings,
+// turn NOW into the sampled clock, and say which permission question the
+// caller still has to answer. The flags name the fields the vfs call sets,
+// and both OMIT leaves no flags at all. 0 on success, -EINVAL on a
+// nanosecond field outside [0, 999999999].
+#define POSIX_UTIMES_ASK_NONE 0u
+#define POSIX_UTIMES_ASK_OWNER 1u
+#define POSIX_UTIMES_ASK_OWNER_OR_WRITE 2u
+int posix_vfs_utimens_prepare(i64 atime_sec, i64 atime_nsec, i64 mtime_sec,
+                              i64 mtime_nsec, u32 *flags, u64 *atime,
+                              u32 *atime_nsec_out, u64 *mtime,
+                              u32 *mtime_nsec_out, u32 *permission);
 
 #endif

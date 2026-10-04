@@ -148,6 +148,8 @@ static void posix_stat_record(const struct vfs_node_info *info,
     stat->st_atime = info->atime;
     stat->st_mtime = info->mtime;
     stat->st_ctime = info->ctime;
+    stat->st_atime_nsec = info->atime_nsec;
+    stat->st_mtime_nsec = info->mtime_nsec;
 }
 
 static int posix_fd_error(struct task *task, int descriptor, u32 access) {
@@ -2072,7 +2074,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         object_release(object);
         return handle ? handle : (u64)-1;
     }
-    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_ACCESS) {
+    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_FUTIMENS) {
         struct task *task = &task_pool[current_task_slot];
         if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
         if (number == POSIX_SYSCALL_OPEN) {
@@ -2200,6 +2202,33 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                 request.path[VFS_PATH_MAX - 1])
                 return (u64)(i64)POSIX_VFS_EINVAL;
             int result = posix_vfs_access(task, request.path, request.mode);
+            return result ? (u64)(i64)result : 0;
+        }
+        if (number == POSIX_SYSCALL_UTIMENSAT) {
+            struct posix_utimensat_request request;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 0) ||
+                vm64_copy_from(task->page_dir, &request, arg0,
+                               sizeof(request)) ||
+                request.path[VFS_PATH_MAX - 1])
+                return (u64)(i64)POSIX_VFS_EINVAL;
+            int result = posix_vfs_utimensat(task, request.path,
+                                             request.atime_sec,
+                                             request.atime_nsec,
+                                             request.mtime_sec,
+                                             request.mtime_nsec);
+            return result ? (u64)(i64)result : 0;
+        }
+        if (number == POSIX_SYSCALL_FUTIMENS) {
+            struct posix_futimens_request request;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 0) ||
+                vm64_copy_from(task->page_dir, &request, arg0,
+                               sizeof(request)) || request.reserved)
+                return (u64)(i64)POSIX_VFS_EINVAL;
+            int result = posix_fd_futimens(task, request.descriptor,
+                                           request.atime_sec,
+                                           request.atime_nsec,
+                                           request.mtime_sec,
+                                           request.mtime_nsec);
             return result ? (u64)(i64)result : 0;
         }
         if (number == POSIX_SYSCALL_CHMOD) {

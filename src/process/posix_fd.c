@@ -502,6 +502,42 @@ int posix_fd_fchmod(struct task *task, int descriptor, u32 mode) {
     return result;
 }
 
+int posix_fd_futimens(struct task *task, int descriptor, i64 atime_sec,
+                      i64 atime_nsec, i64 mtime_sec, i64 mtime_nsec) {
+    u32 flags = 0;
+    u32 permission = POSIX_UTIMES_ASK_NONE;
+    u64 atime = 0;
+    u64 mtime = 0;
+    u32 atime_nsec_out = 0;
+    u32 mtime_nsec_out = 0;
+    int result = posix_vfs_utimens_prepare(atime_sec, atime_nsec, mtime_sec,
+                                           mtime_nsec, &flags, &atime,
+                                           &atime_nsec_out, &mtime,
+                                           &mtime_nsec_out, &permission);
+    if (result) return result;
+    if (!posix_profile_vfs_authorized(task)) return POSIX_VFS_EACCES;
+    // The descriptor is enough identity for futimens: any open mode answers
+    // the owner question, and only NOW asks for a write-mode descriptor.
+    struct posix_ofd *ofd = retain_descriptor(task, descriptor, 0);
+    if (!ofd) return POSIX_VFS_EBADF;
+    struct vfs_node_info info;
+    result = vfs_stat(ofd->file, &info) ? POSIX_VFS_EIO : 0;
+    if (!result && flags && info.readonly) result = POSIX_VFS_EROFS;
+    if (!result && permission == POSIX_UTIMES_ASK_OWNER &&
+        info.uid != task->uid)
+        result = POSIX_VFS_EPERM;
+    if (!result && permission == POSIX_UTIMES_ASK_OWNER_OR_WRITE &&
+        info.uid != task->uid &&
+        !(ofd->access & POSIX_FD_ACCESS_WRITE))
+        result = POSIX_VFS_EPERM;
+    if (!result && flags && vfs_set_times(ofd->file, flags, atime,
+                                          atime_nsec_out, mtime,
+                                          mtime_nsec_out))
+        result = POSIX_VFS_EIO;
+    release_ofd(ofd);
+    return result;
+}
+
 int posix_fd_fork(struct task *parent, struct task *child) {
     int parent_slot = live_task_slot(parent);
     int child_slot = live_task_slot(child);

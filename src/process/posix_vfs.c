@@ -3,6 +3,7 @@
 #include "posix_fd.h"
 #include "task.h"
 #include "object.h"
+#include "rtc64.h"
 
 static int profile_mutation_allowed(struct task *task) {
     return posix_profile_vfs_authorized(task) ? 0 : POSIX_VFS_EACCES;
@@ -440,6 +441,94 @@ int posix_vfs_access(struct task *task, const char *path, u32 mode) {
     if (!result && (mode & POSIX_ACCESS_X_OK) &&
         !posix_mode_allows(&info, task, 0100u))
         result = POSIX_VFS_EACCES;
+    if (node) object_release(node);
+    return result;
+}
+
+int posix_vfs_utimens_prepare(i64 atime_sec, i64 atime_nsec, i64 mtime_sec,
+                              i64 mtime_nsec, u32 *flags, u64 *atime,
+                              u32 *atime_nsec_out, u64 *mtime,
+                              u32 *mtime_nsec_out, u32 *permission) {
+    if (!flags || !atime || !atime_nsec_out || !mtime || !mtime_nsec_out ||
+        !permission)
+        return POSIX_VFS_EINVAL;
+    *flags = 0;
+    *permission = POSIX_UTIMES_ASK_NONE;
+    // An explicit nanosecond field is [0, 999999999]; NOW and OMIT are the
+    // two reserved spellings outside that range, and tv_sec is ignored
+    // whenever either one rides along.
+    int explicit_atime = atime_nsec != POSIX_UTIME_NOW &&
+        atime_nsec != POSIX_UTIME_OMIT;
+    int explicit_mtime = mtime_nsec != POSIX_UTIME_NOW &&
+        mtime_nsec != POSIX_UTIME_OMIT;
+    if ((explicit_atime && (atime_nsec < 0 || atime_nsec > 999999999)) ||
+        (explicit_mtime && (mtime_nsec < 0 || mtime_nsec > 999999999)))
+        return POSIX_VFS_EINVAL;
+    // Any explicit value makes the call an owner question, because writing
+    // chosen times is a metadata edit write permission never granted. NOW
+    // alone is the softer question: the owner, or anyone write permission
+    // lets in. Both OMIT stays no flags and no question at all.
+    if (explicit_atime || explicit_mtime) {
+        *permission = POSIX_UTIMES_ASK_OWNER;
+    } else if (atime_nsec == POSIX_UTIME_NOW || mtime_nsec == POSIX_UTIME_NOW)
+        *permission = POSIX_UTIMES_ASK_OWNER_OR_WRITE;
+    if (explicit_atime || atime_nsec == POSIX_UTIME_NOW)
+        *flags |= VFS_TIME_SET_ATIME;
+    if (explicit_mtime || mtime_nsec == POSIX_UTIME_NOW)
+        *flags |= VFS_TIME_SET_MTIME;
+    *atime = (u64)atime_sec;
+    *mtime = (u64)mtime_sec;
+    *atime_nsec_out = 0;
+    *mtime_nsec_out = 0;
+    if (*flags & VFS_TIME_SET_ATIME) {
+        if (atime_nsec == POSIX_UTIME_NOW) {
+            *atime = rtc64_wall_clock();
+            *atime_nsec_out = rtc64_wall_clock_nsec();
+        } else {
+            *atime_nsec_out = (u32)atime_nsec;
+        }
+    }
+    if (*flags & VFS_TIME_SET_MTIME) {
+        if (mtime_nsec == POSIX_UTIME_NOW) {
+            *mtime = rtc64_wall_clock();
+            *mtime_nsec_out = rtc64_wall_clock_nsec();
+        } else {
+            *mtime_nsec_out = (u32)mtime_nsec;
+        }
+    }
+    return 0;
+}
+
+int posix_vfs_utimensat(struct task *task, const char *path, i64 atime_sec,
+                        i64 atime_nsec, i64 mtime_sec, i64 mtime_nsec) {
+    u32 flags = 0;
+    u32 permission = POSIX_UTIMES_ASK_NONE;
+    u64 atime = 0;
+    u64 mtime = 0;
+    u32 atime_nsec_out = 0;
+    u32 mtime_nsec_out = 0;
+    int result = posix_vfs_utimens_prepare(atime_sec, atime_nsec, mtime_sec,
+                                           mtime_nsec, &flags, &atime,
+                                           &atime_nsec_out, &mtime,
+                                           &mtime_nsec_out, &permission);
+    if (result) return result;
+    if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
+    struct kernel_object *node = 0;
+    result = posix_profile_resolve(task, path, &node);
+    struct vfs_node_info info;
+    if (!result) result = node_info(node, &info);
+    // An edit needs a writable filesystem; the both-OMIT probe changes
+    // nothing, so it walks away clean from a read-only mount.
+    if (!result && flags && info.readonly) result = POSIX_VFS_EROFS;
+    if (!result && permission == POSIX_UTIMES_ASK_OWNER &&
+        info.uid != task->uid)
+        result = POSIX_VFS_EPERM;
+    if (!result && permission == POSIX_UTIMES_ASK_OWNER_OR_WRITE &&
+        info.uid != task->uid && !posix_mode_allows(&info, task, 0200u))
+        result = POSIX_VFS_EPERM;
+    if (!result && flags && vfs_set_times(node, flags, atime, atime_nsec_out,
+                                          mtime, mtime_nsec_out))
+        result = POSIX_VFS_EIO;
     if (node) object_release(node);
     return result;
 }
