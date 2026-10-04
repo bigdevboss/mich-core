@@ -58,6 +58,11 @@ struct vfs_node_info {
     u64 atime;
     u64 mtime;
     u64 ctime;
+    // Nanoseconds inside the atime and mtime seconds. ctime stays a kernel
+    // secret: no POSIX stat consumer reads it, so the record does not carry
+    // what nobody asks for.
+    u32 atime_nsec;
+    u32 mtime_nsec;
     char name[VFS_NAME_MAX + 1];
 };
 
@@ -118,6 +123,12 @@ int vfs_read_dir(struct kernel_object *file, u64 *cursor, char *name,
                  u32 *name_len, u64 *inode, u32 *type);
 int vfs_chmod(struct kernel_object *object, u32 mode);
 int vfs_chown(struct kernel_object *object, u32 uid, u32 gid);
+// Explicit atime and mtime edits, the vfs face of utimensat and futimens.
+// The flags name the pair to replace and ctime moves when anything did.
+#define VFS_TIME_SET_ATIME 1u
+#define VFS_TIME_SET_MTIME 2u
+int vfs_set_times(struct kernel_object *object, u32 flags, u64 atime,
+                  u32 atime_nsec, u64 mtime, u32 mtime_nsec);
 struct kernel_object *vfs_node_pages(struct kernel_object *node,
                                       u32 *size);
 struct kernel_object *vfs_file_pages(struct kernel_object *file,

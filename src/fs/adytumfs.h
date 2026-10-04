@@ -62,11 +62,19 @@ int adytumfs_touch(u32 mount, u32 inode, u64 generation, u32 flags);
 #define ADYTUMFS_SET_GID 4u
 int adytumfs_inode_update(u32 mount, u32 inode, u64 generation, u32 flags,
                           u32 mode, u32 uid, u32 gid);
+// Explicit timestamp edits through the same window. The flags name the
+// seconds pair to replace, ctime always moves when anything did, and a call
+// that changes nothing stages no write, mirroring inode_update.
+#define ADYTUMFS_TIME_SET_ATIME 1u
+#define ADYTUMFS_TIME_SET_MTIME 2u
+int adytumfs_set_times(u32 mount, u32 inode, u64 generation, u32 flags,
+                       u64 atime, u32 atime_nsec, u64 mtime, u32 mtime_nsec);
 // The live ownership, link count, and time picture of one inode, read
 // through the window staging.
 int adytumfs_inode_meta(u32 mount, u32 inode, u64 generation, u16 *links,
                         u32 *uid, u32 *gid, u64 *atime, u64 *mtime,
-                        u64 *ctime);
+                        u64 *ctime, u32 *atime_nsec, u32 *mtime_nsec,
+                        u32 *ctime_nsec);
 // One used on-disk directory entry per call, mirroring vfs_read_dir: the
 // cursor is a byte offset in the directory blocks and the returned inode is
 // the on-disk number.
