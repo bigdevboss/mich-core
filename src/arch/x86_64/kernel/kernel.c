@@ -9,6 +9,7 @@
 #include "posix_profile.h"
 #include "posix_process.h"
 #include "posix_time.h"
+#include "posix_signal.h"
 #include "entropy.h"
 #include "spinlock.h"
 #include "scheduler.h"
@@ -1127,6 +1128,7 @@ int fork64(void) {
         task_free_slot(child);
         return -1;
     }
+    posix_signal_fork(parent, child);
     return child->id;
 }
 
@@ -1364,6 +1366,7 @@ int posix_execve64(u64 path_address, u64 argv_address, u64 envp_address) {
        exec64 policy. */
     posix_fd_close_cloexec(task);
     handle_close_all(task);
+    posix_signal_exec(task);
     u32 old_space = context->vm_space;
     context->vm_space = space;
     context->vm_valid = 1;
@@ -1499,8 +1502,11 @@ static int wake_waiting_parent(u32 child_slot) {
         u64 status_address = parent->wait_status_address;
         parent->wait_status_address = 0;
         /* Match the 4-byte int status contract; a wider store would
-           clobber the woken parent's frame past the status slot. */
-        u32 status = (u32)((u32)code & 0xFFu) << 8;
+           clobber the woken parent's frame past the status slot. A
+           signalled death packs the termsig into the low bits, which is
+           what WIFSIGNALED reads, instead of the exit byte shift. */
+        u32 status = child->exit_signal ? (child->exit_signal & 0x7Fu) :
+            (u32)((u32)code & 0xFFu) << 8;
         if (status_address)
             vm64_copy_to(parent->page_dir, status_address, &status, 4);
         task_contexts[parent_slot].rax = (u64)(u32)child->id;
@@ -1535,6 +1541,13 @@ void terminate64(u32 slot, int code) {
     handle_close_all(task);
     reparent_children(task->id);
     service_release_owner((u32)task->id);
+    /* An ignored SIGCHLD is the POSIX auto-reap contract: no zombie, the
+       slot frees at once, and a later waitpid answers ECHILD. The signal
+       state ride has to happen before the zombie transition wipes it. */
+    if (posix_signal_child_exiting(task)) {
+        task_free_slot(task);
+        return;
+    }
     task_mark_zombie(task, code);
     wake_waiting_parent(slot);
 }
@@ -1625,6 +1638,31 @@ void exception64_dispatch(struct exception_frame64 *frame) {
         for (;;)
             __asm__ volatile("cli; hlt" ::: "memory");
     }
+    u32 fault_signo = posix_signal_fault_signo(frame->vector);
+    if (fault_signo && slot < MAX_TASKS && slot == current_task_slot &&
+        posix_profile_admitted(&task_pool[slot])) {
+        struct posix_signal_regs regs;
+        regs.rax = frame->rax;
+        regs.rcx = frame->rcx;
+        regs.rdx = frame->rdx;
+        regs.rsi = frame->rsi;
+        regs.rdi = frame->rdi;
+        regs.r8 = frame->r8;
+        regs.r9 = frame->r9;
+        regs.r10 = frame->r10;
+        regs.r11 = frame->r11;
+        regs.rip = frame->rip;
+        regs.rsp = frame->rsp;
+        regs.rflags = frame->rflags;
+        int delivered = posix_signal_deliver(&task_pool[slot], &regs,
+                                             fault_signo);
+        if (delivered > 0) {
+            frame->rip = regs.rip;
+            frame->rsp = regs.rsp;
+            frame->rdi = regs.rdi;
+            return;
+        }
+    }
     serial64_write("Mich x86_64: user fault vec=");
     serial64_hex(frame->vector);
     serial64_write(" rip=");
@@ -1648,6 +1686,10 @@ void exception64_dispatch(struct exception_frame64 *frame) {
     struct task_context64 *context = &task_contexts[current_task_slot];
     frame64_save_user(context, frame);
     fpu64_save(context);
+    /* The death code stays 128 + vector because the crash passport and the
+       driver recovery catalog match on it. A POSIX parent still reads a
+       real termsig: the waitpid packing looks at exit_signal first. */
+    if (fault_signo) task_pool[current_task_slot].exit_signal = fault_signo;
     terminate64(current_task_slot, 128 + (int)frame->vector);
     u32 next = scheduler64_next_slot();
     if (next == current_task_slot || task_pool[next].state != TASK_RUNNING) {
@@ -1717,6 +1759,37 @@ void timer64_dispatch(struct interrupt_frame64 *frame) {
     scheduler64_set_running(scheduler64_next_slot());
     fpu64_load(&task_contexts[current_task_slot]);
     interrupt_load(frame, &task_contexts[current_task_slot]);
+    /* A pending signal can now be delivered to the task the frame returns
+       to, which is the asynchronous path: a user loop with no syscalls
+       still reaches its handler within one tick. */
+    if ((frame->cs & 3) == 3 &&
+        posix_profile_admitted(&task_pool[current_task_slot])) {
+        struct posix_signal_regs regs;
+        regs.rax = frame->rax;
+        regs.rcx = frame->rcx;
+        regs.rdx = frame->rdx;
+        regs.rsi = frame->rsi;
+        regs.rdi = frame->rdi;
+        regs.r8 = frame->r8;
+        regs.r9 = frame->r9;
+        regs.r10 = frame->r10;
+        regs.r11 = frame->r11;
+        regs.rip = frame->rip;
+        regs.rsp = frame->rsp;
+        regs.rflags = frame->rflags;
+        int delivered = posix_signal_deliver(&task_pool[current_task_slot],
+                                             &regs, 0u);
+        if (delivered > 0) {
+            frame->rip = regs.rip;
+            frame->rsp = regs.rsp;
+            frame->rdi = regs.rdi;
+        } else if (delivered < 0) {
+            terminate64(current_task_slot, 128 - delivered);
+            scheduler64_set_running(scheduler64_next_slot());
+            fpu64_load(&task_contexts[current_task_slot]);
+            interrupt_load(frame, &task_contexts[current_task_slot]);
+        }
+    }
     timer_ticks++;
     ipc64_tick(timer_ticks);
     posix_time_tick(timer_ticks);

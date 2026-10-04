@@ -2,6 +2,7 @@
 #include "arch_task.h"
 #include "posix_fd.h"
 #include "posix_profile.h"
+#include "posix_signal.h"
 
 struct task task_pool[MAX_TASKS];
 int task_pool_count = 0;
@@ -16,6 +17,7 @@ static void task_clear_dynamic(struct task *t) {
     t->wq_tail = 0;
     t->parent_id = -1;
     t->exit_code = 0;
+    t->exit_signal = 0;
     t->wait_pid = -1;
     t->wait_posix = 0;
     t->wait_status_address = 0;
@@ -26,6 +28,7 @@ static void task_clear_dynamic(struct task *t) {
     t->send_to = 0;
     t->send_deadline = 0;
     t->sleep_deadline = 0;
+    t->sleep_request = 0;
     t->capabilities = 0;
     t->irq_rights = 0;
     for (int i = 0; i < MAX_MMIO_GRANTS; i++) {
@@ -62,8 +65,10 @@ struct task *task_alloc_slot(void) {
 
 void task_free_slot(struct task *t) {
     unsigned int g = t->gen;
+    t->exit_signal = 0;
     posix_fd_close_all(t);
     posix_profile_release(t);
+    posix_signal_reset(t);
     arch_task_release(t);
     task_clear_dynamic(t);
     t->esp = 0;
@@ -79,6 +84,7 @@ void task_free_slot(struct task *t) {
 void task_mark_zombie(struct task *t, int code) {
     posix_fd_close_all(t);
     posix_profile_release(t);
+    posix_signal_reset(t);
     t->exit_code = code;
     t->on_cpu = TASK_CPU_NONE;
     t->state = TASK_ZOMBIE;
@@ -88,6 +94,7 @@ void task_mark_zombie(struct task *t, int code) {
     t->send_to = 0;
     t->send_deadline = 0;
     t->sleep_deadline = 0;
+    t->sleep_request = 0;
     t->next = 0;
     t->wait_pid = -1;
     t->wait_posix = 0;

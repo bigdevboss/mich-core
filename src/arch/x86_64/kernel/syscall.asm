@@ -22,6 +22,13 @@ extern syscall64_validate_return
 %define SC_R13        104
 %define SC_R14        112
 %define SC_R15        120
+%define SC_SIG_RAX    128
+%define SC_SIG_RCX    136
+%define SC_SIG_R11    144
+
+; The sentinel syscall64_validate_return answers a sigreturn with. Must
+; match POSIX_SIGRETURN_SENTINEL in posix_abi.h.
+%define SIGRETURN_SENTINEL 0x5349475245544952
 
 section .text
 syscall64_entry:
@@ -61,6 +68,29 @@ syscall64_entry:
     mov r13, [gs:SC_R13]
     mov r14, [gs:SC_R14]
     mov r15, [gs:SC_R15]
+    ; A 64-bit immediate has no cmp form, so the sentinel compare runs
+    ; through the stack: rdx and friends are already restored user
+    ; registers and cannot serve as scratch.
+    push rax
+    mov rax, SIGRETURN_SENTINEL
+    cmp rax, [rsp]
+    pop rax
+    jne .plain_sysret
+    ; A sigreturn resumes the interrupted register set in full, which
+    ; sysret cannot do: it forces rcx to the rip and r11 to the flags.
+    ; The iret frame below reloads rip, rsp, and flags from the per-CPU
+    ; slot and keeps the saved rcx, r11, and rax in their registers.
+    mov rax, [gs:SC_SIG_RAX]
+    mov rcx, [gs:SC_SIG_RCX]
+    mov r11, [gs:SC_SIG_R11]
+    push qword 0x1B
+    push qword [gs:SC_RSP]
+    push qword [gs:SC_RFLAGS]
+    push qword 0x23
+    push qword [gs:SC_RIP]
+    swapgs
+    iretq
+.plain_sysret:
     mov rcx, [gs:SC_RIP]
     mov r11, [gs:SC_RFLAGS]
     mov rsp, [gs:SC_RSP]

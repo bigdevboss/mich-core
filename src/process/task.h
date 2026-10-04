@@ -73,6 +73,10 @@ struct task {
     struct task *wq_tail;
     int parent_id;
     int exit_code;
+    // Set when the death came from a signal rather than a plain exit, so
+    // waitpid can answer WIFSIGNALED with the real termsig instead of
+    // folding it into the exit code byte.
+    u32 exit_signal;
     int wait_pid;
     // POSIX waitpid waiter state: the blocking dispatch frame is abandoned
     // on switch, so the wake path itself must deliver the reaped pid and
@@ -89,6 +93,9 @@ struct task {
     // Absolute tick the nanosleep dispatch parks the task until. The timer
     // tick owns the wake, so a sleep can never outlive its deadline.
     u32 sleep_deadline;
+    // User address of the nanosleep request the task parked on, so a
+    // signal that breaks the sleep can answer the remainder pointer.
+    uptr_t sleep_request;
     u32 capabilities;
     u32 irq_rights;
     // POSIX credentials: a single uid and gid, no supplementary groups, and

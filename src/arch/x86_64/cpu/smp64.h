@@ -51,6 +51,13 @@ struct smp64_syscall {
     u64 r13;
     u64 r14;
     u64 r15;
+    // The sigreturn path parks the interrupted rax, rcx, and r11 here,
+    // because sysret can only return rcx as the rip and r11 as the flags
+    // while a signal can interrupt user code between any two
+    // instructions. Offsets are baked into syscall.asm (SC_SIG_*).
+    u64 sigreturn_rax;
+    u64 sigreturn_rcx;
+    u64 sigreturn_r11;
 };
 
 int smp64_init(void);

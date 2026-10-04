@@ -74,8 +74,11 @@
 #include "posix_vfs.h"
 #include "posix_process.h"
 #include "posix_time.h"
+#include "posix_signal.h"
 #include "entropy.h"
 #include "kernel64_internal.h"
+
+static u64 exit64_dispatch(u64 code);
 
 u64 syscall64_validate_return(u64 result) {
     struct smp64_syscall *sc = smp64_syscall();
@@ -117,6 +120,47 @@ u64 syscall64_validate_return(u64 result) {
         result = task_contexts[current_task_slot].rax;
     }
     sc->rflags = (sc->rflags & 0x8D5ULL) | 0x202ULL;
+    /* The syscall exit is the primary signal delivery point: the frame is
+       known valid and the register set is in hand. A sigreturn carries the
+       interrupted registers in its own save slots, because sysret would
+       otherwise fold rcx into the rip and r11 into the flags. */
+    if (slot < MAX_TASKS && slot == current_task_slot &&
+        posix_profile_admitted(&task_pool[slot])) {
+        struct posix_signal_regs regs;
+        u64 answer = result;
+        int sigreturn = result == POSIX_SIGRETURN_SENTINEL;
+        if (sigreturn) {
+            regs.rax = sc->sigreturn_rax;
+            regs.rcx = sc->sigreturn_rcx;
+            regs.r11 = sc->sigreturn_r11;
+            answer = sc->sigreturn_rax;
+        } else {
+            regs.rax = result;
+            regs.rcx = sc->rip;
+            regs.r11 = sc->rflags;
+        }
+        regs.rdx = sc->rdx;
+        regs.rsi = sc->rsi;
+        regs.rdi = sc->rdi;
+        regs.r8 = sc->r8;
+        regs.r9 = sc->r9;
+        regs.r10 = sc->r10;
+        regs.rip = sc->rip;
+        regs.rsp = sc->rsp;
+        regs.rflags = sc->rflags;
+        int delivered = posix_signal_deliver(&task_pool[slot], &regs, 0u);
+        if (delivered > 0) {
+            sc->rip = regs.rip;
+            sc->rsp = regs.rsp;
+            sc->rdi = regs.rdi;
+            /* A delivery on the sigreturn exit takes the plain sysret
+               path, whose rcx and r11 folds are exactly the handler
+               entry convention. */
+            return answer;
+        }
+        if (delivered < 0) return exit64_dispatch(128u - (u64)delivered);
+        if (sigreturn) return POSIX_SIGRETURN_SENTINEL;
+    }
     return result;
 }
 
@@ -2075,7 +2119,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         object_release(object);
         return handle ? handle : (u64)-1;
     }
-    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_NANOSLEEP) {
+    if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_SIGPENDING) {
         struct task *task = &task_pool[current_task_slot];
         if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
         if (number == POSIX_SYSCALL_OPEN) {
@@ -2271,8 +2315,90 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             if (!ticks) return 0;
             task->state = TASK_BLOCKED_SLEEP;
             task->sleep_deadline = timer_ticks + ticks;
+            task->sleep_request = arg0;
             scheduler64_switch();
             return task_contexts[current_task_slot].rax;
+        }
+        if (number == POSIX_SYSCALL_KILL) {
+            int result = posix_signal_kill(task, (int)arg0, (u32)arg1);
+            if (result == 1) {
+                u32 target_slot = PID_SLOT((u32)arg0);
+                int code = 128 + (int)arg1;
+                /* Self termination cannot return through the normal path:
+                   the frame is already dying, so it takes the exit dance. */
+                if (target_slot == current_task_slot)
+                    return exit64_dispatch((u64)code);
+                task_pool[target_slot].exit_signal = (u32)arg1;
+                terminate64(target_slot, code);
+                return 0;
+            }
+            return result ? (u64)(i64)result : 0;
+        }
+        if (number == POSIX_SYSCALL_SIGACTION) {
+            struct posix_sigaction_request request;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+                vm64_copy_from(task->page_dir, &request, arg0,
+                               sizeof(request)) || request.reserved)
+                return (u64)(i64)POSIX_SIGNAL_EINVAL;
+            u32 signo = (u32)request.signo;
+            if (!signo || signo > 31u || signo == POSIX_SIG_KILL)
+                return (u64)(i64)POSIX_SIGNAL_EINVAL;
+            if (request.flags & ~(POSIX_SA_APPLY | POSIX_SA_RESTORER))
+                return (u64)(i64)POSIX_SIGNAL_EINVAL;
+            /* A handler address needs its restorer or the return trip
+               cannot work; the two ignore spellings carry none. */
+            if (request.handler > POSIX_SIG_IGN && !request.restorer)
+                return (u64)(i64)POSIX_SIGNAL_EINVAL;
+            int result = posix_signal_action(task, signo, &request);
+            if (result) return (u64)(i64)result;
+            return vm64_copy_to(task->page_dir, arg0, &request,
+                                sizeof(request)) ?
+                (u64)(i64)POSIX_VFS_EIO : 0;
+        }
+        if (number == POSIX_SYSCALL_SIGPROCMASK) {
+            struct posix_sigprocmask_request request;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+                vm64_copy_from(task->page_dir, &request, arg0,
+                               sizeof(request)) || request.reserved)
+                return (u64)(i64)POSIX_SIGNAL_EINVAL;
+            int result = posix_signal_procmask(task, request.how,
+                                               &request);
+            if (result) return (u64)(i64)result;
+            return vm64_copy_to(task->page_dir, arg0, &request,
+                                sizeof(request)) ?
+                (u64)(i64)POSIX_VFS_EIO : 0;
+        }
+        if (number == POSIX_SYSCALL_SIGRETURN) {
+            struct smp64_syscall *sc = smp64_syscall();
+            struct posix_signal_regs regs;
+            /* The restorer enters with its own return address consumed,
+               so the frame sits eight bytes under the stack pointer. */
+            int result = posix_signal_restore(
+                task, task_contexts[current_task_slot].vm_space,
+                sc->rsp - 8u, &regs);
+            if (result) return (u64)(i64)result;
+            sc->rip = regs.rip;
+            sc->rsp = regs.rsp;
+            sc->rflags = regs.rflags;
+            sc->rdx = regs.rdx;
+            sc->rsi = regs.rsi;
+            sc->rdi = regs.rdi;
+            sc->r8 = regs.r8;
+            sc->r9 = regs.r9;
+            sc->r10 = regs.r10;
+            sc->sigreturn_rax = regs.rax;
+            sc->sigreturn_rcx = regs.rcx;
+            sc->sigreturn_r11 = regs.r11;
+            return POSIX_SIGRETURN_SENTINEL;
+        }
+        if (number == POSIX_SYSCALL_SIGPENDING) {
+            struct posix_sigpending_request request;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1))
+                return (u64)(i64)POSIX_SIGNAL_EINVAL;
+            posix_signal_pending(task, &request.pending);
+            return vm64_copy_to(task->page_dir, arg0, &request,
+                                sizeof(request)) ?
+                (u64)(i64)POSIX_VFS_EIO : 0;
         }
         if (number == POSIX_SYSCALL_CHMOD) {
             struct posix_chmod_request request;

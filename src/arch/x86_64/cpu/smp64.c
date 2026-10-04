@@ -93,6 +93,9 @@ _Static_assert(__builtin_offsetof(struct smp64_syscall, rsp) == 8,
                "syscall.asm SC_RSP");
 _Static_assert(__builtin_offsetof(struct smp64_syscall, r15) == 120,
                "syscall.asm SC_R15");
+_Static_assert(
+    __builtin_offsetof(struct smp64_syscall, sigreturn_rax) == 128,
+    "syscall.asm SC_SIG_RAX");
 _Static_assert(__builtin_offsetof(struct smp64_cpu, sc) == 0,
                "GS base is smp64_cpu");
 _Static_assert(SMP64_MAX == GDT64_CPU_MAX, "TSS slots match SMP");

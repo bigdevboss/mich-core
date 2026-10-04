@@ -51,6 +51,108 @@
 #define POSIX_SYSCALL_CLOCK_GETTIME 235u
 #define POSIX_SYSCALL_CLOCK_GETRES 236u
 #define POSIX_SYSCALL_NANOSLEEP 237u
+#define POSIX_SYSCALL_KILL 238u
+#define POSIX_SYSCALL_SIGACTION 239u
+#define POSIX_SYSCALL_SIGPROCMASK 240u
+#define POSIX_SYSCALL_SIGRETURN 241u
+#define POSIX_SYSCALL_SIGPENDING 242u
+
+// The bounded signal set the profile carries. The numbers are the POSIX
+// ones; everything outside this list is rejected as EINVAL rather than
+// mapped onto a near relative. Job control (SIGSTOP, SIGCONT) and realtime
+// signals stay out: there is no process group or queued signal semantics
+// to hang them on.
+#define POSIX_SIG_HUP 1u
+#define POSIX_SIG_INT 2u
+#define POSIX_SIG_QUIT 3u
+#define POSIX_SIG_ILL 4u
+#define POSIX_SIG_ABRT 6u
+#define POSIX_SIG_FPE 8u
+#define POSIX_SIG_KILL 9u
+#define POSIX_SIG_USR1 10u
+#define POSIX_SIG_SEGV 11u
+#define POSIX_SIG_USR2 12u
+#define POSIX_SIG_PIPE 13u
+#define POSIX_SIG_ALRM 14u
+#define POSIX_SIG_TERM 15u
+#define POSIX_SIG_CHLD 17u
+#define POSIX_SIG_COUNT 32u
+
+// Dispositions: the default action, explicit ignore, or a handler address.
+// Anything above one is a user instruction pointer.
+#define POSIX_SIG_DFL ((uptr_t)0)
+#define POSIX_SIG_IGN ((uptr_t)1)
+
+// The sigaction flags the kernel reads. SA_APPLY marks a real disposition
+// change: without it the call only reads the current one back, which is
+// how a null act pointer queries. The restorer ride is mandatory because
+// the kernel has no sigreturn trampoline of its own.
+#define POSIX_SA_APPLY 0x00000001u
+#define POSIX_SA_RESTORER 0x04000000u
+
+// sigprocmask operations, with the Linux values applications expect.
+#define POSIX_SIG_BLOCK 0u
+#define POSIX_SIG_UNBLOCK 1u
+#define POSIX_SIG_SETMASK 2u
+
+// sigaction copies the new disposition in and the previous one out, so one
+// request record serves both pointers of the libc wrapper.
+struct posix_sigaction_request {
+    i32 signo;
+    u32 flags;
+    uptr_t handler;
+    uptr_t restorer;
+    u64 mask;
+    uptr_t previous_handler;
+    uptr_t previous_restorer;
+    u64 previous_mask;
+    u32 previous_flags;
+    u32 reserved;
+};
+
+// sigprocmask reads the requested set and answers with the previous one.
+struct posix_sigprocmask_request {
+    u32 how;
+    u32 reserved;
+    u64 mask;
+    u64 previous;
+};
+
+// sigpending answers with the pending signals the caller has blocked.
+struct posix_sigpending_request {
+    u64 pending;
+};
+
+// The frame a delivery pushes onto the user stack. It carries the whole
+// interrupted register set because a tick can land between any two user
+// instructions, not only at a syscall boundary where the architecture
+// already burns rcx and r11. The restorer reads it back through sigreturn.
+struct posix_sigframe {
+    uptr_t restorer;
+    u64 signo;
+    u64 saved_mask;
+    u64 rax;
+    u64 rcx;
+    u64 rdx;
+    u64 rsi;
+    u64 rdi;
+    u64 r8;
+    u64 r9;
+    u64 r10;
+    u64 r11;
+    u64 rip;
+    u64 rsp;
+    u64 rflags;
+};
+
+// sigreturn cannot hand its restored frame back through the plain sysret
+// path: sysret forces rcx to the return rip and r11 to the flags, which
+// would clobber two registers the interrupted code still owned. The
+// dispatcher returns this sentinel instead and the entry stub takes an iret
+// path that reloads rcx, r11, and rax from the per-CPU save slot. Real
+// syscall results are small non-negative numbers or negative errno, so a
+// 64-bit sentinel cannot collide.
+#define POSIX_SIGRETURN_SENTINEL 0x5349475245544952ull
 
 #define POSIX_IO_MAX 512u
 #define POSIX_SEEK_SET 0u
