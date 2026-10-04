@@ -504,7 +504,7 @@ $(USER64_OBJ_DIR)/string.o: src/user64/lib/string.c src/user64/include/string.h 
 $(USER64_OBJ_DIR)/stdio.o: src/user64/lib/stdio.c src/user64/include/stdio.h src/user64/include/string.h src/user64/include/stdlib.h src/user64/include/unistd.h src/user64/include/fcntl.h src/user64/include/errno.h src/user64/include/mich/syscall.h | $(USER64_OBJ_DIR)
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
-$(USER64_OBJ_DIR)/stdlib.o: src/user64/lib/stdlib.c src/user64/include/stdlib.h src/user64/include/string.h src/user64/include/errno.h src/user64/include/mich/syscall.h | $(USER64_OBJ_DIR)
+$(USER64_OBJ_DIR)/stdlib.o: src/user64/lib/stdlib.c src/user64/include/stdlib.h src/user64/include/string.h src/user64/include/errno.h src/user64/include/limits.h src/user64/include/unistd.h src/user64/include/sys/stat.h src/user64/include/mich/syscall.h | $(USER64_OBJ_DIR)
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
 $(USER64_OBJ_DIR)/posixapp.o: src/user64/posixapp/main.c src/user64/include/errno.h src/user64/include/fcntl.h src/user64/include/unistd.h src/user64/include/sys/stat.h src/user64/include/mich/syscall.h | $(USER64_OBJ_DIR)
