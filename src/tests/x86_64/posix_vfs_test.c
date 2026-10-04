@@ -7,6 +7,7 @@
 #include "posix_vfs.h"
 #include "posix_abi.h"
 #include "tests64.h"
+#include "rtc64.h"
 
 int test_posix_vfs64(struct task *owner, struct task *child) {
     u32 objects = object_active_count();
@@ -192,6 +193,104 @@ int test_posix_vfs64(struct task *owner, struct task *child) {
                               POSIX_ACCESS_F_OK) == POSIX_PROFILE_ENOENT;
     valid &= posix_vfs_access(owner, "/posix-api/perm/file", 8u) ==
         POSIX_VFS_EINVAL;
+    // Timestamp edits: chosen pairs land whole, OMIT leaves one field
+    // standing, NOW samples the clock, and a bad nanosecond half is EINVAL
+    // before any permissions are even asked.
+    valid &= !posix_vfs_utimensat(owner, "/posix-api/perm/file",
+                                  1000000000, 123456789, 1000000001,
+                                  987654321);
+    valid &= !posix_vfs_stat_path(owner, "/posix-api/perm/file", &info) &&
+        info.atime == 1000000000 && info.atime_nsec == 123456789 &&
+        info.mtime == 1000000001 && info.mtime_nsec == 987654321;
+    valid &= !posix_vfs_utimensat(owner, "/posix-api/perm/file", 0,
+                                  POSIX_UTIME_OMIT, 2000000000, 1);
+    valid &= !posix_vfs_stat_path(owner, "/posix-api/perm/file", &info) &&
+        info.atime == 1000000000 && info.atime_nsec == 123456789 &&
+        info.mtime == 2000000000 && info.mtime_nsec == 1;
+    // NOW samples the real wall clock, so it can land before the chosen
+    // 2033 pair above: measure the instant and demand NOW lands at or
+    // past it with a sane nanosecond half.
+    u64 now_sec = rtc64_wall_clock();
+    u32 now_nsec = rtc64_wall_clock_nsec();
+    valid &= !posix_vfs_utimensat(owner, "/posix-api/perm/file", 0,
+                                  POSIX_UTIME_NOW, 0, POSIX_UTIME_NOW);
+    valid &= !posix_vfs_stat_path(owner, "/posix-api/perm/file", &info) &&
+        (info.atime > now_sec ||
+         (info.atime == now_sec && info.atime_nsec >= now_nsec)) &&
+        info.atime_nsec <= 999999999u &&
+        (info.mtime > now_sec ||
+         (info.mtime == now_sec && info.mtime_nsec >= now_nsec)) &&
+        info.mtime_nsec <= 999999999u;
+    valid &= posix_vfs_utimensat(owner, "/posix-api/perm/file", 0,
+                                 1000000000, 0, 0) == POSIX_VFS_EINVAL;
+    valid &= posix_vfs_utimensat(owner, "/posix-api/perm/file", 0, -1,
+                                 0, 0) == POSIX_VFS_EINVAL;
+    valid &= posix_vfs_utimensat(owner, "/posix-api/perm/missing", 0,
+                                 POSIX_UTIME_NOW, 0, POSIX_UTIME_NOW) ==
+        POSIX_PROFILE_ENOENT;
+    // The descriptor twin answers through the open file: chosen pairs from
+    // the owner land, a bad half stays EINVAL, and a dead descriptor is
+    // EBADF before the question of times even starts.
+    valid &= !posix_fd_futimens(owner, owned, 1500000000, 42, 1500000001,
+                                43);
+    valid &= !posix_vfs_stat_path(owner, "/posix-api/perm/file", &info) &&
+        info.atime == 1500000000 && info.atime_nsec == 42 &&
+        info.mtime == 1500000001 && info.mtime_nsec == 43;
+    valid &= posix_fd_futimens(owner, owned, 0, 0x7fffffff, 0, 0) ==
+        POSIX_VFS_EINVAL;
+    valid &= posix_fd_futimens(owner, 9, 0, POSIX_UTIME_NOW, 0,
+                               POSIX_UTIME_NOW) == POSIX_VFS_EBADF;
+    // Both OMIT is the sanctioned no-op: it changes nothing, so it asks no
+    // permission question at all.
+    valid &= !posix_vfs_utimensat(owner, "/posix-api/perm/file", 7,
+                                  POSIX_UTIME_OMIT, 7, POSIX_UTIME_OMIT);
+    valid &= !posix_vfs_stat_path(owner, "/posix-api/perm/file", &info) &&
+        info.atime == 1500000000 && info.atime_nsec == 42 &&
+        info.mtime == 1500000001 && info.mtime_nsec == 43;
+    // A file another uid owns answers the POSIX ladder: chosen times need
+    // the owner, NOW needs the owner or write permission.
+    valid &= !posix_vfs_chown(owner, "/posix-api/perm/file", 1, 1);
+    valid &= posix_vfs_utimensat(owner, "/posix-api/perm/file", 1, 0,
+                                 1, 0) == POSIX_VFS_EPERM;
+    valid &= posix_vfs_utimensat(owner, "/posix-api/perm/file", 0,
+                                 POSIX_UTIME_NOW, 0, POSIX_UTIME_NOW) ==
+        POSIX_VFS_EPERM;
+    valid &= !posix_vfs_chown(owner, "/posix-api/perm/file", 0, 0);
+    valid &= !posix_vfs_chmod(owner, "/posix-api/perm/file", 0666);
+    valid &= !posix_vfs_chown(owner, "/posix-api/perm/file", 1, 1);
+    valid &= posix_vfs_utimensat(owner, "/posix-api/perm/file", 1, 0,
+                                 1, 0) == POSIX_VFS_EPERM;
+    u64 moved_sec = rtc64_wall_clock();
+    u32 moved_nsec = rtc64_wall_clock_nsec();
+    valid &= !posix_vfs_utimensat(owner, "/posix-api/perm/file", 0,
+                                  POSIX_UTIME_OMIT, 0, POSIX_UTIME_NOW);
+    valid &= !posix_vfs_stat_path(owner, "/posix-api/perm/file", &info) &&
+        info.atime == 1500000000 && info.atime_nsec == 42 &&
+        (info.mtime > moved_sec ||
+         (info.mtime == moved_sec && info.mtime_nsec >= moved_nsec)) &&
+        info.mtime_nsec <= 999999999u;
+    // A write-mode descriptor is the futimens ticket for NOW; a read-mode
+    // one never carries chosen times or the clock.
+    int writer = posix_vfs_open(owner, "/posix-api/perm/file",
+                                POSIX_OPEN_WRONLY, 0);
+    valid &= writer >= 0;
+    if (writer >= 0) {
+        valid &= !posix_fd_futimens(owner, writer, 0, POSIX_UTIME_NOW, 0,
+                                    POSIX_UTIME_NOW);
+        valid &= posix_fd_futimens(owner, writer, 5, 0, 5, 0) ==
+            POSIX_VFS_EPERM;
+        valid &= !posix_fd_close(owner, writer);
+    }
+    int reader = posix_vfs_open(owner, "/posix-api/perm/file",
+                                POSIX_OPEN_RDONLY, 0);
+    valid &= reader >= 0;
+    if (reader >= 0) {
+        valid &= posix_fd_futimens(owner, reader, 0, POSIX_UTIME_NOW, 0,
+                                   POSIX_UTIME_NOW) == POSIX_VFS_EPERM;
+        valid &= !posix_fd_close(owner, reader);
+    }
+    valid &= !posix_vfs_chown(owner, "/posix-api/perm/file", 0, 0);
+    valid &= !posix_vfs_chmod(owner, "/posix-api/perm/file", 0700);
     if (owned >= 0) valid &= !posix_fd_close(owner, owned);
     valid &= !posix_vfs_unlink(owner, "/posix-api/perm/file");
     valid &= !posix_vfs_rmdir(owner, "/posix-api/perm");

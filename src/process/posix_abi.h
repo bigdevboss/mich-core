@@ -46,6 +46,8 @@
 #define POSIX_SYSCALL_FSYNC 230u
 #define POSIX_SYSCALL_FDATASYNC 231u
 #define POSIX_SYSCALL_ACCESS 232u
+#define POSIX_SYSCALL_UTIMENSAT 233u
+#define POSIX_SYSCALL_FUTIMENS 234u
 
 #define POSIX_IO_MAX 512u
 #define POSIX_SEEK_SET 0u
@@ -55,6 +57,10 @@
 #define POSIX_FCNTL_SETFD 2u
 #define POSIX_FD_CLOEXEC_VALUE 1u
 #define POSIX_WAIT_NOHANG 1u
+// The two reserved tv_nsec spellings: stamp the current time or leave the
+// field alone. tv_sec is ignored whenever a value carries either one.
+#define POSIX_UTIME_NOW 0x3FFFFFFEu
+#define POSIX_UTIME_OMIT 0x3FFFFFFFu
 
 struct posix_open_request {
     u32 flags;
@@ -171,6 +177,8 @@ struct posix_stat_record {
     u64 st_atime;
     u64 st_mtime;
     u64 st_ctime;
+    u32 st_atime_nsec;
+    u32 st_mtime_nsec;
 };
 
 struct posix_stat_path_request {
@@ -187,6 +195,23 @@ struct posix_fstat_request {
 struct posix_mode_path_request {
     u32 mode;
     char path[VFS_PATH_MAX];
+};
+
+struct posix_utimensat_request {
+    i64 atime_sec;
+    i64 atime_nsec;
+    i64 mtime_sec;
+    i64 mtime_nsec;
+    char path[VFS_PATH_MAX];
+};
+
+struct posix_futimens_request {
+    i32 descriptor;
+    u32 reserved;
+    i64 atime_sec;
+    i64 atime_nsec;
+    i64 mtime_sec;
+    i64 mtime_nsec;
 };
 
 struct posix_path_request {
