@@ -380,6 +380,16 @@ int posix_vfs_lstat_path(struct task *task, const char *path,
     struct kernel_object *parent = 0;
     char name[VFS_NAME_MAX + 1];
     int result = posix_profile_parent(task, path, &parent, name);
+    struct vfs_node_info parent_info;
+    if (!result) {
+        result = node_info(parent, &parent_info);
+        // The final name lives in its parent's directory listing, so a
+        // parent that is not a directory has no entry to find. The walk
+        // behind stat answers ENOTDIR on the same shape, and check_parent
+        // mutation holds the same rule for the entry calls.
+        if (!result && parent_info.type != VFS_NODE_DIRECTORY)
+            result = POSIX_VFS_ENOTDIR;
+    }
     struct kernel_object *node = result ? 0 : vfs_lookup(parent, name);
     if (!result && !node) result = POSIX_PROFILE_ENOENT;
     if (!result) result = node_info(node, info);

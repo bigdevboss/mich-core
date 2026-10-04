@@ -240,6 +240,11 @@ int test_posix_vfs64(struct task *owner, struct task *child) {
         POSIX_VFS_EINVAL;
     valid &= posix_fd_futimens(owner, 9, 0, POSIX_UTIME_NOW, 0,
                                POSIX_UTIME_NOW) == POSIX_VFS_EBADF;
+    // A regular file in the middle of a path has no directory listing to
+    // find the next name in, so the no-follow stat answers ENOTDIR the
+    // same way the walk behind stat does.
+    valid &= posix_vfs_lstat_path(owner, "/posix-api/perm/file/inside",
+                                  &info) == POSIX_VFS_ENOTDIR;
     // Both OMIT is the sanctioned no-op: it changes nothing, so it asks no
     // permission question at all.
     valid &= !posix_vfs_utimensat(owner, "/posix-api/perm/file", 7,
