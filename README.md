@@ -51,31 +51,37 @@ task administration, driver/resource access, or hardware privilege. Only an
 executable image carrying the POSIX-profile boot metadata is admitted. Native
 fork preserves the profile and descriptor state; task teardown releases both.
 
-The public headers are `<fcntl.h>`, `<unistd.h>`, `<sys/types.h>`,
-`<sys/wait.h>`, `<sys/stat.h>`, and `<errno.h>`. The v0 interface provides:
+The public headers are `<errno.h>`, `<fcntl.h>`, `<limits.h>`, `<stdio.h>`,
+`<stdlib.h>`, `<string.h>`, `<time.h>`, `<unistd.h>`, `<dirent.h>`,
+`<sys/random.h>`, `<sys/stat.h>`, `<sys/types.h>`, and `<sys/wait.h>`. The
+interface provides:
 
 ```text
-open, close, read, write, lseek
+open, close, read, write, lseek, pread, pwrite
 dup, dup2, fcntl(F_GETFD/F_SETFD)
-stat, fstat
-mkdir, rmdir, unlink
-chdir, getcwd, truncate
+stat, lstat, fstat, getdents
+mkdir, rmdir, unlink, link, rename, symlink, readlink
+chdir, getcwd, truncate, ftruncate
+chmod, fchmod, chown, umask, access
+fsync, fdatasync, utimensat, futimens
 fork, execve, _exit
 getpid, getppid, waitpid(WNOHANG/blocking)
+getrandom, realpath
 ```
 
 `O_CREAT`, `O_TRUNC`, `O_APPEND`, and `O_CLOEXEC` are supported. File
-permissions are stored in ramfs and persistent adytumfs. Because v0 has no
-UID/GID model, every admitted profile is treated as the owner: only owner
-`0400`, `0200`, and `0100` bits grant read, write, and directory-search access.
-Group and other bits remain stored and are reported through `st_mode`, but do
-not grant access. `O_APPEND` uses VFS-level append serialization.
+permissions are stored in ramfs and persistent adytumfs, with nanosecond
+timestamp halves kept whole. Access walks the mode column the calling uid
+lands in: owner, group, and other bits each grant their own read, write, and
+directory-search rights. Ownership edits stay with the owner, with uid 0
+holding the root override for `chown`; permission edits have no root override.
+`O_APPEND` uses VFS-level append serialization.
 
 The ABI uses bounded request records internally; public `read` and `write`
 wrappers chunk larger transfers. Mich does not claim POSIX certification or
-complete POSIX conformance. Pipes, `mmap`, polling, sockets, signals, threads,
-terminal semantics, UID/GID, `umask`, `chmod`, ACLs, and Linux ABI
-compatibility remain outside this v0 application profile.
+complete POSIX conformance. Pipes, `mmap`, polling, sockets, signals,
+threads, terminal semantics, ACLs, and Linux ABI compatibility remain outside
+this application profile.
 
 ## Features
 
