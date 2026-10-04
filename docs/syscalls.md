@@ -392,3 +392,6 @@ admitted to a POSIX profile. They are defined in `src/process/posix_abi.h`.
 | 232 | access | Ask whether the calling uid may read, write, or execute a path. |
 | 233 | utimensat | Set atime and mtime on a path with nanosecond halves. |
 | 234 | futimens | Set atime and mtime on an open descriptor with nanosecond halves. |
+| 235 | clock_gettime | Read a clock into seconds and nanoseconds. Realtime (0) follows the wall clock, monotonic (1) counts ticks since boot. |
+| 236 | clock_getres | Report a clock's resolution: one timer tick, honestly. |
+| 237 | nanosleep | Park the task until the requested interval has passed. The interval is rounded up to whole ticks, so a sleep never wakes early. |

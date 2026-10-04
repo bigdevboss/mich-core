@@ -64,6 +64,7 @@ mkdir, rmdir, unlink, link, rename, symlink, readlink
 chdir, getcwd, truncate, ftruncate
 chmod, fchmod, chown, umask, access
 fsync, fdatasync, utimensat, futimens
+clock_gettime, clock_getres, nanosleep, time, gettimeofday, sleep
 fork, execve, _exit
 getpid, getppid, waitpid(WNOHANG/blocking)
 getrandom, realpath
