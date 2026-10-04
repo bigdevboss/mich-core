@@ -46,6 +46,18 @@ int test_adytumfs_inode64(void) {
         again.direct[0].start_block == super.data_start &&
         again.direct[0].length == 2;
 
+    // The nanosecond halves of the timestamps round-trip through the slot
+    // copy the seconds always did.
+    file.atime_nsec = 123456789u;
+    file.mtime_nsec = 987654321u;
+    file.ctime_nsec = 500000000u;
+    struct adytumfs_inode timed;
+    valid = valid && adytumfs_inode_write(dev, &super, number, &file) == 0 &&
+        adytumfs_inode_read(dev, &super, number, &timed) == 0 &&
+        timed.atime_nsec == 123456789u &&
+        timed.mtime_nsec == 987654321u &&
+        timed.ctime_nsec == 500000000u;
+
     // Freeing returns the slot; the next allocation reuses it with a higher
     // generation.
     u64 reused = 0;

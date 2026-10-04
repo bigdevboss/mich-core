@@ -561,18 +561,22 @@ int adytumfs_touch(u32 mount, u32 inode, u64 generation, u32 flags) {
     if (slot_inode_read(m, inode, &in)) return -1;
     u32 changed = 0;
     u64 now = rtc64_wall_clock();
+    u32 now_nsec = rtc64_wall_clock_nsec();
     // Relatime-lite: a read only refreshes atime while it still trails the
     // last data change, so steady-state reads never dirty the inode.
     if ((flags & ADYTUMFS_TOUCH_ATIME) && in.atime < in.mtime) {
         in.atime = now;
+        in.atime_nsec = now_nsec;
         changed = 1;
     }
     if (flags & ADYTUMFS_TOUCH_MTIME) {
         in.mtime = now;
+        in.mtime_nsec = now_nsec;
         changed = 1;
     }
     if (flags & ADYTUMFS_TOUCH_CTIME) {
         in.ctime = now;
+        in.ctime_nsec = now_nsec;
         changed = 1;
     }
     if (!changed) return 0;
@@ -606,13 +610,46 @@ int adytumfs_inode_update(u32 mount, u32 inode, u64 generation, u32 flags,
     }
     if (!changed) return 0;
     in.ctime = rtc64_wall_clock();
+    in.ctime_nsec = rtc64_wall_clock_nsec();
+    return adytumfs_inode_write(m->device, &m->super, m->slots[inode].inode,
+                                &in);
+}
+
+int adytumfs_set_times(u32 mount, u32 inode, u64 generation, u32 flags,
+                       u64 atime, u32 atime_nsec, u64 mtime, u32 mtime_nsec) {
+    struct adytumfs_mount *m = slot_mount(mount, inode, generation);
+    if (!m || !flags ||
+        (flags & ~(ADYTUMFS_TIME_SET_ATIME | ADYTUMFS_TIME_SET_MTIME)))
+        return -1;
+    struct adytumfs_inode in;
+    if (slot_inode_read(m, inode, &in)) return -1;
+    u32 changed = 0;
+    if ((flags & ADYTUMFS_TIME_SET_ATIME) &&
+        (in.atime != atime || in.atime_nsec != atime_nsec)) {
+        in.atime = atime;
+        in.atime_nsec = atime_nsec;
+        changed = 1;
+    }
+    if ((flags & ADYTUMFS_TIME_SET_MTIME) &&
+        (in.mtime != mtime || in.mtime_nsec != mtime_nsec)) {
+        in.mtime = mtime;
+        in.mtime_nsec = mtime_nsec;
+        changed = 1;
+    }
+    // A timestamp edit is metadata the vouching path can see, so ctime
+    // moves with any real change; a call restating the stored values stays
+    // a no-op, the same rule inode_update holds.
+    if (!changed) return 0;
+    in.ctime = rtc64_wall_clock();
+    in.ctime_nsec = rtc64_wall_clock_nsec();
     return adytumfs_inode_write(m->device, &m->super, m->slots[inode].inode,
                                 &in);
 }
 
 int adytumfs_inode_meta(u32 mount, u32 inode, u64 generation, u16 *links,
                         u32 *uid, u32 *gid, u64 *atime, u64 *mtime,
-                        u64 *ctime) {
+                        u64 *ctime, u32 *atime_nsec, u32 *mtime_nsec,
+                        u32 *ctime_nsec) {
     struct adytumfs_mount *m = slot_mount(mount, inode, generation);
     if (!m) return -1;
     struct adytumfs_inode in;
@@ -623,6 +660,9 @@ int adytumfs_inode_meta(u32 mount, u32 inode, u64 generation, u16 *links,
     if (atime) *atime = in.atime;
     if (mtime) *mtime = in.mtime;
     if (ctime) *ctime = in.ctime;
+    if (atime_nsec) *atime_nsec = in.atime_nsec;
+    if (mtime_nsec) *mtime_nsec = in.mtime_nsec;
+    if (ctime_nsec) *ctime_nsec = in.ctime_nsec;
     return 0;
 }
 
@@ -730,6 +770,7 @@ int adytumfs_inode_link(u32 mount, u32 inode, u64 generation, u32 parent,
     // order could reclaim an inode a surviving name still points at.
     in.links++;
     in.ctime = rtc64_wall_clock();
+    in.ctime_nsec = rtc64_wall_clock_nsec();
     if (adytumfs_inode_write(m->device, &m->super, m->slots[inode].inode,
                              &in))
         return -1;
@@ -816,6 +857,7 @@ int adytumfs_unlink(u32 mount, u32 inode, u64 generation, u32 parent,
         // says how many.
         in.links--;
         in.ctime = rtc64_wall_clock();
+        in.ctime_nsec = rtc64_wall_clock_nsec();
         return adytumfs_inode_write(m->device, &m->super,
                                     m->slots[inode].inode, &in);
     }
@@ -825,6 +867,7 @@ int adytumfs_unlink(u32 mount, u32 inode, u64 generation, u32 parent,
         // reclaim the final close triggers.
         in.links = 0;
         in.ctime = rtc64_wall_clock();
+        in.ctime_nsec = rtc64_wall_clock_nsec();
         return adytumfs_inode_write(m->device, &m->super,
                                     m->slots[inode].inode, &in);
     }
@@ -874,6 +917,7 @@ int adytumfs_rename(u32 mount, u32 inode, u64 generation, u32 old_parent,
     // name: a failure past this point leaves a stale-new time, never a
     // name the metadata cannot vouch for.
     in.ctime = rtc64_wall_clock();
+    in.ctime_nsec = rtc64_wall_clock_nsec();
     if (adytumfs_inode_write(m->device, &m->super, m->slots[inode].inode,
                              &in))
         return -1;
@@ -947,8 +991,11 @@ int adytumfs_symlink_write(u32 mount, u32 inode, u64 generation,
                             adytumfs_backend_scratch))
         return -1;
     u64 now = rtc64_wall_clock();
+    u32 now_nsec = rtc64_wall_clock_nsec();
     in.mtime = now;
     in.ctime = now;
+    in.mtime_nsec = now_nsec;
+    in.ctime_nsec = now_nsec;
     in.size = length;
     if (adytumfs_inode_write(m->device, &m->super, m->slots[inode].inode,
                              &in))
@@ -1059,8 +1106,11 @@ int adytumfs_truncate(u32 mount, u32 inode, u64 generation, u32 size,
     }
     // Truncation changes the data, so mtime and ctime move with the new size.
     u64 now = rtc64_wall_clock();
+    u32 now_nsec = rtc64_wall_clock_nsec();
     in.mtime = now;
     in.ctime = now;
+    in.mtime_nsec = now_nsec;
+    in.ctime_nsec = now_nsec;
     in.size = size;
     if (adytumfs_inode_write(m->device, &m->super, m->slots[inode].inode,
                              &in) ||

@@ -32,6 +32,11 @@ struct vfs_node_state {
     u64 atime;
     u64 mtime;
     u64 ctime;
+    // Nanoseconds inside the seconds above, mirroring the on-disk inode
+    // fields for the node-table filesystems.
+    u32 atime_nsec;
+    u32 mtime_nsec;
+    u32 ctime_nsec;
     u32 active;
 };
 
@@ -348,9 +353,13 @@ void vfs_init(void) {
     root->readonly = 0;
     root->mode = VFS_MODE_DIRECTORY_DEFAULT;
     u64 now = rtc64_wall_clock();
+    u32 now_nsec = rtc64_wall_clock_nsec();
     root->atime = now;
     root->mtime = now;
     root->ctime = now;
+    root->atime_nsec = now_nsec;
+    root->mtime_nsec = now_nsec;
+    root->ctime_nsec = now_nsec;
     root->linked = 1;
     root->active = 1;
     root->name[0] = 0;
@@ -751,9 +760,13 @@ struct kernel_object *vfs_create_mode(struct kernel_object *directory,
         node->uid = 0;
         node->gid = 0;
         u64 created = rtc64_wall_clock();
+        u32 created_nsec = rtc64_wall_clock_nsec();
         node->atime = created;
         node->mtime = created;
         node->ctime = created;
+        node->atime_nsec = created_nsec;
+        node->mtime_nsec = created_nsec;
+        node->ctime_nsec = created_nsec;
         node->special = VFS_SPECIAL_NONE;
         node->linked = 1;
         node->fs_id = 0;
@@ -1237,6 +1250,7 @@ int vfs_rename(struct kernel_object *old_directory, const char *name,
                         nodes[new_index].fs_id, new_name))
         return -1;
     node->ctime = rtc64_wall_clock();
+    node->ctime_nsec = rtc64_wall_clock_nsec();
     if (source_alias) {
         source_alias->parent = new_index;
         for (u32 byte = 0; byte <= VFS_NAME_MAX; byte++)
@@ -1402,7 +1416,10 @@ int vfs_read(struct kernel_object *object, u32 offset,
     }
     // Same relatime-lite rule as the adytumfs backend: reads do not dirty
     // the node once atime has caught up with the last write.
-    if (count && node->atime < node->mtime) node->atime = rtc64_wall_clock();
+    if (count && node->atime < node->mtime) {
+        node->atime = rtc64_wall_clock();
+        node->atime_nsec = rtc64_wall_clock_nsec();
+    }
     *transferred = count;
     return 0;
 }
@@ -1476,8 +1493,11 @@ static int write_node(struct vfs_node_state *node, u32 offset,
     if (end > node->size) node->size = end;
     if (length) {
         u64 written = rtc64_wall_clock();
+        u32 written_nsec = rtc64_wall_clock_nsec();
         node->mtime = written;
         node->ctime = written;
+        node->mtime_nsec = written_nsec;
+        node->ctime_nsec = written_nsec;
     }
     *transferred = length;
     return 0;
@@ -1543,8 +1563,11 @@ static int truncate_node(struct vfs_node_state *node, u32 size) {
     }
     node->size = size;
     u64 trimmed = rtc64_wall_clock();
+    u32 trimmed_nsec = rtc64_wall_clock_nsec();
     node->mtime = trimmed;
     node->ctime = trimmed;
+    node->mtime_nsec = trimmed_nsec;
+    node->ctime_nsec = trimmed_nsec;
     return 0;
 }
 
@@ -1612,6 +1635,8 @@ int vfs_stat(struct kernel_object *object, struct vfs_node_info *info) {
     info->atime = node->atime;
     info->mtime = node->mtime;
     info->ctime = node->ctime;
+    info->atime_nsec = node->atime_nsec;
+    info->mtime_nsec = node->mtime_nsec;
     // The on-disk inode is the source of truth for an adytumfs node: link
     // count, ownership, and times are read live through the window staging
     // rather than cached in the node.
@@ -1620,7 +1645,8 @@ int vfs_stat(struct kernel_object *object, struct vfs_node_info *info) {
         if (adytumfs_inode_meta(node->mount, node->fs_id,
                                 node->fs_generation, &links, &info->uid,
                                 &info->gid, &info->atime, &info->mtime,
-                                &info->ctime))
+                                &info->ctime, &info->atime_nsec,
+                                &info->mtime_nsec, 0))
             return -1;
         info->links = links;
     }
@@ -1648,6 +1674,7 @@ int vfs_chmod(struct kernel_object *object, u32 mode) {
                                      mode, 0, 0);
     node->mode = mode;
     node->ctime = rtc64_wall_clock();
+    node->ctime_nsec = rtc64_wall_clock_nsec();
     return 0;
 }
 
@@ -1669,6 +1696,42 @@ int vfs_chown(struct kernel_object *object, u32 uid, u32 gid) {
     node->uid = uid;
     node->gid = gid;
     node->ctime = rtc64_wall_clock();
+    node->ctime_nsec = rtc64_wall_clock_nsec();
+    return 0;
+}
+
+int vfs_set_times(struct kernel_object *object, u32 flags, u64 atime,
+                  u32 atime_nsec, u64 mtime, u32 mtime_nsec) {
+    struct vfs_node_state *node = node_for(object);
+    if (!node) {
+        struct vfs_file_state *file = file_for(object);
+        node = file ? node_for(file->node) : 0;
+    }
+    if (!node || !node_backing_live(node) ||
+        (flags & ~(VFS_TIME_SET_ATIME | VFS_TIME_SET_MTIME)))
+        return -1;
+    if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS)
+        return adytumfs_set_times(node->mount, node->fs_id,
+                                  node->fs_generation, flags, atime,
+                                  atime_nsec, mtime, mtime_nsec);
+    u32 changed = 0;
+    if ((flags & VFS_TIME_SET_ATIME) &&
+        (node->atime != atime || node->atime_nsec != atime_nsec)) {
+        node->atime = atime;
+        node->atime_nsec = atime_nsec;
+        changed = 1;
+    }
+    if ((flags & VFS_TIME_SET_MTIME) &&
+        (node->mtime != mtime || node->mtime_nsec != mtime_nsec)) {
+        node->mtime = mtime;
+        node->mtime_nsec = mtime_nsec;
+        changed = 1;
+    }
+    // Restating the stored values is a no-op, so ctime only moves when a
+    // timestamp really changed, the rule the adytumfs backend holds too.
+    if (!changed) return 0;
+    node->ctime = rtc64_wall_clock();
+    node->ctime_nsec = rtc64_wall_clock_nsec();
     return 0;
 }
 

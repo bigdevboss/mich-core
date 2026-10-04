@@ -23,6 +23,9 @@ void adytumfs_inode_pack(u8 *slot, const struct adytumfs_inode *inode) {
     }
     adytumfs_write_le64(slot + 224, inode->indirect1);
     adytumfs_write_le64(slot + 232, inode->indirect2);
+    adytumfs_write_le32(slot + 240, inode->atime_nsec);
+    adytumfs_write_le32(slot + 244, inode->mtime_nsec);
+    adytumfs_write_le32(slot + 248, inode->ctime_nsec);
     adytumfs_write_le32(slot + ADYTUMFS_INODE_CHECKSUM_OFFSET,
                         crc32c(slot, ADYTUMFS_INODE_CHECKSUM_OFFSET));
 }
@@ -52,6 +55,9 @@ int adytumfs_inode_unpack(struct adytumfs_inode *inode, const u8 *slot) {
     }
     inode->indirect1 = adytumfs_read_le64(slot + 224);
     inode->indirect2 = adytumfs_read_le64(slot + 232);
+    inode->atime_nsec = adytumfs_read_le32(slot + 240);
+    inode->mtime_nsec = adytumfs_read_le32(slot + 244);
+    inode->ctime_nsec = adytumfs_read_le32(slot + 248);
     return 0;
 }
 
@@ -106,9 +112,13 @@ int adytumfs_inode_alloc(struct kernel_object *device,
         fresh.links = (mode & ADYTUMFS_MODE_DIR) ? 2u : 1u;
         fresh.generation = inode.generation + 1;
         u64 now = rtc64_wall_clock();
+        u32 now_nsec = rtc64_wall_clock_nsec();
         fresh.atime = now;
         fresh.mtime = now;
         fresh.ctime = now;
+        fresh.atime_nsec = now_nsec;
+        fresh.mtime_nsec = now_nsec;
+        fresh.ctime_nsec = now_nsec;
         if (adytumfs_inode_write(device, super, candidate, &fresh)) return -1;
         super->free_inodes--;
         *inode_num = candidate;

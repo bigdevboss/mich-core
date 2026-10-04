@@ -20,6 +20,12 @@ int rtc64_init(void);
 // 0 when the clock was never anchored.
 u64 rtc64_wall_clock(void);
 
+// The nanoseconds elapsed inside the current wall-clock second, from the same
+// tick counter. The tick rate bounds the answer: a 100 Hz tick means the value
+// moves in 10 ms steps, and a reader can land one tick away from a paired
+// wall_clock call, so callers treat the pair as one sampled instant.
+u32 rtc64_wall_clock_nsec(void);
+
 // Pure civil-date arithmetic, no CMOS access. Exposed so the known-answer test
 // can cover leap years and month boundaries without hardware.
 u64 rtc64_unix_seconds(u32 year, u32 month, u32 day,

@@ -143,6 +143,12 @@ struct adytumfs_inode {
     struct adytumfs_extent direct[ADYTUMFS_DIRECT_EXTENTS];
     u64 indirect1;
     u64 indirect2;
+    // Nanoseconds inside the seconds fields above. The slot keeps twelve
+    // spare bytes between the last extent pair and the checksum, exactly
+    // three u32 values, and the checksum still covers the whole slot.
+    u32 atime_nsec;
+    u32 mtime_nsec;
+    u32 ctime_nsec;
 };
 
 // Serialise an inode into its 256-byte table slot (little-endian, checksum set).

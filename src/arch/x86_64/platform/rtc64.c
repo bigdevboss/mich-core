@@ -180,3 +180,9 @@ u64 rtc64_wall_clock(void) {
     u32 elapsed = timer_ticks - wall_clock_anchor_tick;
     return wall_clock_anchor + elapsed / RTC64_TICK_HZ;
 }
+
+u32 rtc64_wall_clock_nsec(void) {
+    if (!wall_clock_anchor) return 0;
+    u32 elapsed = timer_ticks - wall_clock_anchor_tick;
+    return (elapsed % RTC64_TICK_HZ) * (1000000000u / RTC64_TICK_HZ);
+}
