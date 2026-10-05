@@ -248,6 +248,13 @@ int udp_ipv4_handler(struct ipv4_context *ipv4,
     datagram->zero_copy = packet->packet_pool != 0;
     if (!datagram->zero_copy)
         net_copy(datagram->payload, bytes + UDP_HEADER_SIZE, payload_length);
+    // A parked receiver can consume this datagram inside the notify:
+    // udp_receive takes it, releases the pool buffer, and resets the
+    // queue entry before this frame returns. The zero copy answer must
+    // be captured before the notify, so the transmit learns the pool
+    // reference was handed off instead of reading the reset entry and
+    // releasing the buffer a second time.
+    int zero_copy = datagram->zero_copy;
     binding->count++;
     event_signal(binding->event);
     // The binding id is positional, slot plus generation the way
@@ -256,7 +263,7 @@ int udp_ipv4_handler(struct ipv4_context *ipv4,
                      (u32)(binding - udp->bindings + 1u));
     udp->stats.received++;
     udp->stats.bytes_received += payload_length;
-    return datagram->zero_copy ? 1 : 0;
+    return zero_copy ? 1 : 0;
 }
 
 int udp_receive(struct udp_context *udp, u64 binding_id,
