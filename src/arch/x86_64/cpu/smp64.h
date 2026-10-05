@@ -58,6 +58,14 @@ struct smp64_syscall {
     u64 sigreturn_rax;
     u64 sigreturn_rcx;
     u64 sigreturn_r11;
+    // Set when a park, exit, or exec switched the task context under the
+    // syscall: the plain sysret return would fold rcx into the resume rip
+    // and r11 into the flags, clobbering the resumed task's rcx/r11 even
+    // though it never executed a syscall instruction itself. The exit path
+    // answers with an iret resume that restores rax/rcx/r11 from the
+    // context through the sigreturn slots above. Offset baked into
+    // syscall.asm (SC_CTXRES).
+    u64 ctx_resume;
 };
 
 int smp64_init(void);

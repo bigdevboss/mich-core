@@ -75,6 +75,7 @@
 #include "posix_process.h"
 #include "posix_time.h"
 #include "posix_signal.h"
+#include "posix_pledge.h"
 #include "entropy.h"
 #include "kernel64_internal.h"
 
@@ -136,8 +137,15 @@ u64 syscall64_validate_return(u64 result) {
             answer = sc->sigreturn_rax;
         } else {
             regs.rax = result;
-            regs.rcx = sc->rip;
-            regs.r11 = sc->rflags;
+            /* A plain syscall exit folds rcx into the rip and r11 into the
+               flags - the syscall instruction already clobbered both, so
+               the frame records the fold. A context-switch resume is
+               different: the resumed task never ran a syscall, its rcx
+               and r11 come back through the sigreturn slots, and the
+               signal frame must carry those or sigreturn would clobber
+               them with the resume rip. */
+            regs.rcx = sc->ctx_resume ? sc->sigreturn_rcx : sc->rip;
+            regs.r11 = sc->ctx_resume ? sc->sigreturn_r11 : sc->rflags;
         }
         regs.rdx = sc->rdx;
         regs.rsi = sc->rsi;
@@ -217,6 +225,22 @@ static u64 exit64_dispatch(u64 code) {
     return task_contexts[current_task_slot].rax;
 }
 
+/* The pledge gate's loud denial. A violation outside the error promise
+   kills the caller with SIGABRT: posix_signal_kill answers 1 when the
+   default disposition terminates on the spot, which records the termsig
+   for waitpid and takes the exit path directly. A task that installed a
+   handler (or blocked the signal) only gets the bit posted, so the call
+   answers the quiet ENOSYS and the delivery happens on syscall exit. */
+static u64 pledge_violation(struct task *task, int gate) {
+    if (gate != 1) return (u64)(i64)gate;
+    int posted = posix_signal_kill(task, task->id, POSIX_SIG_ABRT);
+    if (posted == 1) {
+        task->exit_signal = POSIX_SIG_ABRT;
+        return exit64_dispatch((u64)(128 + POSIX_SIG_ABRT));
+    }
+    return (u64)(i64)POSIX_PLEDGE_ENOSYS;
+}
+
 /* Page-granular grow-only program break inside the bounded heap window.
    Linux-style contract: the current break is returned for zero, unchanged
    on any rejection, so malloc can detect growth failure without errno. */
@@ -247,10 +271,13 @@ static u64 posix_brk(struct task_context64 *context, u64 new_break) {
 }
 
 static u64 posix_waitpid_reaped(struct task *parent, u64 status_address,
-                                int pid, int code) {
+                                int pid, int code, u32 signal) {
     /* The user contract is a 4-byte int status slot: never widen this
-       store, it would clobber the caller's frame past the slot. */
-    u32 status = (u32)((u32)code & 0xFFu) << 8;
+       store, it would clobber the caller's frame past the slot. A
+       signalled death packs the termsig into the low bits (what
+       WIFSIGNALED/WTERMSIG read); an exit reports the code shifted up -
+       the same packing wake_waiting_parent uses for the blocked case. */
+    u32 status = signal ? (signal & 0x7Fu) : (u32)((u32)code & 0xFFu) << 8;
     if (status_address &&
         vm64_copy_to(parent->page_dir, status_address, &status, 4))
         return (u64)(i64)POSIX_PROCESS_EINVAL;
@@ -2122,12 +2149,23 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
     if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_SIGPENDING) {
         struct task *task = &task_pool[current_task_slot];
         if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
+        /* The promise gate sits between the profile admission and the
+           call: every policed number consults the promise set first. The
+           unpoliced core (exit, getpid, getppid) answers 0 from the
+           table itself, and open is deferred to the flags-aware gate in
+           its branch - the access mode decides what it needs. */
+        if (number != POSIX_SYSCALL_OPEN) {
+            int gate = posix_pledge_gate(task, (u32)number);
+            if (gate) return pledge_violation(task, gate);
+        }
         if (number == POSIX_SYSCALL_OPEN) {
             struct posix_open_request request;
             if (vm64_user_access(task->page_dir, arg0, sizeof(request), 0) ||
                 vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)) ||
                 request.path[VFS_PATH_MAX - 1])
                 return (u64)(i64)POSIX_VFS_EINVAL;
+            int gate = posix_pledge_gate_open(task, request.flags);
+            if (gate) return pledge_violation(task, gate);
             return (u64)(i64)posix_vfs_open(task, request.path, request.flags,
                                              request.mode);
         }
@@ -2674,10 +2712,14 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                         continue;
                     if (candidate->state == TASK_ZOMBIE) {
                         int code;
+                        /* Read the identity and the death shape before the
+                           reap frees the slot and wipes both fields. */
+                        int reaped_id = candidate->id;
+                        u32 signal = candidate->exit_signal;
                         if (task_reap_zombie(parent, candidate->id, &code))
                             return (u64)(i64)POSIX_PROCESS_ECHILD;
                         return posix_waitpid_reaped(parent, status_address,
-                                                    candidate->id, code);
+                                                    reaped_id, code, signal);
                     }
                     child = candidate;
                 }
@@ -2691,10 +2733,11 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                     return (u64)(i64)POSIX_PROCESS_ECHILD;
                 if (child->state == TASK_ZOMBIE) {
                     int code;
+                    u32 signal = child->exit_signal;
                     if (task_reap_zombie(parent, pid, &code))
                         return (u64)(i64)POSIX_PROCESS_ECHILD;
                     return posix_waitpid_reaped(parent, status_address, pid,
-                                                code);
+                                                code, signal);
                 }
             }
             if (!child) return (u64)(i64)POSIX_PROCESS_ECHILD;
@@ -2743,6 +2786,52 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             }
             return done;
         }
+    }
+    if (number == POSIX_SYSCALL_PLEDGE || number == POSIX_SYSCALL_UNVEIL) {
+        struct task *task = &task_pool[current_task_slot];
+        if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
+        if (number == POSIX_SYSCALL_PLEDGE) {
+            struct posix_pledge_request request;
+            if (vm64_user_access(task->page_dir, arg0, sizeof(request), 0) ||
+                vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)))
+                return (u64)(i64)POSIX_PLEDGE_EINVAL;
+            /* The flags separate an absent half (leave it unchanged) from
+               an empty one (a real empty set); only the copied buffer can
+               carry that distinction. A promise list that fills the whole
+               buffer never terminated, so it answers EINVAL. */
+            if ((request.flags & POSIX_PLEDGE_HAS_PROMISES) &&
+                request.promises[POSIX_PLEDGE_PROMISE_MAX - 1])
+                return (u64)(i64)POSIX_PLEDGE_EINVAL;
+            if ((request.flags & POSIX_PLEDGE_HAS_EXEC_PROMISES) &&
+                request.execpromises[POSIX_PLEDGE_PROMISE_MAX - 1])
+                return (u64)(i64)POSIX_PLEDGE_EINVAL;
+            const char *promises =
+                (request.flags & POSIX_PLEDGE_HAS_PROMISES) ?
+                    request.promises : 0;
+            const char *execpromises =
+                (request.flags & POSIX_PLEDGE_HAS_EXEC_PROMISES) ?
+                    request.execpromises : 0;
+            return (u64)(i64)posix_pledge_promise(task, promises,
+                                                  execpromises);
+        }
+        struct posix_unveil_request request;
+        if (vm64_user_access(task->page_dir, arg0, sizeof(request), 0) ||
+            vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)))
+            return (u64)(i64)POSIX_PLEDGE_EINVAL;
+        if (request.flags == POSIX_UNVEIL_LOCK)
+            return (u64)(i64)posix_pledge_unveil(task, 0, 0);
+        /* A path that fills the buffer never terminated; a permission
+           string must terminate inside its eight bytes the same way. */
+        u32 perm_len = 0;
+        while (perm_len < sizeof(request.permissions) &&
+               request.permissions[perm_len])
+            perm_len++;
+        if (request.flags || request.path[VFS_PATH_MAX - 1] ||
+            !request.path[0] || !request.permissions[0] ||
+            perm_len == sizeof(request.permissions))
+            return (u64)(i64)POSIX_PLEDGE_EINVAL;
+        return (u64)(i64)posix_pledge_unveil(task, request.path,
+                                             request.permissions);
     }
     if (number == 4) {
         serial64_write("Mich x86_64: syscall/sysret pass\n");

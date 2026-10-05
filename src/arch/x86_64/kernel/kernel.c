@@ -10,6 +10,7 @@
 #include "posix_process.h"
 #include "posix_time.h"
 #include "posix_signal.h"
+#include "posix_pledge.h"
 #include "entropy.h"
 #include "spinlock.h"
 #include "scheduler.h"
@@ -944,6 +945,11 @@ static void syscall64_init(void) {
 static void context_save(struct task_context64 *context) {
     struct smp64_syscall *sc = smp64_syscall();
     context->rax = 0;
+    /* The park resumes through an iret that restores rcx and r11, so the
+       save records the values sysret would have folded: after a syscall
+       instruction rcx is the resume rip and r11 the flags. */
+    context->rcx = sc->rip;
+    context->r11 = sc->rflags;
     context->rdi = sc->rdi;
     context->rsi = sc->rsi;
     context->rdx = sc->rdx;
@@ -963,6 +969,14 @@ static void context_save(struct task_context64 *context) {
 
 void context_load(const struct task_context64 *context) {
     struct smp64_syscall *sc = smp64_syscall();
+    /* A context switch under a syscall must resume the task with its own
+       rax, rcx, and r11: the sysret path would replace rcx with the rip
+       and r11 with the flags. Publish them through the sigreturn slots
+       and raise the flag that reroutes the exit to the iret resume. */
+    sc->sigreturn_rax = context->rax;
+    sc->sigreturn_rcx = context->rcx;
+    sc->sigreturn_r11 = context->r11;
+    sc->ctx_resume = 1;
     sc->rdi = context->rdi;
     sc->rsi = context->rsi;
     sc->rdx = context->rdx;
@@ -1129,6 +1143,7 @@ int fork64(void) {
         return -1;
     }
     posix_signal_fork(parent, child);
+    posix_pledge_fork(parent, child);
     return child->id;
 }
 
@@ -1288,23 +1303,33 @@ int posix_execve64(u64 path_address, u64 argv_address, u64 envp_address) {
         return POSIX_PROCESS_EINVAL;
     }
 
-    int result = copy_stage_vector(argv_address, posix_exec_stage.vectors.argv,
-                                   &posix_exec_stage.vectors.argc);
+    /* Resolution honors the caller's cwd, including the detached-cwd
+       contract; profile codes are errno-compatible negatives and pass
+       through unchanged. */
+    struct kernel_object *node = 0;
+    int result = posix_profile_resolve(task, path, &node);
+    if (result) {
+        spin_unlock(&posix_exec_stage.lock);
+        return result;
+    }
+    // The veil stays in force across exec; a hidden image answers ENOENT
+    // and a visible one without the x permission answers EACCES. The veil
+    // answers before the vector validation: a rule violation is EACCES
+    // even when the caller's argv/envp would not have survived the copy.
+    result = posix_pledge_veil_check(task, path, POSIX_VEIL_EXECUTE, 0);
+    if (result) {
+        object_release(node);
+        spin_unlock(&posix_exec_stage.lock);
+        return result;
+    }
+    result = copy_stage_vector(argv_address, posix_exec_stage.vectors.argv,
+                               &posix_exec_stage.vectors.argc);
     if (!result)
         result = copy_stage_vector(envp_address,
                                    posix_exec_stage.vectors.envp,
                                    &posix_exec_stage.vectors.envc);
     if (result) {
-        spin_unlock(&posix_exec_stage.lock);
-        return result;
-    }
-
-    /* Resolution honors the caller's cwd, including the detached-cwd
-       contract; profile codes are errno-compatible negatives and pass
-       through unchanged. */
-    struct kernel_object *node = 0;
-    result = posix_profile_resolve(task, path, &node);
-    if (result) {
+        object_release(node);
         spin_unlock(&posix_exec_stage.lock);
         return result;
     }
@@ -1367,6 +1392,7 @@ int posix_execve64(u64 path_address, u64 argv_address, u64 envp_address) {
     posix_fd_close_cloexec(task);
     handle_close_all(task);
     posix_signal_exec(task);
+    posix_pledge_exec(task);
     u32 old_space = context->vm_space;
     context->vm_space = space;
     context->vm_valid = 1;

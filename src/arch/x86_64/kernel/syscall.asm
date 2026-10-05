@@ -25,6 +25,7 @@ extern syscall64_validate_return
 %define SC_SIG_RAX    128
 %define SC_SIG_RCX    136
 %define SC_SIG_R11    144
+%define SC_CTXRES     152
 
 ; The sentinel syscall64_validate_return answers a sigreturn with. Must
 ; match POSIX_SIGRETURN_SENTINEL in posix_abi.h.
@@ -33,6 +34,7 @@ extern syscall64_validate_return
 section .text
 syscall64_entry:
     swapgs
+    mov qword [gs:SC_CTXRES], 0
     mov [gs:SC_RDI], rdi
     mov [gs:SC_RSI], rsi
     mov [gs:SC_RDX], rdx
@@ -75,11 +77,19 @@ syscall64_entry:
     mov rax, SIGRETURN_SENTINEL
     cmp rax, [rsp]
     pop rax
-    jne .plain_sysret
+    je .resume_full
+    ; A park, exit, or exec under this syscall switched the task context:
+    ; the resumed task never ran a syscall instruction, so folding rcx
+    ; into its rip would silently clobber its registers. Resume through
+    ; the same iret path the sigreturn takes.
+    cmp qword [gs:SC_CTXRES], 0
+    jne .resume_full
+    jmp .plain_sysret
     ; A sigreturn resumes the interrupted register set in full, which
     ; sysret cannot do: it forces rcx to the rip and r11 to the flags.
     ; The iret frame below reloads rip, rsp, and flags from the per-CPU
     ; slot and keeps the saved rcx, r11, and rax in their registers.
+.resume_full:
     mov rax, [gs:SC_SIG_RAX]
     mov rcx, [gs:SC_SIG_RCX]
     mov r11, [gs:SC_SIG_R11]

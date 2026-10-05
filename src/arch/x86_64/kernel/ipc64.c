@@ -30,6 +30,28 @@ static int deadlock(struct task *sender, struct task *destination) {
     return 1;
 }
 
+/* A closed send cycle can never complete. The detector returns EDEADLK,
+   and every already-parked member of the chain must be released with the
+   same answer: a scheduling order that parks the counterparty first (the
+   spawner yields to the child before its own send runs) would otherwise
+   leave that counterparty sleeping on a receiver that only ever sends. */
+static void break_deadlock(struct task *chain, struct task *sender) {
+    struct task *cursor = chain;
+    for (int depth = 0; depth < MAX_TASKS && cursor && cursor != sender;
+         depth++) {
+        if (cursor->state != TASK_BLOCKED_SEND) return;
+        struct task *next = task_for_pid(cursor->send_to);
+        u32 slot = (u32)(cursor - task_pool);
+        pending_valid[slot] = 0;
+        pending_timed[slot] = 0;
+        cursor->send_to = 0;
+        cursor->send_deadline = 0;
+        cursor->state = TASK_RUNNING;
+        task64_set_result(slot, EDEADLK);
+        cursor = next;
+    }
+}
+
 static int deliver(struct task *receiver, vaddr_t address,
                    const struct message *message) {
     return vm64_copy_to(receiver->page_dir, address, message,
@@ -69,7 +91,10 @@ static int send_internal(u32 destination, vaddr_t message_address,
     if (receiver->state == TASK_BLOCKED_RECV && receiver->recv_buf &&
         (!receiver->recv_expect || receiver->recv_expect == (u32)sender->id))
         return send_now(sender, receiver, &message);
-    if (deadlock(sender, receiver)) return EDEADLK;
+    if (deadlock(sender, receiver)) {
+        break_deadlock(receiver, sender);
+        return EDEADLK;
+    }
     pending[current] = message;
     pending_valid[current] = 1;
     sender->send_to = destination;

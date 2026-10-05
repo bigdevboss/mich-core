@@ -49,9 +49,12 @@ static void invlpg(vaddr_t virtual) {
 }
 
 static void copy_page(paddr_t destination, paddr_t source) {
-    u8 *dst = (u8 *)(uptr_t)destination;
-    const u8 *src = (const u8 *)(uptr_t)source;
-    for (u32 index = 0; index < 4096; index++)
+    // GPR copies only: the kernel is built with -mgeneral-regs-only because
+    // fault/interrupt/syscall entries do not save user XMM state, so an SSE
+    // copy here would corrupt live user XMM registers.
+    u64 *dst = (u64 *)(uptr_t)destination;
+    const u64 *src = (const u64 *)(uptr_t)source;
+    for (u32 index = 0; index < 4096 / sizeof(u64); index++)
         dst[index] = src[index];
 }
 
