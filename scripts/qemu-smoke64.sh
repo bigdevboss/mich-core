@@ -759,7 +759,6 @@ case "$profile" in
             "Mich x86_64: POSIX application IO pass" \
             "Mich x86_64: POSIX application cwd pass" \
             "Mich x86_64: POSIX application errno pass" \
-            "Mich x86_64: POSIX application process pass" \
             "Mich x86_64: POSIX libc string pass" \
             "Mich x86_64: POSIX libc stdio pass" \
             "Mich x86_64: POSIX libc heap pass" \
