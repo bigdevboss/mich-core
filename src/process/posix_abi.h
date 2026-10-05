@@ -56,6 +56,8 @@
 #define POSIX_SYSCALL_SIGPROCMASK 240u
 #define POSIX_SYSCALL_SIGRETURN 241u
 #define POSIX_SYSCALL_SIGPENDING 242u
+#define POSIX_SYSCALL_PLEDGE 243u
+#define POSIX_SYSCALL_UNVEIL 244u
 
 // The bounded signal set the profile carries. The numbers are the POSIX
 // ones; everything outside this list is rejected as EINVAL rather than
@@ -171,6 +173,30 @@ struct posix_open_request {
     u32 flags;
     u32 mode;
     char path[VFS_PATH_MAX];
+};
+
+// Pledge promise strings: the canon-9 vocabulary with separators stays
+// far below this bound; a longer promise list answers EINVAL because the
+// trailing terminator never lands inside the buffer.
+#define POSIX_PLEDGE_PROMISE_MAX 96u
+
+/* reserved doubles as a presence map: an absent promise string means
+   "leave that half unchanged" while an empty one is a real empty set, and
+   only the flags can tell them apart over a copied buffer. */
+#define POSIX_PLEDGE_HAS_PROMISES 1u
+#define POSIX_PLEDGE_HAS_EXEC_PROMISES 2u
+#define POSIX_UNVEIL_LOCK 1u
+
+struct posix_pledge_request {
+    char promises[POSIX_PLEDGE_PROMISE_MAX];
+    char execpromises[POSIX_PLEDGE_PROMISE_MAX];
+    u32 flags;
+};
+
+struct posix_unveil_request {
+    char path[VFS_PATH_MAX];
+    char permissions[8];
+    u32 flags;
 };
 
 struct posix_fd_request {

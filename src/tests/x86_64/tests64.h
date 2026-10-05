@@ -34,6 +34,7 @@ int test_posix_vfs64(struct task *owner, struct task *child);
 int test_posix_process64(void);
 int test_posix_time64(void);
 int test_posix_signal64(void);
+int test_posix_pledge64(void);
 int test_block64(void);
 int test_cache64(void);
 int test_entropy64(void);

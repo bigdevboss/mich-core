@@ -1,4 +1,5 @@
 #include "posix_profile.h"
+#include "posix_pledge.h"
 #include "task.h"
 #include "object.h"
 #include "spinlock.h"
@@ -401,6 +402,8 @@ int posix_profile_parent(struct task *task, const char *path,
 }
 
 int posix_profile_chdir(struct task *task, const char *path) {
+    int veiled = posix_pledge_veil_check(task, path, POSIX_VEIL_READ, 0);
+    if (veiled) return veiled;
     struct kernel_object *node = 0;
     char normalized[VFS_PATH_MAX];
     int result = resolve_path(task, path, &node, normalized);

@@ -133,6 +133,27 @@ struct kernel_object *vfs_node_pages(struct kernel_object *node,
                                       u32 *size);
 struct kernel_object *vfs_file_pages(struct kernel_object *file,
                                       u32 *size);
+/* Identity of a live node for the POSIX unveil veil: the stable
+   (slot, generation) pair, the parent link, and the leaf name. A slot is
+   reused only with a new generation, so a remembered pair never names a
+   different node. parent is VFS_NODE_MAX for namespace roots; a mount
+   root climbs to its mountpoint through vfs_node_parent so veil walks do
+   not stop at a filesystem boundary. */
+struct vfs_node_identity {
+    u32 slot;
+    u32 generation;
+    u32 parent;
+    u32 parent_generation;
+    u32 type;
+    char name[VFS_NAME_MAX + 1];
+};
+
+int vfs_node_identity(struct kernel_object *object,
+                      struct vfs_node_identity *identity);
+/* The retained parent of a node: the containing directory, the
+   mountpoint for a mount root, or 0 at the global root. */
+struct kernel_object *vfs_node_parent(struct kernel_object *object);
+
 u32 vfs_node_active_count(void);
 u32 vfs_file_active_count(void);
 u32 vfs_mount_active_count(void);

@@ -54,6 +54,9 @@ int tests64_run(const struct test64_env *env) {
     if (test_report_record(TEST_ID_POSIX_SIGNAL, test_posix_signal64()))
         return -1;
     serial64_write("Mich test64: POSIX signal delivery pass\n");
+    if (test_report_record(TEST_ID_POSIX_PLEDGE, test_posix_pledge64()))
+        return -1;
+    serial64_write("Mich test64: POSIX pledge and unveil pass\n");
     if (test_report_record(TEST_ID_BLOCK, test_block64())) return -1;
     serial64_write("Mich test64: block device objects pass\n");
     serial64_write("Mich test64: ramdisk read and write pass\n");

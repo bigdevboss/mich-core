@@ -1001,6 +1001,38 @@ static struct kernel_object *resolve_path(struct kernel_object *start,
     return current;
 }
 
+int vfs_node_identity(struct kernel_object *object,
+                      struct vfs_node_identity *identity) {
+    struct vfs_node_state *node = node_for(object);
+    if (!node || !identity) return -1;
+    identity->slot = node_index(node);
+    identity->generation = node->generation;
+    identity->parent = node->parent;
+    identity->parent_generation = 0;
+    if (node->parent != VFS_NODE_MAX && nodes[node->parent].active)
+        identity->parent_generation = nodes[node->parent].generation;
+    identity->type = node->type;
+    for (u32 index = 0; index <= VFS_NAME_MAX; index++)
+        identity->name[index] = node->name[index];
+    return 0;
+}
+
+struct kernel_object *vfs_node_parent(struct kernel_object *object) {
+    struct vfs_node_state *node = node_for(object);
+    if (!node) return 0;
+    if (node->parent != VFS_NODE_MAX) {
+        struct vfs_node_state *parent = &nodes[node->parent];
+        if (parent->active && parent->self &&
+            !object_retain(parent->self))
+            return parent->self;
+        return 0;
+    }
+    struct vfs_mount_state *mount = mount_for_root(object);
+    if (mount && !object_retain(mount->mountpoint))
+        return mount->mountpoint;
+    return 0;
+}
+
 struct kernel_object *vfs_resolve(struct kernel_object *start,
                                   const char *path) {
     return resolve_path(start, path, 0);

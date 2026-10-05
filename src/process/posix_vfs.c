@@ -1,5 +1,6 @@
 #include "posix_vfs.h"
 #include "posix_profile.h"
+#include "posix_pledge.h"
 #include "posix_fd.h"
 #include "task.h"
 #include "object.h"
@@ -95,6 +96,15 @@ int posix_vfs_open(struct task *task, const char *path, u32 flags, u32 mode) {
     int result = access_from_flags(flags, &access, &status, &descriptor_flags);
     if (result || (mode & ~VFS_MODE_MASK))
         return result ? result : POSIX_VFS_EINVAL;
+    {
+        u32 leaf = 0;
+        if (access & POSIX_FD_ACCESS_READ) leaf |= POSIX_VEIL_READ;
+        if (access & POSIX_FD_ACCESS_WRITE) leaf |= POSIX_VEIL_WRITE;
+        int veiled = posix_pledge_veil_check(
+            task, path, leaf,
+            (flags & POSIX_OPEN_CREAT) ? POSIX_VEIL_CREATE : 0);
+        if (veiled) return veiled;
+    }
     int mutating = (access & POSIX_FD_ACCESS_WRITE) ||
         (flags & (POSIX_OPEN_CREAT | POSIX_OPEN_TRUNC));
     if (mutating && profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
@@ -149,6 +159,8 @@ int posix_vfs_open(struct task *task, const char *path, u32 flags, u32 mode) {
 int posix_vfs_stat_path(struct task *task, const char *path,
                         struct vfs_node_info *info) {
     if (!info) return POSIX_VFS_EINVAL;
+    int veiled = posix_pledge_veil_check(task, path, POSIX_VEIL_READ, 0);
+    if (veiled) return veiled;
     struct kernel_object *node = 0;
     int result = posix_profile_resolve(task, path, &node);
     if (!result) result = node_info(node, info);
@@ -159,6 +171,9 @@ int posix_vfs_stat_path(struct task *task, const char *path,
 int posix_vfs_mkdir(struct task *task, const char *path, u32 mode) {
     if (mode & ~VFS_MODE_MASK) return POSIX_VFS_EINVAL;
     if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
+    int veiled = posix_pledge_veil_check(task, path, POSIX_VEIL_CREATE,
+                                         POSIX_VEIL_CREATE);
+    if (veiled) return veiled;
     struct kernel_object *parent = 0;
     char name[VFS_NAME_MAX + 1];
     int result = posix_profile_parent(task, path, &parent, name);
@@ -188,6 +203,8 @@ int posix_vfs_mkdir(struct task *task, const char *path, u32 mode) {
 
 static int remove_path(struct task *task, const char *path, u32 directory) {
     if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
+    int veiled = posix_pledge_veil_check(task, path, POSIX_VEIL_CREATE, 0);
+    if (veiled) return veiled;
     struct kernel_object *parent = 0;
     char name[VFS_NAME_MAX + 1];
     int result = posix_profile_parent(task, path, &parent, name);
@@ -222,6 +239,11 @@ int posix_vfs_rmdir(struct task *task, const char *path) {
 int posix_vfs_link(struct task *task, const char *old_path,
                    const char *new_path) {
     if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
+    int veiled = posix_pledge_veil_check(task, old_path, POSIX_VEIL_READ, 0);
+    if (veiled) return veiled;
+    veiled = posix_pledge_veil_check(task, new_path, POSIX_VEIL_CREATE,
+                                     POSIX_VEIL_CREATE);
+    if (veiled) return veiled;
     struct kernel_object *node = 0;
     int result = posix_profile_resolve(task, old_path, &node);
     struct vfs_node_info info;
@@ -261,6 +283,11 @@ int posix_vfs_link(struct task *task, const char *old_path,
 int posix_vfs_rename(struct task *task, const char *old_path,
                      const char *new_path) {
     if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
+    int veiled = posix_pledge_veil_check(task, old_path, POSIX_VEIL_CREATE, 0);
+    if (veiled) return veiled;
+    veiled = posix_pledge_veil_check(task, new_path, POSIX_VEIL_CREATE,
+                                     POSIX_VEIL_CREATE);
+    if (veiled) return veiled;
     struct kernel_object *node = 0;
     int result = posix_profile_resolve(task, old_path, &node);
     struct vfs_node_info info;
@@ -328,6 +355,9 @@ int posix_vfs_rename(struct task *task, const char *old_path,
 int posix_vfs_symlink(struct task *task, const char *target,
                       const char *path) {
     if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
+    int veiled = posix_pledge_veil_check(task, path, POSIX_VEIL_CREATE,
+                                         POSIX_VEIL_CREATE);
+    if (veiled) return veiled;
     // The target is bounded by the path bound, the same rule the node
     // applies when it stores the string inline.
     if (!target || !target[0]) return POSIX_VFS_EINVAL;
@@ -354,6 +384,8 @@ int posix_vfs_symlink(struct task *task, const char *target,
 int posix_vfs_readlink(struct task *task, const char *path, char *buffer,
                        u32 size, u32 *length) {
     if (!buffer || !size || !length) return POSIX_VFS_EINVAL;
+    int veiled = posix_pledge_veil_check(task, path, POSIX_VEIL_READ, 0);
+    if (veiled) return veiled;
     // readlink never follows the final name: the link itself is the
     // answer, so the parent walk plus a plain lookup is the whole story.
     struct kernel_object *parent = 0;
@@ -375,6 +407,8 @@ int posix_vfs_readlink(struct task *task, const char *path, char *buffer,
 int posix_vfs_lstat_path(struct task *task, const char *path,
                          struct vfs_node_info *info) {
     if (!info) return POSIX_VFS_EINVAL;
+    int veiled = posix_pledge_veil_check(task, path, POSIX_VEIL_READ, 0);
+    if (veiled) return veiled;
     // lstat is the no-follow twin of stat: the final name must resolve to
     // the node itself, symlink or not.
     struct kernel_object *parent = 0;
@@ -401,6 +435,8 @@ int posix_vfs_lstat_path(struct task *task, const char *path,
 int posix_vfs_truncate_path(struct task *task, const char *path, u32 size) {
     if (size > VFS_FILE_SIZE_MAX) return POSIX_VFS_EFBIG;
     if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
+    int veiled = posix_pledge_veil_check(task, path, POSIX_VEIL_WRITE, 0);
+    if (veiled) return veiled;
     struct kernel_object *node = 0;
     int result = posix_profile_resolve(task, path, &node);
     struct vfs_node_info info;
@@ -418,6 +454,8 @@ int posix_vfs_truncate_path(struct task *task, const char *path, u32 size) {
 int posix_vfs_chmod(struct task *task, const char *path, u32 mode) {
     if (mode & ~VFS_MODE_MASK) return POSIX_VFS_EINVAL;
     if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
+    int veiled = posix_pledge_veil_check(task, path, POSIX_VEIL_WRITE, 0);
+    if (veiled) return veiled;
     struct kernel_object *node = 0;
     int result = posix_profile_resolve(task, path, &node);
     struct vfs_node_info info;
@@ -433,6 +471,8 @@ int posix_vfs_chmod(struct task *task, const char *path, u32 mode) {
 int posix_vfs_access(struct task *task, const char *path, u32 mode) {
     if (mode & ~(POSIX_ACCESS_R_OK | POSIX_ACCESS_W_OK | POSIX_ACCESS_X_OK))
         return POSIX_VFS_EINVAL;
+    int veiled = posix_pledge_veil_check(task, path, POSIX_VEIL_READ, 0);
+    if (veiled) return veiled;
     struct kernel_object *node = 0;
     int result = posix_profile_resolve(task, path, &node);
     struct vfs_node_info info;
@@ -523,6 +563,8 @@ int posix_vfs_utimensat(struct task *task, const char *path, i64 atime_sec,
                                            &mtime_nsec_out, &permission);
     if (result) return result;
     if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
+    int veiled = posix_pledge_veil_check(task, path, POSIX_VEIL_WRITE, 0);
+    if (veiled) return veiled;
     struct kernel_object *node = 0;
     result = posix_profile_resolve(task, path, &node);
     struct vfs_node_info info;
@@ -545,6 +587,8 @@ int posix_vfs_utimensat(struct task *task, const char *path, i64 atime_sec,
 
 int posix_vfs_chown(struct task *task, const char *path, i32 uid, i32 gid) {
     if (profile_mutation_allowed(task)) return POSIX_VFS_EACCES;
+    int veiled = posix_pledge_veil_check(task, path, POSIX_VEIL_WRITE, 0);
+    if (veiled) return veiled;
     struct kernel_object *node = 0;
     int result = posix_profile_resolve(task, path, &node);
     struct vfs_node_info info;
