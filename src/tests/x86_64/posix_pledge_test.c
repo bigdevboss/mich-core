@@ -245,5 +245,9 @@ int test_posix_pledge64(void) {
     task_free_slot(third);
     task_free_slot(probe);
     object_release(box);
+    // The outside file is scratch like the box: the root listing the
+    // demo checks later must come back to boot and dev only.
+    valid = valid && !vfs_unlink(root, "pledge-out.txt");
+    object_release(root);
     return valid ? 0 : -1;
 }
