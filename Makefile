@@ -67,6 +67,7 @@ DISK64_UNIT = $(BIN64)/disk-unit.img
 DISK64_HARDWARE = $(BIN64)/disk-hardware.img
 DISK64_DNS = $(BIN64)/disk-dns.img
 DISK64_NETBENCH = $(BIN64)/disk-netbench.img
+DISK64_TCPWIRE = $(BIN64)/disk-tcpwire.img
 DISK64_VIRTIO_BLK = $(BIN64)/disk-virtio-blk.img
 DISK64_NVME = $(BIN64)/disk-nvme.img
 DISK64_HARDWARE_RESTART = $(BIN64)/disk-hardware-restart.img
@@ -93,6 +94,7 @@ VIRTIO_NET_SAFE64_OBJ = $(USER64_OBJ_DIR)/virtio_net_safe.o
 VIRTIO_NET64_PROBES_OBJ = $(USER64_OBJ_DIR)/virtio_net_probes.o
 DNSPROBE64_OBJ = $(USER64_OBJ_DIR)/dnsprobe.o
 NETBENCH64_OBJ = $(USER64_OBJ_DIR)/netbench.o
+TCPWIRE64_OBJ = $(USER64_OBJ_DIR)/tcpwire.o
 DNS64_OBJ = $(USER64_OBJ_DIR)/dns.o
 DNS_MESSAGE64_OBJ = $(USER64_OBJ_DIR)/dns_message.o
 VIRTIO_BLK64_ELF = $(USER64_DIR)/virtio-blk.elf
@@ -100,6 +102,7 @@ NVME64_ELF = $(USER64_DIR)/nvme.elf
 VIRTIO_NET64_ELF = $(USER64_DIR)/virtio-net.elf
 DNSPROBE64_ELF = $(USER64_DIR)/dnsprobe.elf
 NETBENCH64_ELF = $(USER64_DIR)/netbench.elf
+TCPWIRE64_ELF = $(USER64_DIR)/tcpwire.elf
 GEN64_DIR = $(BIN64)/generated
 VIRTIO_NET_RECOVERY_RIP_H = $(GEN64_DIR)/virtio_net_recovery_rip.h
 VIRTIO_NET_SAFE64_ELF = $(USER64_DIR)/virtio-net-safe.elf
@@ -606,6 +609,15 @@ $(NETBENCH64_OBJ): src/user64/netbench/main.c src/user64/include/mich/syscall.h 
 $(NETBENCH64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(NETBENCH64_OBJ) src/user64/linker.ld | $(USER64_DIR)
 	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(NETBENCH64_OBJ)
 
+$(TCPWIRE64_OBJ): src/user64/tcpwire/main.c src/user64/include/sys/types.h src/user64/include/sys/socket.h src/user64/include/netinet/in.h src/user64/include/time.h src/user64/include/mich/syscall.h | $(USER64_OBJ_DIR)
+	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
+
+# The posix wrappers ride along, so the capsule reaches the wire through the
+# same request ABI the posixdemo uses; the module flag admits it to the posix
+# profile, which is what the socket gate checks.
+$(TCPWIRE64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(USER64_OBJ_DIR)/sigreturn.o $(USER64_OBJ_DIR)/posix.o $(USER64_OBJ_DIR)/process.o $(TCPWIRE64_OBJ) src/user64/linker.ld | $(USER64_DIR)
+	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(USER64_OBJ_DIR)/sigreturn.o $(USER64_OBJ_DIR)/posix.o $(USER64_OBJ_DIR)/process.o $(TCPWIRE64_OBJ)
+
 
 
 $(VIRTIO_BLK64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_LIB64_OBJ) $(VIRTIO_BLK64_OBJ) src/user64/linker.ld | $(USER64_DIR)
@@ -686,6 +698,12 @@ $(DISK64_DNS): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_E
 $(DISK64_NETBENCH): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF) $(NETBENCH64_ELF)
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
 		--efi $(UEFI64_EFI) $@ init64:0x410000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) netbench:0=$(NETBENCH64_ELF)
+# POSIX stream demo over the real NIC: the same capsule pair as the dns image,
+# with the probe module carrying the posix profile flag so its socket calls
+# pass the admission gate. The smoke runner bridges the host echo to 10.0.2.4.
+$(DISK64_TCPWIRE): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(VIRTIO_NET64_ELF) $(TCPWIRE64_ELF)
+	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
+		--efi $(UEFI64_EFI) $@ init64:0x410000C9=$(INIT64_ELF) virtio-net:0=$(VIRTIO_NET64_ELF) tcpwire:0x02000000=$(TCPWIRE64_ELF)
 
 
 
@@ -737,6 +755,9 @@ test64-dns: $(DISK64_DNS)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_DNS) 256M dns
 test64-netbench: $(DISK64_NETBENCH)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_NETBENCH) 256M netbench
+
+test64-tcpwire: $(DISK64_TCPWIRE)
+	sh ./scripts/qemu-smoke64.sh $(DISK64_TCPWIRE) 256M tcpwire
 test64-virtio-blk: $(DISK64_VIRTIO_BLK)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_VIRTIO_BLK) 256M virtio-blk
 test64-nvme: $(DISK64_NVME)

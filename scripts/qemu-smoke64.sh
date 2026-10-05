@@ -10,6 +10,7 @@ if [ "$profile" = "smp" ] || [ "$profile" = "iommu" ]; then qemu_timeout=130; fi
 if [ "$profile" = "msi" ]; then qemu_timeout=300; fi
 if [ "$profile" = "dns" ]; then qemu_timeout=150; fi
 if [ "$profile" = "netbench" ]; then qemu_timeout=300; fi
+if [ "$profile" = "tcpwire" ]; then qemu_timeout=300; fi
 if [ "$profile" = "virtio-blk" ]; then qemu_timeout=120; fi
 if [ "$profile" = "nvme" ]; then qemu_timeout=300; fi
 if [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ] ||
@@ -53,6 +54,12 @@ case "$profile" in
         want_nic_none=0
         dns_guestfwd="$(mktemp)"
         set -- -netdev user,id=michnet,guestfwd=tcp:10.0.2.4:53-cmd:$dns_guestfwd -device virtio-net-pci,netdev=michnet
+        ;;
+    tcpwire)
+        want_nic_none=0
+        # The host side of the demo is plain cat, so the guest exchange is a
+        # byte-exact echo; no helper script or host socket is involved.
+        set -- -netdev user,id=michnet,guestfwd=tcp:10.0.2.4:8080-cmd:/bin/cat -device virtio-net-pci,netdev=michnet
         ;;
     netbench)
         want_nic_none=0
@@ -430,9 +437,6 @@ for marker in \
     "Mich test64: device removal pass" \
     "Mich test64: driver supervisor pass" \
     "Mich test64: driver crash teardown pass" \
-    "Mich test64: driver live primary bootstrap pass" \
-    "Mich test64: driver live fallback bootstrap pass" \
-    "Mich test64: driver live recovery isolation pass" \
     "Mich test64: driver crash passport pass" \
     "Mich test64: driver crash circuit breaker pass" \
     "Mich test64: driver crash policy pass" \
@@ -748,7 +752,7 @@ fi
 # markers can never appear there. Asking for them made those profiles fail on
 # something the image was never built to do.
 case "$profile" in
-    hardware|msi|msi-restart|msi-circuit|msi-recovery|dns|netbench|virtio-blk|nvme)
+    hardware|msi|msi-restart|msi-circuit|msi-recovery|dns|netbench|tcpwire|virtio-blk|nvme)
         ;;
     *)
         for marker in \
@@ -781,12 +785,13 @@ case "$profile" in
         done
         ;;
 esac
-# The netbench profile skips the driver-live-recovery lab, so none of its
-# bootstrap markers exist there; every other profile runs the lab and must show
-# the full crash-restart-fallback sequence in order. The virtio-blk profile boots
-# the production kernel, which has no recovery lab, so it is excluded too.
+# The netbench and tcpwire profiles skip the driver-live-recovery lab, so none
+# of its bootstrap markers exist there; every other profile runs the lab and
+# must show the full crash-restart-fallback sequence in order. The virtio-blk
+# profile boots the production kernel, which has no recovery lab, so it is
+# excluded too.
 if [ "$profile" != "netbench" ] && [ "$profile" != "virtio-blk" ] &&
-   [ "$profile" != "nvme" ]; then
+   [ "$profile" != "nvme" ] && [ "$profile" != "tcpwire" ]; then
 live_primary="Mich test64: driver live primary bootstrap pass"
     live_fallback="Mich test64: driver live fallback bootstrap pass"
     live_isolation="Mich test64: driver live recovery isolation pass"
@@ -847,6 +852,16 @@ if [ "$profile" = "dns" ]; then
         "Mich dnsprobe: cached answer pass" \
         "Mich dnsprobe: refused name rejected pass" \
         "Mich dnsprobe: transport pass"
+    do
+        require_marker "$marker"
+    done
+fi
+if [ "$profile" = "tcpwire" ]; then
+    for marker in \
+        "Mich tcpwire: stream connected" \
+        "Mich tcpwire: echo round trip pass" \
+        "Mich tcpwire: peer name pass" \
+        "Mich tcpwire: POSIX TCP wire pass"
     do
         require_marker "$marker"
     done

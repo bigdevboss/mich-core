@@ -2181,10 +2181,13 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     // deadline and rebind-gap that both assume the capsule is the only userspace
     // task; netbench is loopback-only (never blocks off the run queue like dnsprobe
     // does), so its second runnable task perturbs that cadence into a spurious
-    // recovery panic and skews the counts. Skip the lab for such boots.
+    // recovery panic and skews the counts. The tcp wire demo holds one stream
+    // connection across its whole exchange, which the lab's capsule restarts would
+    // tear down mid-flight, so its boot skips the lab too.
     int bench_boot = 0;
     for (u32 index = 0; index < info->mods_count; index++)
-        if (module_name_is(&modules[index], "netbench")) {
+        if (module_name_is(&modules[index], "netbench") ||
+            module_name_is(&modules[index], "tcpwire")) {
             bench_boot = 1;
             break;
         }
@@ -2196,11 +2199,13 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     if (manager64_set_pci_inventory())
         KERNEL_PANIC("driver PCI inventory");
 #ifdef MICH_TEST_BUILD
-    // The dns probe is an ordinary process, not a driver capsule: it owns no
-    // interface and reaches the network purely through routed sockets.
+    // The dns probe and the tcp wire demo are ordinary processes, not
+    // driver capsules: they own no interface and reach the network purely
+    // through routed sockets.
     for (u32 index = 0; index < info->mods_count; index++) {
         if (!module_name_is(&modules[index], "dnsprobe") &&
-            !module_name_is(&modules[index], "netbench")) continue;
+            !module_name_is(&modules[index], "netbench") &&
+            !module_name_is(&modules[index], "tcpwire")) continue;
         if (spawn64_image(index, 0, spawn_image_capabilities[index],
                           "probe", 0) < 0)
             KERNEL_PANIC("probe spawn");
