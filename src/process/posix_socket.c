@@ -551,6 +551,12 @@ i64 posix_socket_connect(struct task *task, int descriptor,
     }
     if (readiness & (SOCKET_READY_ERROR | SOCKET_READY_HANGUP))
         return stream_take_error(socket);
+    // The peer name is recorded at initiation rather than at the wake, so
+    // a parked connect answers getpeername the moment it connects; the
+    // connected flag stays the gate, so a failed or interrupted attempt
+    // never exposes the name.
+    if (posix_fd_socket_update(task, descriptor, flags, 0, address))
+        return POSIX_VFS_EIO;
     return socket_park(task, socket, descriptor,
                        POSIX_SOCKET_WAIT_CONNECT, POSIX_SOCKET_FLAVOR_IO,
                        request, 0, 0, 0, 0);
