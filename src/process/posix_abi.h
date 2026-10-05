@@ -58,6 +58,7 @@
 #define POSIX_SYSCALL_SIGPENDING 242u
 #define POSIX_SYSCALL_PLEDGE 243u
 #define POSIX_SYSCALL_UNVEIL 244u
+#define POSIX_SYSCALL_PIPE 245u
 
 // The bounded signal set the profile carries. The numbers are the POSIX
 // ones; everything outside this list is rejected as EINVAL rather than
@@ -197,6 +198,13 @@ struct posix_unveil_request {
     char path[VFS_PATH_MAX];
     char permissions[8];
     u32 flags;
+};
+
+/* The kernel answers the two descriptors in place: zero on success with
+   descriptors[0] the read end and descriptors[1] the write end. */
+struct posix_pipe_request {
+    i32 descriptors[2];
+    u32 reserved;
 };
 
 struct posix_fd_request {

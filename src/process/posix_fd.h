@@ -21,6 +21,9 @@ struct vfs_node_info;
 void posix_fd_init(void);
 int posix_fd_install_vfs(struct task *task, struct kernel_object *file,
                          u32 access, u32 status, u32 descriptor_flags);
+int posix_fd_install_pipe(struct task *task, u32 pipe, u32 end, u32 access);
+int posix_fd_pipe_of(struct task *task, int descriptor, u32 *pipe,
+                     u32 *end);
 int posix_fd_validate(struct task *task, int descriptor, u32 access);
 int posix_fd_close(struct task *task, int descriptor);
 int posix_fd_dup(struct task *task, int descriptor);

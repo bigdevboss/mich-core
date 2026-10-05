@@ -89,6 +89,7 @@
 #define TEST_ID_ADYTUMFS_COW 107
 #define TEST_ID_ADYTUMFS_CRASH 108
 #define TEST_ID_POSIX_PLEDGE 109
+#define TEST_ID_POSIX_PIPE 110
 
 struct test_result64 {
     u32 id;

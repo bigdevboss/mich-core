@@ -37,6 +37,8 @@
 #define POSIX_VFS_EMLINK (-31)
 #define POSIX_VFS_EROFS (-30)
 #define POSIX_VFS_ERANGE (-34)
+#define POSIX_VFS_EPIPE (-32)
+#define POSIX_VFS_EDEADLK (-35)
 #define POSIX_VFS_ENOTEMPTY (-39)
 #define POSIX_VFS_ELOOP (-40)
 

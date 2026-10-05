@@ -771,6 +771,10 @@ case "$profile" in
             "Mich x86_64: POSIX application times pass" \
             "Mich x86_64: POSIX libc realpath pass" \
             "Mich x86_64: POSIX clocks pass" \
+            "Mich x86_64: POSIX signals pass" \
+            "Mich x86_64: POSIX application process pass" \
+            "Mich x86_64: POSIX pledge and unveil pass" \
+            "Mich x86_64: POSIX pipes pass" \
             "Mich x86_64: POSIX static application pass"
         do
             require_marker "$marker"

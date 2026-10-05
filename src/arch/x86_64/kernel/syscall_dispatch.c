@@ -76,6 +76,7 @@
 #include "posix_time.h"
 #include "posix_signal.h"
 #include "posix_pledge.h"
+#include "posix_pipe.h"
 #include "entropy.h"
 #include "kernel64_internal.h"
 
@@ -2195,6 +2196,31 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                 POSIX_FD_ACCESS_WRITE;
             int error = posix_fd_error(task, request.descriptor, access);
             if (error) return (u64)(i64)error;
+            u32 pipe_index = 0;
+            u32 pipe_end = 0;
+            if (posix_fd_pipe_of(task, request.descriptor, &pipe_index,
+                                 &pipe_end)) {
+                /* A pipe end never touches the vfs, so the profile's
+                   path authority does not apply; the stdio promise is
+                   what polices it. */
+                int piped = posix_pipe_io(task, pipe_index, pipe_end, arg0,
+                                          request.length);
+                /* EPIPE carries the SIGPIPE the caller owes: a caught or
+                   ignored signal leaves the write to answer through
+                   errno, the default disposition takes the exit path,
+                   which is also where a parked writer woken by the
+                   closing read end lands. */
+                if (piped == POSIX_VFS_EPIPE) {
+                    int posted = posix_signal_kill(task, task->id,
+                                                   POSIX_SIG_PIPE);
+                    if (posted == 1) {
+                        task->exit_signal = POSIX_SIG_PIPE;
+                        return exit64_dispatch(
+                            (u64)(128 + POSIX_SIG_PIPE));
+                    }
+                }
+                return (u64)(i64)piped;
+            }
             if (number == POSIX_SYSCALL_WRITE &&
                 !posix_profile_vfs_authorized(task))
                 return (u64)(i64)POSIX_VFS_EACCES;
@@ -2832,6 +2858,40 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             return (u64)(i64)POSIX_PLEDGE_EINVAL;
         return (u64)(i64)posix_pledge_unveil(task, request.path,
                                              request.permissions);
+    }
+    if (number == POSIX_SYSCALL_PIPE) {
+        struct task *task = &task_pool[current_task_slot];
+        if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
+        int gate = posix_pledge_gate(task, (u32)number);
+        if (gate) return pledge_violation(task, gate);
+        struct posix_pipe_request request;
+        if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+            vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)) ||
+            request.reserved)
+            return (u64)(i64)POSIX_VFS_EINVAL;
+        int pipe = posix_pipe_create();
+        if (pipe < 0) return (u64)(i64)pipe;
+        int read_end = posix_fd_install_pipe(task, (u32)pipe,
+                                             POSIX_PIPE_END_READ,
+                                             POSIX_FD_ACCESS_READ);
+        int write_end = read_end < 0 ? -1 :
+            posix_fd_install_pipe(task, (u32)pipe, POSIX_PIPE_END_WRITE,
+                                  POSIX_FD_ACCESS_WRITE);
+        if (read_end < 0 || write_end < 0) {
+            /* The end that made it in closes again; with both end counts
+               back at zero the pipe returns to the pool. */
+            if (read_end >= 0) posix_fd_close(task, read_end);
+            if (write_end >= 0) posix_fd_close(task, write_end);
+            return (u64)(i64)(read_end < 0 ?
+                (read_end == POSIX_FD_TABLE_FULL ? POSIX_VFS_EMFILE :
+                 POSIX_VFS_ENFILE) :
+                (write_end == POSIX_FD_TABLE_FULL ? POSIX_VFS_EMFILE :
+                 POSIX_VFS_ENFILE));
+        }
+        request.descriptors[0] = read_end;
+        request.descriptors[1] = write_end;
+        return vm64_copy_to(task->page_dir, arg0, &request,
+                            sizeof(request)) ? (u64)(i64)POSIX_VFS_EIO : 0;
     }
     if (number == 4) {
         serial64_write("Mich x86_64: syscall/sysret pass\n");

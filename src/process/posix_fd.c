@@ -4,6 +4,7 @@
 #include "vfs.h"
 #include "posix_vfs.h"
 #include "posix_profile.h"
+#include "posix_pipe.h"
 #include "posix_abi.h"
 #include "spinlock.h"
 
@@ -15,6 +16,8 @@ struct posix_ofd {
     u32 status;
     u32 offset;
     u32 active;
+    u32 pipe;
+    u32 pipe_end;
 };
 
 struct posix_fd_entry {
@@ -57,12 +60,18 @@ static int ofd_retain_locked(struct posix_ofd *ofd) {
         ofd->references == 0xFFFFFFFFu)
         return -1;
     ofd->references++;
+    // The end counts mirror the end ofd references one for one, so dup
+    // and fork keep the pipe's reader and writer tallies current.
+    if (ofd->pipe) posix_pipe_retain(ofd->pipe - 1u, ofd->pipe_end);
     return 0;
 }
 
 static struct kernel_object *ofd_release_locked(struct posix_ofd *ofd) {
     if (!ofd || !ofd->active || !ofd->references) return 0;
     ofd->references--;
+    // Every dropped descriptor reference gives up one pipe end hold; the
+    // pipe itself fires the EOF and EPIPE wakes when its count zeroes.
+    if (ofd->pipe) posix_pipe_release(ofd->pipe - 1u, ofd->pipe_end);
     if (ofd->references) return 0;
     struct kernel_object *file = ofd->file;
     ofd->file = 0;
@@ -70,6 +79,8 @@ static struct kernel_object *ofd_release_locked(struct posix_ofd *ofd) {
     ofd->status = 0;
     ofd->offset = 0;
     ofd->active = 0;
+    ofd->pipe = 0;
+    ofd->pipe_end = 0;
     ofd->lock.ticket = 0;
     ofd->lock.served = 0;
     return file;
@@ -173,6 +184,72 @@ int posix_fd_install_vfs(struct task *task, struct kernel_object *file,
     tables[slot][descriptor].flags = descriptor_flags;
     spin_unlock(&posix_fd_lock);
     return (int)descriptor;
+}
+
+/* A pipe end descriptor carries no kernel object: the ofd's pipe tag
+   routes reads and writes to the pipe pool instead of the vfs. The end
+   counts start at one for the installed descriptor. */
+int posix_fd_install_pipe(struct task *task, u32 pipe, u32 end, u32 access) {
+    int slot = live_task_slot(task);
+    if (slot < 0 || pipe >= POSIX_PIPE_MAX ||
+        (end != POSIX_PIPE_END_READ && end != POSIX_PIPE_END_WRITE) ||
+        (end == POSIX_PIPE_END_READ ?
+            access != POSIX_FD_ACCESS_READ : access != POSIX_FD_ACCESS_WRITE))
+        return -1;
+    spin_lock(&posix_fd_lock);
+    u32 descriptor = POSIX_FD_MAX;
+    u32 index = POSIX_OFD_MAX;
+    for (u32 current = 0; current < POSIX_FD_MAX; current++)
+        if (!tables[slot][current].ofd) {
+            descriptor = current;
+            break;
+        }
+    for (u32 current = 0; current < POSIX_OFD_MAX; current++)
+        if (!ofds[current].active) {
+            index = current;
+            break;
+        }
+    if (descriptor == POSIX_FD_MAX || index == POSIX_OFD_MAX) {
+        int result = descriptor == POSIX_FD_MAX ? POSIX_FD_TABLE_FULL :
+            POSIX_FD_OFD_FULL;
+        spin_unlock(&posix_fd_lock);
+        return result;
+    }
+    struct posix_ofd *ofd = &ofds[index];
+    ofd->file = 0;
+    ofd->lock.ticket = 0;
+    ofd->lock.served = 0;
+    ofd->references = 1;
+    ofd->access = access;
+    ofd->status = 0;
+    ofd->offset = 0;
+    ofd->active = 1;
+    ofd->pipe = pipe + 1u;
+    ofd->pipe_end = end;
+    tables[slot][descriptor].ofd = ofd;
+    tables[slot][descriptor].flags = 0;
+    posix_pipe_retain(pipe, end);
+    spin_unlock(&posix_fd_lock);
+    return (int)descriptor;
+}
+
+/* The read and write paths ask whether a descriptor is a pipe end before
+   they route it at the vfs; the descriptor rights were already checked. */
+int posix_fd_pipe_of(struct task *task, int descriptor, u32 *pipe,
+                     u32 *end) {
+    int slot = live_task_slot(task);
+    if (slot < 0 || descriptor < 0 || descriptor >= POSIX_FD_MAX || !pipe ||
+        !end)
+        return 0;
+    spin_lock(&posix_fd_lock);
+    struct posix_ofd *ofd = descriptor_for_locked((u32)slot, descriptor);
+    int found = ofd && ofd->pipe;
+    if (found) {
+        *pipe = ofd->pipe - 1u;
+        *end = ofd->pipe_end;
+    }
+    spin_unlock(&posix_fd_lock);
+    return found;
 }
 
 int posix_fd_validate(struct task *task, int descriptor, u32 access) {
@@ -559,7 +636,14 @@ int posix_fd_fork(struct task *parent, struct task *child) {
     for (u32 index = 0; index < POSIX_FD_MAX; index++) {
         struct posix_ofd *ofd = tables[parent_slot][index].ofd;
         if (!ofd) continue;
-        ofd->references++;
+        if (ofd_retain_locked(ofd)) {
+            for (u32 undo = 0; undo < index; undo++) {
+                struct posix_ofd *held = tables[parent_slot][undo].ofd;
+                if (held) ofd_release_locked(held);
+            }
+            spin_unlock(&posix_fd_lock);
+            return -1;
+        }
         tables[child_slot][index].ofd = ofd;
         tables[child_slot][index].flags = tables[parent_slot][index].flags;
     }
