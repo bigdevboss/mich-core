@@ -28,7 +28,7 @@
 #define NVME_REG_DBL 0x1000
 
 #define NVME_CC_ENABLE 1u
-/* NVMe 2.0 CC layout (QEMU 10): IOSQES bits 16-19, IOCQES bits 20-23. */
+// NVMe 2.0 CC layout (QEMU 10): IOSQES bits 16-19, IOCQES bits 20-23.
 #define NVME_CC_IOSQES (6u << 16)
 #define NVME_CC_IOCQES (4u << 20)
 #define NVME_CSTS_READY 1u

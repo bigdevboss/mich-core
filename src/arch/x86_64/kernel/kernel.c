@@ -82,10 +82,10 @@
 #include "test_report.h"
 #endif
 #ifdef MICH_TEST_BUILD
-/* Keep the fixed test boot blob available for the live fault path. The
-   marker text stays byte-for-byte what the harness expects, but the reason
-   follows it: a panic that will not say what failed costs far more time to
-   chase than the marker is worth. */
+// Keep the fixed test boot blob available for the live fault path. The
+// marker text stays byte-for-byte what the harness expects, but the reason
+// follows it: a panic that will not say what failed costs far more time to
+// chase than the marker is worth.
 #define KERNEL_PANIC(reason) \
     panic_str("kernel test failure: " reason)
 #else
@@ -945,9 +945,9 @@ static void syscall64_init(void) {
 static void context_save(struct task_context64 *context) {
     struct smp64_syscall *sc = smp64_syscall();
     context->rax = 0;
-    /* The park resumes through an iret that restores rcx and r11, so the
-       save records the values sysret would have folded: after a syscall
-       instruction rcx is the resume rip and r11 the flags. */
+    // The park resumes through an iret that restores rcx and r11, so the
+    // save records the values sysret would have folded: after a syscall
+    // instruction rcx is the resume rip and r11 the flags.
     context->rcx = sc->rip;
     context->r11 = sc->rflags;
     context->rdi = sc->rdi;
@@ -969,10 +969,10 @@ static void context_save(struct task_context64 *context) {
 
 void context_load(const struct task_context64 *context) {
     struct smp64_syscall *sc = smp64_syscall();
-    /* A context switch under a syscall must resume the task with its own
-       rax, rcx, and r11: the sysret path would replace rcx with the rip
-       and r11 with the flags. Publish them through the sigreturn slots
-       and raise the flag that reroutes the exit to the iret resume. */
+    // A context switch under a syscall must resume the task with its own
+    // rax, rcx, and r11: the sysret path would replace rcx with the rip
+    // and r11 with the flags. Publish them through the sigreturn slots
+    // and raise the flag that reroutes the exit to the iret resume.
     sc->sigreturn_rax = context->rax;
     sc->sigreturn_rcx = context->rcx;
     sc->sigreturn_r11 = context->r11;
@@ -1222,10 +1222,10 @@ int exec64(u64 path_address, u64 argument) {
     return 0;
 }
 
-/* Scratch for argv/envp staging plus the initial stack page. One static
-   record under one lock: execve is rare, every path that holds the lock is
-   bounded and non-sleeping, and no other lock is ever taken through it in
-   reverse order. */
+// Scratch for argv/envp staging plus the initial stack page. One static
+// record under one lock: execve is rare, every path that holds the lock is
+// bounded and non-sleeping, and no other lock is ever taken through it in
+// reverse order.
 static struct {
     struct spinlock lock;
     struct posix_exec_vectors vectors;
@@ -1303,9 +1303,9 @@ int posix_execve64(u64 path_address, u64 argv_address, u64 envp_address) {
         return POSIX_PROCESS_EINVAL;
     }
 
-    /* Resolution honors the caller's cwd, including the detached-cwd
-       contract; profile codes are errno-compatible negatives and pass
-       through unchanged. */
+    // Resolution honors the caller's cwd, including the detached-cwd
+    // contract; profile codes are errno-compatible negatives and pass
+    // through unchanged.
     struct kernel_object *node = 0;
     int result = posix_profile_resolve(task, path, &node);
     if (result) {
@@ -1340,9 +1340,9 @@ int posix_execve64(u64 path_address, u64 argv_address, u64 envp_address) {
     else if (info.type == VFS_NODE_DIRECTORY) result = POSIX_PROCESS_EISDIR;
     else if (!posix_mode_allows(&info, task, 0100u))
         result = POSIX_PROCESS_EACCES;
-    /* A present non-directory node without image backing is not a valid
-       static Mich image; v0 maps that to EINVAL rather than inventing an
-       exec-permission error surface. */
+    // A present non-directory node without image backing is not a valid
+    // static Mich image; v0 maps that to EINVAL rather than inventing an
+    // exec-permission error surface.
     else if (vfs_image(node, &image, &size)) result = POSIX_PROCESS_EINVAL;
     if (result) {
         object_release(node);
@@ -1385,10 +1385,10 @@ int posix_execve64(u64 path_address, u64 argv_address, u64 envp_address) {
     spin_unlock(&posix_exec_stage.lock);
     object_release(node);
 
-    /* Commit: nothing below can fail, so descriptors and the old image are
-       intact for every failure path above. POSIX keeps non-CLOEXEC
-       descriptors and the profile across execve; native handles follow the
-       exec64 policy. */
+    // Commit: nothing below can fail, so descriptors and the old image are
+    // intact for every failure path above. POSIX keeps non-CLOEXEC
+    // descriptors and the profile across execve; native handles follow the
+    // exec64 policy.
     posix_fd_close_cloexec(task);
     handle_close_all(task);
     posix_signal_exec(task);
@@ -1527,10 +1527,10 @@ static int wake_waiting_parent(u32 child_slot) {
         parent->wait_posix = 0;
         u64 status_address = parent->wait_status_address;
         parent->wait_status_address = 0;
-        /* Match the 4-byte int status contract; a wider store would
-           clobber the woken parent's frame past the status slot. A
-           signalled death packs the termsig into the low bits, which is
-           what WIFSIGNALED reads, instead of the exit byte shift. */
+        // Match the 4-byte int status contract; a wider store would
+        // clobber the woken parent's frame past the status slot. A
+        // signalled death packs the termsig into the low bits, which is
+        // what WIFSIGNALED reads, instead of the exit byte shift.
         u32 status = child->exit_signal ? (child->exit_signal & 0x7Fu) :
             (u32)((u32)code & 0xFFu) << 8;
         if (status_address)
@@ -1567,9 +1567,9 @@ void terminate64(u32 slot, int code) {
     handle_close_all(task);
     reparent_children(task->id);
     service_release_owner((u32)task->id);
-    /* An ignored SIGCHLD is the POSIX auto-reap contract: no zombie, the
-       slot frees at once, and a later waitpid answers ECHILD. The signal
-       state ride has to happen before the zombie transition wipes it. */
+    // An ignored SIGCHLD is the POSIX auto-reap contract: no zombie, the
+    // slot frees at once, and a later waitpid answers ECHILD. The signal
+    // state ride has to happen before the zombie transition wipes it.
     if (posix_signal_child_exiting(task)) {
         task_free_slot(task);
         return;
@@ -1712,9 +1712,9 @@ void exception64_dispatch(struct exception_frame64 *frame) {
     struct task_context64 *context = &task_contexts[current_task_slot];
     frame64_save_user(context, frame);
     fpu64_save(context);
-    /* The death code stays 128 + vector because the crash passport and the
-       driver recovery catalog match on it. A POSIX parent still reads a
-       real termsig: the waitpid packing looks at exit_signal first. */
+    // The death code stays 128 + vector because the crash passport and the
+    // driver recovery catalog match on it. A POSIX parent still reads a
+    // real termsig: the waitpid packing looks at exit_signal first.
     if (fault_signo) task_pool[current_task_slot].exit_signal = fault_signo;
     terminate64(current_task_slot, 128 + (int)frame->vector);
     u32 next = scheduler64_next_slot();
@@ -1774,20 +1774,20 @@ void timer64_dispatch(struct interrupt_frame64 *frame) {
         serial64_write("Mich x86_64: kernel stack failure\n");
         for (;;) __asm__ volatile("cli; hlt");
     }
-    /* Same-privilege frames carry no SS/RSP, so a save/load round trip
-       would corrupt the context. The IF protocol (no sti in ring 0,
-       MSR_FMASK clears IF on syscall entry) means this should never
-       fire; the guard keeps a future sti from turning a tick into
-       silent context corruption, mirroring the AP path above. */
+    // Same-privilege frames carry no SS/RSP, so a save/load round trip
+    // would corrupt the context. The IF protocol (no sti in ring 0,
+    // MSR_FMASK clears IF on syscall entry) means this should never
+    // fire; the guard keeps a future sti from turning a tick into
+    // silent context corruption, mirroring the AP path above.
     if ((frame->cs & 3) != 3) return;
     interrupt_save(&task_contexts[current_task_slot], frame);
     fpu64_save(&task_contexts[current_task_slot]);
     scheduler64_set_running(scheduler64_next_slot());
     fpu64_load(&task_contexts[current_task_slot]);
     interrupt_load(frame, &task_contexts[current_task_slot]);
-    /* A pending signal can now be delivered to the task the frame returns
-       to, which is the asynchronous path: a user loop with no syscalls
-       still reaches its handler within one tick. */
+    // A pending signal can now be delivered to the task the frame returns
+    // to, which is the asynchronous path: a user loop with no syscalls
+    // still reaches its handler within one tick.
     if ((frame->cs & 3) == 3 &&
         posix_profile_admitted(&task_pool[current_task_slot])) {
         struct posix_signal_regs regs;

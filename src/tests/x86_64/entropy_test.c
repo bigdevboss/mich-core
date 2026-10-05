@@ -8,8 +8,8 @@ static int bytes_equal(const u8 *left, const u8 *right, u32 length) {
 }
 
 int test_entropy64(void) {
-    /* RFC 8439 section 2.4.2 known answer for the ChaCha20 block
-       function: key 00..1f, nonce 000000090000004a00000000, counter 1. */
+    // RFC 8439 section 2.4.2 known answer for the ChaCha20 block
+    // function: key 00..1f, nonce 000000090000004a00000000, counter 1.
     u8 key[32];
     for (u32 index = 0; index < 32; index++) key[index] = (u8)index;
     u8 nonce[12] = { 0x00, 0x00, 0x00, 0x09, 0x00, 0x00,
@@ -28,7 +28,7 @@ int test_entropy64(void) {
     entropy_chacha20_block(key, 1, nonce, block);
     int valid = bytes_equal(block, expected, 64);
 
-    /* Determinism for identical inputs, divergence on counter advance. */
+    // Determinism for identical inputs, divergence on counter advance.
     u8 again[64];
     entropy_chacha20_block(key, 1, nonce, again);
     valid = valid && bytes_equal(block, again, 64);
@@ -36,7 +36,7 @@ int test_entropy64(void) {
     entropy_chacha20_block(key, 2, nonce, advanced);
     valid = valid && !bytes_equal(block, advanced, 64);
 
-    /* DRBG output: two fills differ, look alive, and guards reject. */
+    // DRBG output: two fills differ, look alive, and guards reject.
     static u8 first[ENTROPY_FILL_MAX];
     static u8 second[256];
     u32 set_bits = 0;
@@ -54,7 +54,7 @@ int test_entropy64(void) {
     valid = valid && !same_zero && !same_one &&
             set_bits >= 896 && set_bits <= 1152;
 
-    /* The maximum single request must succeed into a full-size buffer. */
+    // The maximum single request must succeed into a full-size buffer.
     static u8 large[ENTROPY_FILL_MAX];
     valid = valid && !entropy_fill(large, ENTROPY_FILL_MAX) &&
             !bytes_equal(large, first, 256);

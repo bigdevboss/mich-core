@@ -122,10 +122,10 @@ u64 syscall64_validate_return(u64 result) {
         result = task_contexts[current_task_slot].rax;
     }
     sc->rflags = (sc->rflags & 0x8D5ULL) | 0x202ULL;
-    /* The syscall exit is the primary signal delivery point: the frame is
-       known valid and the register set is in hand. A sigreturn carries the
-       interrupted registers in its own save slots, because sysret would
-       otherwise fold rcx into the rip and r11 into the flags. */
+    // The syscall exit is the primary signal delivery point: the frame is
+    // known valid and the register set is in hand. A sigreturn carries the
+    // interrupted registers in its own save slots, because sysret would
+    // otherwise fold rcx into the rip and r11 into the flags.
     if (slot < MAX_TASKS && slot == current_task_slot &&
         posix_profile_admitted(&task_pool[slot])) {
         struct posix_signal_regs regs;
@@ -138,13 +138,13 @@ u64 syscall64_validate_return(u64 result) {
             answer = sc->sigreturn_rax;
         } else {
             regs.rax = result;
-            /* A plain syscall exit folds rcx into the rip and r11 into the
-               flags - the syscall instruction already clobbered both, so
-               the frame records the fold. A context-switch resume is
-               different: the resumed task never ran a syscall, its rcx
-               and r11 come back through the sigreturn slots, and the
-               signal frame must carry those or sigreturn would clobber
-               them with the resume rip. */
+            // A plain syscall exit folds rcx into the rip and r11 into the
+            // flags - the syscall instruction already clobbered both, so
+            // the frame records the fold. A context-switch resume is
+            // different: the resumed task never ran a syscall, its rcx
+            // and r11 come back through the sigreturn slots, and the
+            // signal frame must carry those or sigreturn would clobber
+            // them with the resume rip.
             regs.rcx = sc->ctx_resume ? sc->sigreturn_rcx : sc->rip;
             regs.r11 = sc->ctx_resume ? sc->sigreturn_r11 : sc->rflags;
         }
@@ -162,9 +162,9 @@ u64 syscall64_validate_return(u64 result) {
             sc->rip = regs.rip;
             sc->rsp = regs.rsp;
             sc->rdi = regs.rdi;
-            /* A delivery on the sigreturn exit takes the plain sysret
-               path, whose rcx and r11 folds are exactly the handler
-               entry convention. */
+            // A delivery on the sigreturn exit takes the plain sysret
+            // path, whose rcx and r11 folds are exactly the handler
+            // entry convention.
             return answer;
         }
         if (delivered < 0) return exit64_dispatch(128u - (u64)delivered);
@@ -226,12 +226,12 @@ static u64 exit64_dispatch(u64 code) {
     return task_contexts[current_task_slot].rax;
 }
 
-/* The pledge gate's loud denial. A violation outside the error promise
-   kills the caller with SIGABRT: posix_signal_kill answers 1 when the
-   default disposition terminates on the spot, which records the termsig
-   for waitpid and takes the exit path directly. A task that installed a
-   handler (or blocked the signal) only gets the bit posted, so the call
-   answers the quiet ENOSYS and the delivery happens on syscall exit. */
+// The pledge gate's loud denial. A violation outside the error promise
+// kills the caller with SIGABRT: posix_signal_kill answers 1 when the
+// default disposition terminates on the spot, which records the termsig
+// for waitpid and takes the exit path directly. A task that installed a
+// handler (or blocked the signal) only gets the bit posted, so the call
+// answers the quiet ENOSYS and the delivery happens on syscall exit.
 static u64 pledge_violation(struct task *task, int gate) {
     if (gate != 1) return (u64)(i64)gate;
     int posted = posix_signal_kill(task, task->id, POSIX_SIG_ABRT);
@@ -242,9 +242,9 @@ static u64 pledge_violation(struct task *task, int gate) {
     return (u64)(i64)POSIX_PLEDGE_ENOSYS;
 }
 
-/* Page-granular grow-only program break inside the bounded heap window.
-   Linux-style contract: the current break is returned for zero, unchanged
-   on any rejection, so malloc can detect growth failure without errno. */
+// Page-granular grow-only program break inside the bounded heap window.
+// Linux-style contract: the current break is returned for zero, unchanged
+// on any rejection, so malloc can detect growth failure without errno.
 static u64 posix_brk(struct task_context64 *context, u64 new_break) {
     if (!context->user_break) context->user_break = VM64_HEAP_BASE;
     u64 current = context->user_break;
@@ -273,11 +273,11 @@ static u64 posix_brk(struct task_context64 *context, u64 new_break) {
 
 static u64 posix_waitpid_reaped(struct task *parent, u64 status_address,
                                 int pid, int code, u32 signal) {
-    /* The user contract is a 4-byte int status slot: never widen this
-       store, it would clobber the caller's frame past the slot. A
-       signalled death packs the termsig into the low bits (what
-       WIFSIGNALED/WTERMSIG read); an exit reports the code shifted up -
-       the same packing wake_waiting_parent uses for the blocked case. */
+    // The user contract is a 4-byte int status slot: never widen this
+    // store, it would clobber the caller's frame past the slot. A
+    // signalled death packs the termsig into the low bits (what
+    // WIFSIGNALED/WTERMSIG read); an exit reports the code shifted up -
+    // the same packing wake_waiting_parent uses for the blocked case.
     u32 status = signal ? (signal & 0x7Fu) : (u32)((u32)code & 0xFFu) << 8;
     if (status_address &&
         vm64_copy_to(parent->page_dir, status_address, &status, 4))
@@ -2150,11 +2150,11 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
     if (number >= POSIX_SYSCALL_OPEN && number <= POSIX_SYSCALL_SIGPENDING) {
         struct task *task = &task_pool[current_task_slot];
         if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
-        /* The promise gate sits between the profile admission and the
-           call: every policed number consults the promise set first. The
-           unpoliced core (exit, getpid, getppid) answers 0 from the
-           table itself, and open is deferred to the flags-aware gate in
-           its branch - the access mode decides what it needs. */
+        // The promise gate sits between the profile admission and the
+        // call: every policed number consults the promise set first. The
+        // unpoliced core (exit, getpid, getppid) answers 0 from the
+        // table itself, and open is deferred to the flags-aware gate in
+        // its branch - the access mode decides what it needs.
         if (number != POSIX_SYSCALL_OPEN) {
             int gate = posix_pledge_gate(task, (u32)number);
             if (gate) return pledge_violation(task, gate);
@@ -2200,16 +2200,16 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             u32 pipe_end = 0;
             if (posix_fd_pipe_of(task, request.descriptor, &pipe_index,
                                  &pipe_end)) {
-                /* A pipe end never touches the vfs, so the profile's
-                   path authority does not apply; the stdio promise is
-                   what polices it. */
+                // A pipe end never touches the vfs, so the profile's
+                // path authority does not apply; the stdio promise is
+                // what polices it.
                 int piped = posix_pipe_io(task, pipe_index, pipe_end, arg0,
                                           request.length);
-                /* EPIPE carries the SIGPIPE the caller owes: a caught or
-                   ignored signal leaves the write to answer through
-                   errno, the default disposition takes the exit path,
-                   which is also where a parked writer woken by the
-                   closing read end lands. */
+                // EPIPE carries the SIGPIPE the caller owes: a caught or
+                // ignored signal leaves the write to answer through
+                // errno, the default disposition takes the exit path,
+                // which is also where a parked writer woken by the
+                // closing read end lands.
                 if (piped == POSIX_VFS_EPIPE) {
                     int posted = posix_signal_kill(task, task->id,
                                                    POSIX_SIG_PIPE);
@@ -2388,8 +2388,8 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             if (result == 1) {
                 u32 target_slot = PID_SLOT((u32)arg0);
                 int code = 128 + (int)arg1;
-                /* Self termination cannot return through the normal path:
-                   the frame is already dying, so it takes the exit dance. */
+                // Self termination cannot return through the normal path:
+                // the frame is already dying, so it takes the exit dance.
                 if (target_slot == current_task_slot)
                     return exit64_dispatch((u64)code);
                 task_pool[target_slot].exit_signal = (u32)arg1;
@@ -2409,8 +2409,8 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                 return (u64)(i64)POSIX_SIGNAL_EINVAL;
             if (request.flags & ~(POSIX_SA_APPLY | POSIX_SA_RESTORER))
                 return (u64)(i64)POSIX_SIGNAL_EINVAL;
-            /* A handler address needs its restorer or the return trip
-               cannot work; the two ignore spellings carry none. */
+            // A handler address needs its restorer or the return trip
+            // cannot work; the two ignore spellings carry none.
             if (request.handler > POSIX_SIG_IGN && !request.restorer)
                 return (u64)(i64)POSIX_SIGNAL_EINVAL;
             int result = posix_signal_action(task, signo, &request);
@@ -2435,8 +2435,8 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         if (number == POSIX_SYSCALL_SIGRETURN) {
             struct smp64_syscall *sc = smp64_syscall();
             struct posix_signal_regs regs;
-            /* The restorer enters with its own return address consumed,
-               so the frame sits eight bytes under the stack pointer. */
+            // The restorer enters with its own return address consumed,
+            // so the frame sits eight bytes under the stack pointer.
             int result = posix_signal_restore(
                 task, task_contexts[current_task_slot].vm_space,
                 sc->rsp - 8u, &regs);
@@ -2738,8 +2738,8 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                         continue;
                     if (candidate->state == TASK_ZOMBIE) {
                         int code;
-                        /* Read the identity and the death shape before the
-                           reap frees the slot and wipes both fields. */
+                        // Read the identity and the death shape before the
+                        // reap frees the slot and wipes both fields.
                         int reaped_id = candidate->id;
                         u32 signal = candidate->exit_signal;
                         if (task_reap_zombie(parent, candidate->id, &code))
@@ -2768,8 +2768,8 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             }
             if (!child) return (u64)(i64)POSIX_PROCESS_ECHILD;
             if (options & POSIX_WAIT_NOHANG) return 0;
-            /* A blocking dispatch frame is abandoned on switch, so the wake
-               path delivers the pid and publishes the status word itself. */
+            // A blocking dispatch frame is abandoned on switch, so the wake
+            // path delivers the pid and publishes the status word itself.
             parent->wait_pid = pid;
             parent->wait_posix = 1;
             parent->wait_status_address = status_address;
@@ -2821,10 +2821,10 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             if (vm64_user_access(task->page_dir, arg0, sizeof(request), 0) ||
                 vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)))
                 return (u64)(i64)POSIX_PLEDGE_EINVAL;
-            /* The flags separate an absent half (leave it unchanged) from
-               an empty one (a real empty set); only the copied buffer can
-               carry that distinction. A promise list that fills the whole
-               buffer never terminated, so it answers EINVAL. */
+            // The flags separate an absent half (leave it unchanged) from
+            // an empty one (a real empty set); only the copied buffer can
+            // carry that distinction. A promise list that fills the whole
+            // buffer never terminated, so it answers EINVAL.
             if ((request.flags & POSIX_PLEDGE_HAS_PROMISES) &&
                 request.promises[POSIX_PLEDGE_PROMISE_MAX - 1])
                 return (u64)(i64)POSIX_PLEDGE_EINVAL;
@@ -2846,8 +2846,8 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             return (u64)(i64)POSIX_PLEDGE_EINVAL;
         if (request.flags == POSIX_UNVEIL_LOCK)
             return (u64)(i64)posix_pledge_unveil(task, 0, 0);
-        /* A path that fills the buffer never terminated; a permission
-           string must terminate inside its eight bytes the same way. */
+        // A path that fills the buffer never terminated; a permission
+        // string must terminate inside its eight bytes the same way.
         u32 perm_len = 0;
         while (perm_len < sizeof(request.permissions) &&
                request.permissions[perm_len])
@@ -2878,8 +2878,8 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             posix_fd_install_pipe(task, (u32)pipe, POSIX_PIPE_END_WRITE,
                                   POSIX_FD_ACCESS_WRITE);
         if (read_end < 0 || write_end < 0) {
-            /* The end that made it in closes again; with both end counts
-               back at zero the pipe returns to the pool. */
+            // The end that made it in closes again; with both end counts
+            // back at zero the pipe returns to the pool.
             if (read_end >= 0) posix_fd_close(task, read_end);
             if (write_end >= 0) posix_fd_close(task, write_end);
             return (u64)(i64)(read_end < 0 ?

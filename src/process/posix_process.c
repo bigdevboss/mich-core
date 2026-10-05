@@ -49,11 +49,11 @@ int posix_process_build_stack(u8 *stack_page,
         1 + (u64)vectors->argc + 1 + (u64)vectors->envc + 1;
     u64 total = pointer_words * 8 + vectors->arena_bytes;
     if (total > POSIX_STACK_PAGE) return POSIX_PROCESS_E2BIG;
-    /* Padding keeps rsp 16-byte aligned; slack lands above the strings. */
+    // Padding keeps rsp 16-byte aligned; slack lands above the strings.
     u32 rsp_offset = (u32)((POSIX_STACK_PAGE - total) & ~0xFu);
 
-    /* The scratch page is kernel memory reused across execve calls, so it
-       must not leak prior images' stack bytes into a new task. */
+    // The scratch page is kernel memory reused across execve calls, so it
+    // must not leak prior images' stack bytes into a new task.
     for (u32 index = 0; index < POSIX_STACK_PAGE; index++)
         stack_page[index] = 0;
 

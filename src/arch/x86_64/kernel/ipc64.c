@@ -30,11 +30,11 @@ static int deadlock(struct task *sender, struct task *destination) {
     return 1;
 }
 
-/* A closed send cycle can never complete. The detector returns EDEADLK,
-   and every already-parked member of the chain must be released with the
-   same answer: a scheduling order that parks the counterparty first (the
-   spawner yields to the child before its own send runs) would otherwise
-   leave that counterparty sleeping on a receiver that only ever sends. */
+// A closed send cycle can never complete. The detector returns EDEADLK,
+// and every already-parked member of the chain must be released with the
+// same answer: a scheduling order that parks the counterparty first (the
+// spawner yields to the child before its own send runs) would otherwise
+// leave that counterparty sleeping on a receiver that only ever sends.
 static void break_deadlock(struct task *chain, struct task *sender) {
     struct task *cursor = chain;
     for (int depth = 0; depth < MAX_TASKS && cursor && cursor != sender;

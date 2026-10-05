@@ -11,10 +11,10 @@
 #define VFS_ALIAS_MAX 16u
 #define VFS_FILE_MAX 32
 #define VFS_MOUNT_MAX 8
-/* Longest path component, POSIX NAME_MAX; name buffers hold one more
-   byte for the terminator. */
+// Longest path component, POSIX NAME_MAX; name buffers hold one more
+// byte for the terminator.
 #define VFS_NAME_MAX 255
-/* Ramfs regular files are page-backed, so the bound is the page resource. */
+// Ramfs regular files are page-backed, so the bound is the page resource.
 #define VFS_FILE_SIZE_MAX (RESOURCE_PAGE_PAGES_MAX * 4096u)
 #define VFS_PATH_MAX 256
 #define VFS_PATH_COMPONENT_MAX 32
@@ -23,8 +23,8 @@
 #define VFS_NODE_DIRECTORY 2
 #define VFS_NODE_SYMLINK 3
 
-/* Special nodes generate their content at read time instead of storing
-   it, so size and offset carry no meaning for them. */
+// Special nodes generate their content at read time instead of storing
+// it, so size and offset carry no meaning for them.
 #define VFS_SPECIAL_NONE 0u
 #define VFS_SPECIAL_URANDOM 1u
 
@@ -37,8 +37,8 @@
 #define VFS_MODE_MASK 0777u
 #define VFS_MODE_REGULAR_DEFAULT 0666u
 #define VFS_MODE_DIRECTORY_DEFAULT 0777u
-/* POSIX ignores the mode a symlink is created with, so it keeps the
-   permissive default rather than a second meaning of the same bits. */
+// POSIX ignores the mode a symlink is created with, so it keeps the
+// permissive default rather than a second meaning of the same bits.
 #define VFS_MODE_SYMLINK_DEFAULT 0777u
 #define VFS_MODE_REGULAR_READONLY 0444u
 #define VFS_MODE_DIRECTORY_READONLY 0555u
@@ -133,12 +133,12 @@ struct kernel_object *vfs_node_pages(struct kernel_object *node,
                                       u32 *size);
 struct kernel_object *vfs_file_pages(struct kernel_object *file,
                                       u32 *size);
-/* Identity of a live node for the POSIX unveil veil: the stable
-   (slot, generation) pair, the parent link, and the leaf name. A slot is
-   reused only with a new generation, so a remembered pair never names a
-   different node. parent is VFS_NODE_MAX for namespace roots; a mount
-   root climbs to its mountpoint through vfs_node_parent so veil walks do
-   not stop at a filesystem boundary. */
+// Identity of a live node for the POSIX unveil veil: the stable
+// (slot, generation) pair, the parent link, and the leaf name. A slot is
+// reused only with a new generation, so a remembered pair never names a
+// different node. parent is VFS_NODE_MAX for namespace roots; a mount
+// root climbs to its mountpoint through vfs_node_parent so veil walks do
+// not stop at a filesystem boundary.
 struct vfs_node_identity {
     u32 slot;
     u32 generation;
@@ -150,8 +150,8 @@ struct vfs_node_identity {
 
 int vfs_node_identity(struct kernel_object *object,
                       struct vfs_node_identity *identity);
-/* The retained parent of a node: the containing directory, the
-   mountpoint for a mount root, or 0 at the global root. */
+// The retained parent of a node: the containing directory, the
+// mountpoint for a mount root, or 0 at the global root.
 struct kernel_object *vfs_node_parent(struct kernel_object *object);
 
 u32 vfs_node_active_count(void);

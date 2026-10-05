@@ -186,9 +186,9 @@ int posix_fd_install_vfs(struct task *task, struct kernel_object *file,
     return (int)descriptor;
 }
 
-/* A pipe end descriptor carries no kernel object: the ofd's pipe tag
-   routes reads and writes to the pipe pool instead of the vfs. The end
-   counts start at one for the installed descriptor. */
+// A pipe end descriptor carries no kernel object: the ofd's pipe tag
+// routes reads and writes to the pipe pool instead of the vfs. The end
+// counts start at one for the installed descriptor.
 int posix_fd_install_pipe(struct task *task, u32 pipe, u32 end, u32 access) {
     int slot = live_task_slot(task);
     if (slot < 0 || pipe >= POSIX_PIPE_MAX ||
@@ -233,8 +233,8 @@ int posix_fd_install_pipe(struct task *task, u32 pipe, u32 end, u32 access) {
     return (int)descriptor;
 }
 
-/* The read and write paths ask whether a descriptor is a pipe end before
-   they route it at the vfs; the descriptor rights were already checked. */
+// The read and write paths ask whether a descriptor is a pipe end before
+// they route it at the vfs; the descriptor rights were already checked.
 int posix_fd_pipe_of(struct task *task, int descriptor, u32 *pipe,
                      u32 *end) {
     int slot = live_task_slot(task);

@@ -1,11 +1,11 @@
 #include "entropy.h"
 #include "spinlock.h"
 
-/* ChaCha20 DRBG (RFC 8439 block function, SP 800-90A-style usage): a
-   bounded static state, reseeded after ENTROPY_RESEED_BYTES of output.
-   Seed material prefers RDSEED, falls back to RDRAND, and always mixes
-   the TSC-derived fallback so no single source (including an emulated
-   RDRAND returning a constant) fully controls the key. */
+// ChaCha20 DRBG (RFC 8439 block function, SP 800-90A-style usage): a
+// bounded static state, reseeded after ENTROPY_RESEED_BYTES of output.
+// Seed material prefers RDSEED, falls back to RDRAND, and always mixes
+// the TSC-derived fallback so no single source (including an emulated
+// RDRAND returning a constant) fully controls the key.
 #define ENTROPY_RESEED_BYTES (256u * 1024u)
 #define ENTROPY_HW_RETRY 8u
 
@@ -113,8 +113,8 @@ static int rdrand64(u64 *value) {
     return -1;
 }
 
-/* Time-derived fallback: never the sole source, but it breaks the case
-   where an emulator returns identical RDRAND streams on every boot. */
+// Time-derived fallback: never the sole source, but it breaks the case
+// where an emulator returns identical RDRAND streams on every boot.
 static u64 fallback64(void) {
     u32 low;
     u32 high;
@@ -132,7 +132,7 @@ static void seed_material(u8 out[44]) {
     for (u32 index = 0; index < 5; index++) {
         u64 sample = 0;
         if (entropy.rdseed && !rdseed64(&sample)) {
-            /* Mixed on purpose: defense in depth against one source. */
+            // Mixed on purpose: defense in depth against one source.
             sample ^= fallback64();
         } else if (entropy.rdrand && !rdrand64(&sample)) {
             sample ^= fallback64();
@@ -148,8 +148,8 @@ static void seed_material(u8 out[44]) {
     store32(out + 40, (u32)slots[4]);
 }
 
-/* Folds fresh material into the key and immediately absorbs one output
-   block back into it (SP 800-90A backtracking-resistance pattern). */
+// Folds fresh material into the key and immediately absorbs one output
+// block back into it (SP 800-90A backtracking-resistance pattern).
 static void entropy_reseed_locked(void) {
     u8 material[44];
     seed_material(material);

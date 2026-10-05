@@ -70,9 +70,9 @@ struct vfs_alias_state {
 };
 
 static struct vfs_alias_state aliases[VFS_ALIAS_MAX];
-/* Pairs file-table admission/final close with adytumfs unmount preflight. */
+// Pairs file-table admission/final close with adytumfs unmount preflight.
 static struct spinlock vfs_file_lock = SPINLOCK_INIT;
-/* One VFS domain makes EOF selection and append write indivisible. */
+// One VFS domain makes EOF selection and append write indivisible.
 static struct spinlock vfs_write_lock = SPINLOCK_INIT;
 static struct kernel_object *root_object;
 static struct kernel_object *root_mount;
@@ -1407,8 +1407,8 @@ int vfs_read(struct kernel_object *object, u32 offset,
         return 0;
     }
     if (node->special == VFS_SPECIAL_URANDOM) {
-        /* Character-device semantics: every read returns fresh bytes and
-           the file offset carries no meaning. */
+        // Character-device semantics: every read returns fresh bytes and
+        // the file offset carries no meaning.
         u32 count = length;
         if (count > ENTROPY_FILL_MAX) count = ENTROPY_FILL_MAX;
         if (entropy_fill(buffer, count)) return -1;

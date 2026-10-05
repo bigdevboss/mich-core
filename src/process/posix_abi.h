@@ -28,8 +28,8 @@
 #define POSIX_SYSCALL_GETPPID 207u
 #define POSIX_SYSCALL_BRK 208u
 #define POSIX_SYSCALL_GETRANDOM 209u
-/* 210 through 216 belong to the driver-domain socket stream calls, so the
-   first free number for the POSIX chain is 217. */
+// 210 through 216 belong to the driver-domain socket stream calls, so the
+// first free number for the POSIX chain is 217.
 #define POSIX_SYSCALL_GETDENTS 217u
 #define POSIX_SYSCALL_CHMOD 218u
 #define POSIX_SYSCALL_FCHMOD 219u
@@ -181,9 +181,9 @@ struct posix_open_request {
 // trailing terminator never lands inside the buffer.
 #define POSIX_PLEDGE_PROMISE_MAX 96u
 
-/* reserved doubles as a presence map: an absent promise string means
-   "leave that half unchanged" while an empty one is a real empty set, and
-   only the flags can tell them apart over a copied buffer. */
+// reserved doubles as a presence map: an absent promise string means
+// "leave that half unchanged" while an empty one is a real empty set, and
+// only the flags can tell them apart over a copied buffer.
 #define POSIX_PLEDGE_HAS_PROMISES 1u
 #define POSIX_PLEDGE_HAS_EXEC_PROMISES 2u
 #define POSIX_UNVEIL_LOCK 1u
@@ -200,8 +200,8 @@ struct posix_unveil_request {
     u32 flags;
 };
 
-/* The kernel answers the two descriptors in place: zero on success with
-   descriptors[0] the read end and descriptors[1] the write end. */
+// The kernel answers the two descriptors in place: zero on success with
+// descriptors[0] the read end and descriptors[1] the write end.
 struct posix_pipe_request {
     i32 descriptors[2];
     u32 reserved;

@@ -8,8 +8,8 @@
 #define VM64_USER_BASE VM64_PROGRAM_BASE
 #define VM64_USER_LIMIT 0x120000000ULL
 #define VM64_STACK_TOP VM64_PROGRAM_LIMIT
-/* One unmapped guard page separates the single stack page from the heap so
-   a stack overflow faults instead of silently corrupting heap blocks. */
+// One unmapped guard page separates the single stack page from the heap so
+// a stack overflow faults instead of silently corrupting heap blocks.
 #define VM64_HEAP_BASE (VM64_PROGRAM_LIMIT + 0x1000ULL)
 #define VM64_HEAP_LIMIT 0x101000000ULL
 #define VM64_DRIVER_BASE 0x110000000ULL
