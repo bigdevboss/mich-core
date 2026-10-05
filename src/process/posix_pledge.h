@@ -25,6 +25,7 @@ struct task;
 #define POSIX_PLEDGE_EXEC (1u << 6)
 #define POSIX_PLEDGE_UNVEIL (1u << 7)
 #define POSIX_PLEDGE_ERROR (1u << 8)
+#define POSIX_PLEDGE_NET (1u << 9)
 
 // Unveil permission bits, one per permission character of unveil(2).
 #define POSIX_VEIL_READ (1u << 0)

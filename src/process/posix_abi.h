@@ -59,6 +59,22 @@
 #define POSIX_SYSCALL_PLEDGE 243u
 #define POSIX_SYSCALL_UNVEIL 244u
 #define POSIX_SYSCALL_PIPE 245u
+#define POSIX_SYSCALL_SOCKET 246u
+#define POSIX_SYSCALL_BIND 247u
+#define POSIX_SYSCALL_LISTEN 248u
+#define POSIX_SYSCALL_ACCEPT 249u
+#define POSIX_SYSCALL_CONNECT 250u
+#define POSIX_SYSCALL_SEND 251u
+#define POSIX_SYSCALL_RECV 252u
+#define POSIX_SYSCALL_SENDTO 253u
+#define POSIX_SYSCALL_RECVFROM 254u
+#define POSIX_SYSCALL_SENDMSG 255u
+#define POSIX_SYSCALL_RECVMSG 256u
+#define POSIX_SYSCALL_SHUTDOWN 257u
+#define POSIX_SYSCALL_GETSOCKOPT 258u
+#define POSIX_SYSCALL_SETSOCKOPT 259u
+#define POSIX_SYSCALL_GETSOCKNAME 260u
+#define POSIX_SYSCALL_GETPEERNAME 261u
 
 // The bounded signal set the profile carries. The numbers are the POSIX
 // ones; everything outside this list is rejected as EINVAL rather than
@@ -405,6 +421,103 @@ struct posix_pio_request {
     i64 offset;
     u32 length;
     u8 data[POSIX_IO_MAX];
+};
+
+// The socket address the profile answers to: AF_INET only, the same 16
+// byte layout the userkit headers carry, with the port and address in
+// network byte order the way POSIX defines them.
+#define POSIX_AF_INET 2u
+#define POSIX_SOCK_STREAM 1u
+#define POSIX_SOCK_DGRAM 2u
+#define POSIX_SOCKADDR_IN_SIZE 16u
+
+struct posix_sockaddr_in {
+    u16 family;
+    u16 port;
+    u32 address;
+    u8 zero[8];
+};
+
+struct posix_socket_request {
+    u32 domain;
+    u32 type;
+    u32 protocol;
+    u32 reserved;
+};
+
+// bind and connect carry one address in; the name calls carry one out and
+// report the filled length through the same word.
+struct posix_socket_address_request {
+    i32 descriptor;
+    u32 reserved;
+    struct posix_sockaddr_in address;
+    u32 length;
+};
+
+struct posix_socket_listen_request {
+    i32 descriptor;
+    u32 backlog;
+    u32 reserved;
+};
+
+struct posix_socket_accept_request {
+    i32 descriptor;
+    u32 reserved;
+};
+
+// The data calls stage their payload inline the way the io pair does, so
+// one datagram or one stream chunk rides in a single copied request. A
+// stream buffer larger than POSIX_IO_MAX arrives as several calls; a
+// datagram larger than the staging buffer is EMSGSIZE rather than a cut.
+struct posix_socket_io_request {
+    i32 descriptor;                    // offset 0
+    u32 flags;                         // offset 4
+    struct posix_sockaddr_in address;  // offset 8
+    u32 address_length;                // offset 24
+    u32 length;                        // offset 28
+    u32 transferred;                   // offset 32
+    u32 reserved;                      // offset 36
+    u8 data[POSIX_IO_MAX];             // offset 40
+};
+
+#define POSIX_SOCKET_IO_TRANSFERRED_OFFSET 32u
+#define POSIX_SOCKET_IO_DATA_OFFSET 40u
+
+// The message calls gather and scatter through caller vectors the kernel
+// chases per segment; control data has no v0 meaning and must be empty.
+#define POSIX_MSG_IOV_MAX 4u
+
+struct posix_iovec {
+    uptr_t base;
+    u32 length;
+    u32 reserved;
+};
+
+struct posix_msghdr {
+    i32 descriptor;
+    u32 flags_in;
+    struct posix_sockaddr_in address;
+    u32 address_length;
+    u32 iov_count;
+    struct posix_iovec iov[POSIX_MSG_IOV_MAX];
+    u32 control_length;
+    u32 flags;
+    u64 reserved;
+};
+
+struct posix_sockopt_request {
+    i32 descriptor;
+    u32 level;
+    u32 name;
+    u32 length;
+    u32 reserved;
+    u8 value[32];
+};
+
+struct posix_socket_shutdown_request {
+    i32 descriptor;
+    u32 how;
+    u32 reserved;
 };
 
 #endif

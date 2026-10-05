@@ -65,4 +65,19 @@ int socket_local_address(struct kernel_object *socket,
 struct kernel_object *socket_wait_event(struct kernel_object *socket);
 u32 socket_active_count(void);
 
+// Resolve the interface object a route through the given address leaves
+// by. The answer is borrowed registry state; stream listen takes its own
+// reference the way connect does.
+struct kernel_object *socket_interface_for(u32 address);
+
+// The posix layer registers a wake hook so a state change on a socket can
+// complete a parked application waiter; the net layer stays free of any
+// process knowledge. The index is the socket slot, zero based.
+typedef void (*socket_wake_hook)(u32 index);
+void socket_set_wake_hook(socket_wake_hook hook);
+
+// A datagram landing on a binding wakes the application waiters parked on
+// sockets bound to it; the udp layer calls this beside its event signal.
+void socket_udp_notify(struct udp_context *udp, u64 binding_id);
+
 #endif

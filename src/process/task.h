@@ -22,6 +22,7 @@ struct mmio_grant {
 #define TASK_SUSPENDED 7
 #define TASK_BLOCKED_SLEEP 8
 #define TASK_BLOCKED_PIPE 9
+#define TASK_BLOCKED_SOCKET 10
 
 // Spawn flag (syscall arg1): the child is created but held off the scheduler
 // until its parent resumes it, so the parent can delegate capabilities before

@@ -5,6 +5,7 @@
 #include "posix_vfs.h"
 #include "posix_profile.h"
 #include "posix_pipe.h"
+#include "posix_socket.h"
 #include "posix_abi.h"
 #include "spinlock.h"
 
@@ -18,6 +19,10 @@ struct posix_ofd {
     u32 active;
     u32 pipe;
     u32 pipe_end;
+    u32 socket_type;
+    u32 socket_flags;
+    struct posix_sockaddr_in socket_local;
+    struct posix_sockaddr_in socket_peer;
 };
 
 struct posix_fd_entry {
@@ -81,6 +86,14 @@ static struct kernel_object *ofd_release_locked(struct posix_ofd *ofd) {
     ofd->active = 0;
     ofd->pipe = 0;
     ofd->pipe_end = 0;
+    ofd->socket_type = 0;
+    ofd->socket_flags = 0;
+    ofd->socket_local.family = 0;
+    ofd->socket_local.port = 0;
+    ofd->socket_local.address = 0;
+    ofd->socket_peer.family = 0;
+    ofd->socket_peer.port = 0;
+    ofd->socket_peer.address = 0;
     ofd->lock.ticket = 0;
     ofd->lock.served = 0;
     return file;
@@ -231,6 +244,111 @@ int posix_fd_install_pipe(struct task *task, u32 pipe, u32 end, u32 access) {
     posix_pipe_retain(pipe, end);
     spin_unlock(&posix_fd_lock);
     return (int)descriptor;
+}
+
+// A socket descriptor holds the kernel socket object the way a file one
+// holds its file, plus the address book the posix layer answers name
+// calls from. The object reference the ofd owns is what keeps a parked
+// waiter's socket alive across the park.
+int posix_fd_install_socket(struct task *task, struct kernel_object *socket,
+                            u32 type) {
+    int slot = live_task_slot(task);
+    if (slot < 0 || !socket || socket->type != KOBJECT_SOCKET ||
+        (type != POSIX_SOCK_STREAM && type != POSIX_SOCK_DGRAM))
+        return -1;
+    if (object_retain(socket)) return -1;
+
+    spin_lock(&posix_fd_lock);
+    u32 descriptor = POSIX_FD_MAX;
+    u32 index = POSIX_OFD_MAX;
+    for (u32 current = 0; current < POSIX_FD_MAX; current++)
+        if (!tables[slot][current].ofd) {
+            descriptor = current;
+            break;
+        }
+    for (u32 current = 0; current < POSIX_OFD_MAX; current++)
+        if (!ofds[current].active) {
+            index = current;
+            break;
+        }
+    if (descriptor == POSIX_FD_MAX || index == POSIX_OFD_MAX) {
+        int result = descriptor == POSIX_FD_MAX ? POSIX_FD_TABLE_FULL :
+            POSIX_FD_OFD_FULL;
+        spin_unlock(&posix_fd_lock);
+        object_release(socket);
+        return result;
+    }
+    struct posix_ofd *ofd = &ofds[index];
+    ofd->file = socket;
+    ofd->lock.ticket = 0;
+    ofd->lock.served = 0;
+    ofd->references = 1;
+    ofd->access = POSIX_FD_ACCESS_READ | POSIX_FD_ACCESS_WRITE;
+    ofd->status = 0;
+    ofd->offset = 0;
+    ofd->active = 1;
+    ofd->socket_type = type;
+    ofd->socket_flags = 0;
+    ofd->socket_local.family = 0;
+    ofd->socket_local.port = 0;
+    ofd->socket_local.address = 0;
+    ofd->socket_peer.family = 0;
+    ofd->socket_peer.port = 0;
+    ofd->socket_peer.address = 0;
+    tables[slot][descriptor].ofd = ofd;
+    tables[slot][descriptor].flags = 0;
+    spin_unlock(&posix_fd_lock);
+    return (int)descriptor;
+}
+
+// The socket paths resolve a descriptor to its kernel object and a
+// snapshot of the address state. Syscalls run serialized on this single
+// CPU, so the snapshot cannot tear against an update from another task.
+int posix_fd_socket_of(struct task *task, int descriptor, u32 access,
+                       struct kernel_object **socket, u32 *type,
+                       u32 *flags, struct posix_sockaddr_in *local,
+                       struct posix_sockaddr_in *peer) {
+    int slot = live_task_slot(task);
+    if (slot < 0) return POSIX_VFS_EBADF;
+    spin_lock(&posix_fd_lock);
+    struct posix_ofd *ofd = descriptor_for_locked((u32)slot, descriptor);
+    if (!ofd) {
+        spin_unlock(&posix_fd_lock);
+        return POSIX_VFS_EBADF;
+    }
+    if ((access & ~ofd->access) || !ofd->file ||
+        ofd->file->type != KOBJECT_SOCKET) {
+        spin_unlock(&posix_fd_lock);
+        return POSIX_SOCKET_ENOTSOCK;
+    }
+    if (socket) *socket = ofd->file;
+    if (type) *type = ofd->socket_type;
+    if (flags) *flags = ofd->socket_flags;
+    if (local) *local = ofd->socket_local;
+    if (peer) *peer = ofd->socket_peer;
+    spin_unlock(&posix_fd_lock);
+    return 0;
+}
+
+// bind, connect and listen record what they established so the name and
+// state calls answer without asking the kernel socket for facts it does
+// not keep.
+int posix_fd_socket_update(struct task *task, int descriptor, u32 flags,
+                           const struct posix_sockaddr_in *local,
+                           const struct posix_sockaddr_in *peer) {
+    int slot = live_task_slot(task);
+    if (slot < 0) return POSIX_VFS_EBADF;
+    spin_lock(&posix_fd_lock);
+    struct posix_ofd *ofd = descriptor_for_locked((u32)slot, descriptor);
+    if (!ofd || !ofd->file || ofd->file->type != KOBJECT_SOCKET) {
+        spin_unlock(&posix_fd_lock);
+        return POSIX_SOCKET_ENOTSOCK;
+    }
+    if (flags) ofd->socket_flags = flags;
+    if (local) ofd->socket_local = *local;
+    if (peer) ofd->socket_peer = *peer;
+    spin_unlock(&posix_fd_lock);
+    return 0;
 }
 
 // The read and write paths ask whether a descriptor is a pipe end before

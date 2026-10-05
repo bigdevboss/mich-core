@@ -31,6 +31,15 @@ static struct socket_state sockets[SOCKET_MAX];
 static struct socket_udp_context udp_contexts[SOCKET_UDP_CONTEXT_MAX];
 static struct socket_udp_context udpv6_contexts[SOCKET_UDP_CONTEXT_MAX];
 static struct route_table *socket_routes;
+static socket_wake_hook wake_hook;
+
+void socket_set_wake_hook(socket_wake_hook hook) {
+    wake_hook = hook;
+}
+
+static void wake_index(u32 index) {
+    if (wake_hook) wake_hook(index);
+}
 
 static struct socket_state *state_for(const struct kernel_object *object) {
     if (!object || !object->active || object->type != KOBJECT_SOCKET ||
@@ -498,6 +507,7 @@ void socket_tcp_abort_context(struct tcp_context *tcp, i32 error) {
             !state->tcp_connection)
             continue;
         if (state->event) event_signal(state->event);
+        wake_index(index);
     }
 }
 
@@ -511,8 +521,10 @@ void socket_tcp_notify(struct tcp_context *tcp, u64 connection_id) {
             !state->event)
             continue;
         if (state->tcp_connection == connection_id ||
-            (state->listening && state->tcp_connection == listener_id))
+            (state->listening && state->tcp_connection == listener_id)) {
             event_signal(state->event);
+            wake_index(index);
+        }
     }
 }
 
@@ -611,4 +623,22 @@ u32 socket_active_count(void) {
     for (u32 index = 0; index < SOCKET_MAX; index++)
         if (sockets[index].active) count++;
     return count;
+}
+
+void socket_udp_notify(struct udp_context *udp, u64 binding_id) {
+    if (!udp || !binding_id) return;
+    for (u32 index = 0; index < SOCKET_MAX; index++) {
+        struct socket_state *state = &sockets[index];
+        if (!state->active || state->family != 4 || state->udp != udp ||
+            state->binding_id != binding_id)
+            continue;
+        wake_index(index);
+    }
+}
+
+struct kernel_object *socket_interface_for(u32 address) {
+    const struct route_entry *route = route_lookup(socket_routes, address);
+    if (!route) return 0;
+    return net_interface_lookup(route->interface_id,
+                                route->interface_generation);
 }

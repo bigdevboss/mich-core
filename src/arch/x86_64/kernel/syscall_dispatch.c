@@ -77,6 +77,7 @@
 #include "posix_signal.h"
 #include "posix_pledge.h"
 #include "posix_pipe.h"
+#include "posix_socket.h"
 #include "entropy.h"
 #include "kernel64_internal.h"
 
@@ -2221,6 +2222,27 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                 }
                 return (u64)(i64)piped;
             }
+            // A socket descriptor answers the same bytes recv and send
+            // do, through the plain io request the file path already
+            // copied; the path authority never applies because a socket
+            // touches no file.
+            if (!posix_fd_socket_of(task, request.descriptor, access, 0, 0,
+                                    0, 0, 0)) {
+                i64 moved = number == POSIX_SYSCALL_READ ?
+                    posix_socket_io_read(task, request.descriptor,
+                                         request.data, request.length,
+                                         arg0) :
+                    posix_socket_io_write(task, request.descriptor,
+                                          request.data, request.length,
+                                          arg0);
+                if (moved >= 0) {
+                    request.transferred = (u32)moved;
+                    if (vm64_copy_to(task->page_dir, arg0, &request,
+                                     sizeof(request)))
+                        return (u64)(i64)POSIX_VFS_EIO;
+                }
+                return (u64)moved;
+            }
             if (number == POSIX_SYSCALL_WRITE &&
                 !posix_profile_vfs_authorized(task))
                 return (u64)(i64)POSIX_VFS_EACCES;
@@ -2890,6 +2912,176 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         }
         request.descriptors[0] = read_end;
         request.descriptors[1] = write_end;
+        return vm64_copy_to(task->page_dir, arg0, &request,
+                            sizeof(request)) ? (u64)(i64)POSIX_VFS_EIO : 0;
+    }
+    if (number == POSIX_SYSCALL_SOCKET) {
+        struct task *task = &task_pool[current_task_slot];
+        if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
+        int gate = posix_pledge_gate(task, (u32)number);
+        if (gate) return pledge_violation(task, gate);
+        struct posix_socket_request request;
+        if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+            vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)) ||
+            request.reserved)
+            return (u64)(i64)POSIX_VFS_EINVAL;
+        return (u64)(i64)posix_socket_socket(task, request.domain,
+                                             request.type,
+                                             request.protocol);
+    }
+    if (number == POSIX_SYSCALL_BIND) {
+        struct task *task = &task_pool[current_task_slot];
+        if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
+        int gate = posix_pledge_gate(task, (u32)number);
+        if (gate) return pledge_violation(task, gate);
+        struct posix_socket_address_request request;
+        if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+            vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)) ||
+            request.reserved || request.length != POSIX_SOCKADDR_IN_SIZE)
+            return (u64)(i64)POSIX_VFS_EINVAL;
+        return (u64)(i64)posix_socket_bind(task, request.descriptor,
+                                           &request.address);
+    }
+    if (number == POSIX_SYSCALL_LISTEN) {
+        struct task *task = &task_pool[current_task_slot];
+        if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
+        int gate = posix_pledge_gate(task, (u32)number);
+        if (gate) return pledge_violation(task, gate);
+        struct posix_socket_listen_request request;
+        if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+            vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)) ||
+            request.reserved)
+            return (u64)(i64)POSIX_VFS_EINVAL;
+        return (u64)(i64)posix_socket_listen(task, request.descriptor,
+                                             request.backlog);
+    }
+    if (number == POSIX_SYSCALL_ACCEPT) {
+        struct task *task = &task_pool[current_task_slot];
+        if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
+        int gate = posix_pledge_gate(task, (u32)number);
+        if (gate) return pledge_violation(task, gate);
+        struct posix_socket_accept_request request;
+        if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+            vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)) ||
+            request.reserved)
+            return (u64)(i64)POSIX_VFS_EINVAL;
+        return (u64)(i64)posix_socket_accept(task, request.descriptor,
+                                             arg0);
+    }
+    if (number == POSIX_SYSCALL_CONNECT) {
+        struct task *task = &task_pool[current_task_slot];
+        if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
+        int gate = posix_pledge_gate(task, (u32)number);
+        if (gate) return pledge_violation(task, gate);
+        struct posix_socket_address_request request;
+        if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+            vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)) ||
+            request.reserved || request.length != POSIX_SOCKADDR_IN_SIZE)
+            return (u64)(i64)POSIX_VFS_EINVAL;
+        return (u64)(i64)posix_socket_connect(task, request.descriptor,
+                                              &request.address, arg0);
+    }
+    if (number == POSIX_SYSCALL_SEND || number == POSIX_SYSCALL_RECV ||
+        number == POSIX_SYSCALL_SENDTO || number == POSIX_SYSCALL_RECVFROM) {
+        struct task *task = &task_pool[current_task_slot];
+        struct posix_socket_io_request request;
+        if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+            vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)) ||
+            request.reserved || request.flags ||
+            request.length > POSIX_IO_MAX)
+            return (u64)(i64)POSIX_VFS_EINVAL;
+        i64 moved;
+        if (number == POSIX_SYSCALL_SEND)
+            moved = posix_socket_send(task, request.descriptor,
+                                      request.data, request.length, arg0);
+        else if (number == POSIX_SYSCALL_RECV)
+            moved = posix_socket_recv(task, request.descriptor,
+                                      request.data, request.length, arg0);
+        else if (number == POSIX_SYSCALL_SENDTO)
+            moved = posix_socket_send_to(task, request.descriptor,
+                                         request.address_length ==
+                                             POSIX_SOCKADDR_IN_SIZE ?
+                                             &request.address : 0,
+                                         request.data, request.length);
+        else
+            moved = posix_socket_recv_from(task, request.descriptor,
+                                           &request.address, request.data,
+                                           request.length, arg0);
+        if (moved >= 0) {
+            request.transferred = (u32)moved;
+            if (vm64_copy_to(task->page_dir, arg0, &request,
+                             sizeof(request)))
+                return (u64)(i64)POSIX_VFS_EIO;
+        }
+        return (u64)moved;
+    }
+    if (number == POSIX_SYSCALL_SENDMSG || number == POSIX_SYSCALL_RECVMSG) {
+        struct task *task = &task_pool[current_task_slot];
+        struct posix_msghdr request;
+        if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+            vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)) ||
+            request.reserved || request.flags_in || request.flags)
+            return (u64)(i64)POSIX_VFS_EINVAL;
+        i64 moved = number == POSIX_SYSCALL_SENDMSG ?
+            posix_socket_sendmsg(task, request.descriptor, &request,
+                                 arg0) :
+            posix_socket_recvmsg(task, request.descriptor, &request,
+                                 arg0);
+        if (moved >= 0 &&
+            vm64_copy_to(task->page_dir, arg0, &request, sizeof(request)))
+            return (u64)(i64)POSIX_VFS_EIO;
+        return (u64)moved;
+    }
+    if (number == POSIX_SYSCALL_SHUTDOWN) {
+        struct task *task = &task_pool[current_task_slot];
+        struct posix_socket_shutdown_request request;
+        if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+            vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)) ||
+            request.reserved)
+            return (u64)(i64)POSIX_VFS_EINVAL;
+        return (u64)(i64)posix_socket_shutdown(task, request.descriptor,
+                                               request.how);
+    }
+    if (number == POSIX_SYSCALL_GETSOCKOPT) {
+        struct task *task = &task_pool[current_task_slot];
+        struct posix_sockopt_request request;
+        if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+            vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)) ||
+            request.reserved)
+            return (u64)(i64)POSIX_VFS_EINVAL;
+        int result = posix_socket_getsockopt(
+            task, request.descriptor, request.level, request.name,
+            request.value, &request.length);
+        if (result) return (u64)(i64)result;
+        return vm64_copy_to(task->page_dir, arg0, &request,
+                            sizeof(request)) ? (u64)(i64)POSIX_VFS_EIO : 0;
+    }
+    if (number == POSIX_SYSCALL_SETSOCKOPT) {
+        struct task *task = &task_pool[current_task_slot];
+        struct posix_sockopt_request request;
+        if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+            vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)) ||
+            request.reserved)
+            return (u64)(i64)POSIX_VFS_EINVAL;
+        return (u64)(i64)posix_socket_setsockopt(
+            task, request.descriptor, request.level, request.name,
+            request.value, request.length);
+    }
+    if (number == POSIX_SYSCALL_GETSOCKNAME ||
+        number == POSIX_SYSCALL_GETPEERNAME) {
+        struct task *task = &task_pool[current_task_slot];
+        struct posix_socket_address_request request;
+        if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+            vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)) ||
+            request.reserved || request.length < POSIX_SOCKADDR_IN_SIZE)
+            return (u64)(i64)POSIX_VFS_EINVAL;
+        int result = number == POSIX_SYSCALL_GETSOCKNAME ?
+            posix_socket_getsockname(task, request.descriptor,
+                                     &request.address) :
+            posix_socket_getpeername(task, request.descriptor,
+                                     &request.address);
+        if (result) return (u64)(i64)result;
+        request.length = POSIX_SOCKADDR_IN_SIZE;
         return vm64_copy_to(task->page_dir, arg0, &request,
                             sizeof(request)) ? (u64)(i64)POSIX_VFS_EIO : 0;
     }

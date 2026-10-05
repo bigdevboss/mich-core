@@ -6,6 +6,7 @@
 #include "task.h"
 #include "arch_task.h"
 #include "posix_fd.h"
+#include "posix_socket.h"
 #include "posix_profile.h"
 #include "posix_process.h"
 #include "posix_time.h"
@@ -1972,6 +1973,7 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     object_init();
     vfs_init();
     posix_fd_init();
+    posix_socket_init();
     posix_profile_init();
     entropy_init();
     if (bootfs64_init(modules, info->mods_count)) KERNEL_PANIC("bootfs mount");

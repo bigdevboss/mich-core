@@ -84,6 +84,7 @@ static int promise_token(const char *token, u32 length, u32 *bit) {
         { "exec", POSIX_PLEDGE_EXEC },
         { "unveil", POSIX_PLEDGE_UNVEIL },
         { "error", POSIX_PLEDGE_ERROR },
+        { "net", POSIX_PLEDGE_NET },
     };
     for (u32 index = 0; index < sizeof(table) / sizeof(table[0]); index++) {
         const char *name = table[index].name;
@@ -347,6 +348,12 @@ static u32 required_promises(u32 number) {
         return POSIX_PLEDGE_PROC;
     case POSIX_SYSCALL_EXECVE:
         return POSIX_PLEDGE_EXEC;
+    case POSIX_SYSCALL_SOCKET:
+    case POSIX_SYSCALL_BIND:
+    case POSIX_SYSCALL_LISTEN:
+    case POSIX_SYSCALL_ACCEPT:
+    case POSIX_SYSCALL_CONNECT:
+        return POSIX_PLEDGE_NET;
     default:
         return 0;
     }

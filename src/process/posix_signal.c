@@ -1,5 +1,6 @@
 #include "posix_signal.h"
 #include "posix_pipe.h"
+#include "posix_socket.h"
 #include "posix_abi.h"
 #include "runtime64.h"
 #include "task.h"
@@ -127,6 +128,12 @@ static void wake_with_eintr(struct task *target) {
     }
     if (target->state == TASK_BLOCKED_PIPE) {
         i64 answer = posix_pipe_signal(target);
+        target->state = TASK_RUNNING;
+        task64_set_result(slot, answer);
+        return;
+    }
+    if (target->state == TASK_BLOCKED_SOCKET) {
+        i64 answer = posix_socket_signal(target);
         target->state = TASK_RUNNING;
         task64_set_result(slot, answer);
         return;

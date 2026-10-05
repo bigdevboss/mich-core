@@ -2,6 +2,7 @@
 #define POSIX_FD_H
 
 #include "types.h"
+#include "posix_abi.h"
 
 #define POSIX_FD_MAX 32
 #define POSIX_OFD_MAX 32
@@ -24,6 +25,15 @@ int posix_fd_install_vfs(struct task *task, struct kernel_object *file,
 int posix_fd_install_pipe(struct task *task, u32 pipe, u32 end, u32 access);
 int posix_fd_pipe_of(struct task *task, int descriptor, u32 *pipe,
                      u32 *end);
+int posix_fd_install_socket(struct task *task, struct kernel_object *socket,
+                            u32 type);
+int posix_fd_socket_of(struct task *task, int descriptor, u32 access,
+                       struct kernel_object **socket, u32 *type,
+                       u32 *flags, struct posix_sockaddr_in *local,
+                       struct posix_sockaddr_in *peer);
+int posix_fd_socket_update(struct task *task, int descriptor, u32 flags,
+                           const struct posix_sockaddr_in *local,
+                           const struct posix_sockaddr_in *peer);
 int posix_fd_validate(struct task *task, int descriptor, u32 access);
 int posix_fd_close(struct task *task, int descriptor);
 int posix_fd_dup(struct task *task, int descriptor);

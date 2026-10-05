@@ -2,6 +2,7 @@
 #include "udp.h"
 #include "event.h"
 #include "net_buffer.h"
+#include "socket.h"
 
 static u16 read_be16(const u8 *bytes) {
     return (u16)((u16)bytes[0] << 8) | bytes[1];
@@ -249,6 +250,10 @@ int udp_ipv4_handler(struct ipv4_context *ipv4,
         net_copy(datagram->payload, bytes + UDP_HEADER_SIZE, payload_length);
     binding->count++;
     event_signal(binding->event);
+    // The binding id is positional, slot plus generation the way
+    // binding_for decodes it, so the socket layer can find the waiters.
+    socket_udp_notify(udp, ((u64)binding->generation << 32) |
+                     (u32)(binding - udp->bindings + 1u));
     udp->stats.received++;
     udp->stats.bytes_received += payload_length;
     return datagram->zero_copy ? 1 : 0;
