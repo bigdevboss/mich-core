@@ -106,11 +106,45 @@ TCPWIRE64_ELF = $(USER64_DIR)/tcpwire.elf
 GEN64_DIR = $(BIN64)/generated
 VIRTIO_NET_RECOVERY_RIP_H = $(GEN64_DIR)/virtio_net_recovery_rip.h
 VIRTIO_NET_SAFE64_ELF = $(USER64_DIR)/virtio-net-safe.elf
-OBJS64 = $(OBJ64)/boot.o $(OBJ64)/kernel.o $(OBJ64)/task_core.o $(OBJ64)/posix_fd_core.o $(OBJ64)/posix_profile_core.o $(OBJ64)/posix_vfs_core.o $(OBJ64)/posix_process_core.o $(OBJ64)/posix_time_core.o $(OBJ64)/posix_signal_core.o $(OBJ64)/posix_pledge_core.o $(OBJ64)/posix_pipe_core.o $(OBJ64)/posix_socket_core.o $(OBJ64)/scheduler_core.o $(OBJ64)/service_core.o $(OBJ64)/object_core.o $(OBJ64)/resource_core.o $(OBJ64)/iommu_core.o $(OBJ64)/driver_core.o $(OBJ64)/driver_supervisor_core.o $(OBJ64)/driver_manager_core.o $(OBJ64)/ring_core.o $(OBJ64)/completion_core.o $(OBJ64)/timer_object_core.o $(OBJ64)/net_buffer_core.o $(OBJ64)/vnic_core.o $(OBJ64)/vnic_benchmark.o $(OBJ64)/net_interface_core.o $(OBJ64)/ethernet_core.o $(OBJ64)/arp_core.o $(OBJ64)/ipv4_core.o $(OBJ64)/ipv6_core.o $(OBJ64)/icmp_core.o $(OBJ64)/icmpv6_core.o $(OBJ64)/loopback_core.o $(OBJ64)/udp_core.o $(OBJ64)/udpv6_core.o $(OBJ64)/tcp_core.o $(OBJ64)/tcp_cc_core.o $(OBJ64)/pmtu_core.o $(OBJ64)/route_core.o $(OBJ64)/socket_core.o $(OBJ64)/dns_message_core.o $(OBJ64)/vfs_core.o $(OBJ64)/crc32c_core.o $(OBJ64)/adytumfs_super_core.o $(OBJ64)/adytumfs_inode_core.o $(OBJ64)/adytumfs_volume_core.o $(OBJ64)/adytumfs_verify_core.o $(OBJ64)/adytumfs_dir_core.o $(OBJ64)/adytumfs_file_core.o $(OBJ64)/adytumfs_ops_core.o $(OBJ64)/adytumfs_core.o $(OBJ64)/block_core.o $(OBJ64)/cache_core.o $(OBJ64)/firmware_core.o $(OBJ64)/event_core.o $(OBJ64)/endpoint_core.o $(OBJ64)/bridge_core.o $(OBJ64)/pmm_core.o $(OBJ64)/mem_core.o $(OBJ64)/siphash_core.o $(OBJ64)/crypto_core.o $(OBJ64)/entropy_core.o $(OBJ64)/ipc64.o $(OBJ64)/acpi64.o $(OBJ64)/rtc64.o $(OBJ64)/vtd64.o $(OBJ64)/amd_iommu64.o $(OBJ64)/pci64.o $(OBJ64)/nvme.o $(OBJ64)/apic64.o $(OBJ64)/ioapic64.o $(OBJ64)/smp64.o $(OBJ64)/smp_tramp.o $(OBJ64)/vector64.o $(OBJ64)/msi64.o $(OBJ64)/msix64.o $(OBJ64)/panic64.o $(OBJ64)/gdt_asm.o $(OBJ64)/gdt.o $(OBJ64)/exceptions.o $(OBJ64)/interrupt.o $(OBJ64)/idt.o $(OBJ64)/vm.o $(OBJ64)/elf64.o $(OBJ64)/platform.o $(OBJ64)/serial.o $(OBJ64)/syscall_dispatch.o $(OBJ64)/syscall.o
-TEST64_OBJS = $(OBJ64)/test_runner64.o $(OBJ64)/test_object64.o $(OBJ64)/test_resource64.o $(OBJ64)/test_async64.o $(OBJ64)/test_fpu64.o $(OBJ64)/test_smp64.o $(OBJ64)/test_driver64.o $(OBJ64)/test_hardware64.o $(OBJ64)/test_network_runner64.o $(OBJ64)/test_net_support64.o $(OBJ64)/test_net_foundation64.o $(OBJ64)/test_ipv4_64.o $(OBJ64)/test_ipv6_64.o $(OBJ64)/test_tcp64.o $(OBJ64)/test_udp_socket64.o $(OBJ64)/test_dns64.o $(OBJ64)/test_net_interface64.o $(OBJ64)/test_vfs64.o $(OBJ64)/test_posix_fd64.o $(OBJ64)/test_posix_profile64.o $(OBJ64)/test_posix_vfs64.o $(OBJ64)/test_posix_process64.o $(OBJ64)/test_posix_time64.o $(OBJ64)/test_posix_signal64.o $(OBJ64)/test_posix_pledge64.o $(OBJ64)/test_posix_pipe64.o $(OBJ64)/test_posix_socket64.o $(OBJ64)/test_block64.o $(OBJ64)/test_cache64.o $(OBJ64)/test_entropy64.o $(OBJ64)/test_siphash64.o $(OBJ64)/test_rtc64.o $(OBJ64)/test_crc32c64.o $(OBJ64)/test_adytumfs_super64.o $(OBJ64)/test_adytumfs_volume64.o $(OBJ64)/test_adytumfs_alloc64.o $(OBJ64)/test_adytumfs_inode64.o $(OBJ64)/test_adytumfs_extent64.o $(OBJ64)/test_adytumfs_dir64.o $(OBJ64)/test_adytumfs_diriter64.o $(OBJ64)/test_adytumfs_file64.o $(OBJ64)/test_adytumfs_ops64.o $(OBJ64)/test_adytumfs64.o $(OBJ64)/test_adytumfs_crash64.o $(OBJ64)/test_crash_boot64.o $(OBJ64)/test_nvme64.o $(OBJ64)/test_net_bench64.o $(OBJ64)/test_report64.o
+# The object lists are derived from the tree, so a new module or a new test is
+# one new file instead of four Makefile edits; a dropped edit is exactly how
+# the pipe recipes went missing. scripts/check-build.sh verifies the derived
+# result the way the linker would find out anyway, only earlier.
+PORTABLE_CORE_DIRS = $(CORE) $(CRYPTO) $(PROCESS) $(OBJECTS) $(NET) $(DRIVER) $(FS) $(BLOCK)
+PORTABLE_CORE_SRCS = $(foreach dir,$(PORTABLE_CORE_DIRS),$(wildcard $(dir)/*.c))
+PORTABLE_CORE_OBJS = $(foreach src,$(PORTABLE_CORE_SRCS),$(OBJ64)/$(notdir $(basename $(src)))_core.o)
+# scheduler_core.c already carries the suffix, so its object drops the doubling.
+PORTABLE_CORE_OBJS := $(filter-out $(OBJ64)/scheduler_core_core.o,$(PORTABLE_CORE_OBJS))
+ARCH64_OBJS = \
+	$(patsubst $(ARCH64_CPU)/%.c,$(OBJ64)/%.o,$(wildcard $(ARCH64_CPU)/*.c)) \
+	$(patsubst $(ARCH64_MEMORY)/%.c,$(OBJ64)/%.o,$(wildcard $(ARCH64_MEMORY)/*.c)) \
+	$(patsubst $(ARCH64_PLATFORM)/%.c,$(OBJ64)/%.o,$(wildcard $(ARCH64_PLATFORM)/*.c)) \
+	$(patsubst $(ARCH64_DRIVERS)/%.c,$(OBJ64)/%.o,$(wildcard $(ARCH64_DRIVERS)/*.c)) \
+	$(patsubst $(ARCH64_KERNEL)/%.c,$(OBJ64)/%.o,$(filter-out $(ARCH64_KERNEL)/kernel.c,$(wildcard $(ARCH64_KERNEL)/*.c))) \
+	$(patsubst $(ARCH64_CPU)/%.asm,$(OBJ64)/%.o,$(filter-out $(ARCH64_CPU)/gdt.asm,$(wildcard $(ARCH64_CPU)/*.asm))) \
+	$(patsubst $(ARCH64_KERNEL)/%.asm,$(OBJ64)/%.o,$(wildcard $(ARCH64_KERNEL)/*.asm))
+# boot.asm, gdt.asm and kernel.c keep explicit rules: their object names do not
+# follow their source names, and kernel.c is compiled twice with different flags.
+OBJS64 = $(PORTABLE_CORE_OBJS) $(OBJ64)/scheduler_core.o $(ARCH64_OBJS) \
+	$(OBJ64)/boot.o $(OBJ64)/gdt_asm.o $(OBJ64)/kernel.o
+# <name>_test.c becomes test_<name>64.o. Seven sources predate the convention
+# (ipv4, ipv6, and the five auxiliary runners) and stay listed.
+TEST64_SRCS = $(wildcard $(TEST64)/*_test.c)
+TEST64_AUX_SRCS = $(filter-out $(TEST64_SRCS),$(wildcard $(TEST64)/*.c))
+TEST64_OBJS = \
+	$(patsubst $(TEST64)/%_test.c,$(OBJ64)/test_%64.o,$(filter-out $(TEST64)/ipv4_test.c $(TEST64)/ipv6_test.c,$(TEST64_SRCS))) \
+	$(patsubst $(TEST64)/%.c,$(OBJ64)/test_%64.o,$(filter-out $(TEST64)/test_runner.c $(TEST64)/test_report.c $(TEST64)/network_runner.c $(TEST64)/net_test_support.c $(TEST64)/crash_boot.c,$(TEST64_AUX_SRCS))) \
+	$(OBJ64)/test_ipv4_64.o $(OBJ64)/test_ipv6_64.o $(OBJ64)/test_runner64.o \
+	$(OBJ64)/test_report64.o $(OBJ64)/test_network_runner64.o $(OBJ64)/test_net_support64.o \
+	$(OBJ64)/test_crash_boot64.o
 OBJS64_TEST = $(OBJ64)/boot.o $(OBJ64)/kernel_test.o $(filter-out $(OBJ64)/boot.o $(OBJ64)/kernel.o,$(OBJS64)) $(TEST64_OBJS)
 PORTABLE64_DIR = $(BIN64)/portable
-PORTABLE64_NAMES = task posix_fd posix_profile posix_vfs posix_process posix_time posix_signal posix_pledge posix_pipe posix_socket service object resource driver driver_supervisor driver_manager ring completion timer_object net_buffer vnic net_interface ethernet arp ipv4 ipv6 icmp icmpv6 loopback udp udpv6 tcp tcp_cc pmtu route socket vfs crc32c adytumfs_super adytumfs_inode adytumfs_volume adytumfs_verify adytumfs_dir adytumfs_file adytumfs_ops adytumfs block cache firmware event endpoint bridge pmm
+# The portable check compiles each module standalone. The excluded modules are
+# the pre-refactor exclusion list kept verbatim: they either need arch glue or
+# are kernel-only (mem, entropy, siphash, crypto, iommu, scheduler_core,
+# dns_message). A new module joins the check by default, and a failure here is
+# the signal to add it to this list with a reason.
+PORTABLE64_NAMES = $(filter-out mem entropy siphash crypto iommu scheduler_core dns_message,$(notdir $(basename $(PORTABLE_CORE_SRCS))))
 PORTABLE64_OBJS = $(addprefix $(PORTABLE64_DIR)/,$(addsuffix .o,$(PORTABLE64_NAMES)))
 
 all: $(DISK64) $(PORTABLE64_OBJS)
@@ -151,350 +185,61 @@ $(OBJ64)/kernel_test.o: $(ARCH64_KERNEL)/kernel.c $(CORE)/version.h $(VIRTIO_NET
 $(OBJ64)/syscall_dispatch.o: $(ARCH64_KERNEL)/syscall_dispatch.c $(ARCH64_KERNEL)/kernel64_internal.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/task_core.o: $(PROCESS)/task.c $(PROCESS)/task.h src/arch/arch_task.h $(PROCESS)/posix_fd.h $(PROCESS)/posix_profile.h | $(OBJ64)
+# One <module>_core.o per portable source. The header graph comes from the
+# -MMD files included at the bottom, so a rule needs no hand list of headers.
+$(OBJ64)/%_core.o: $(CORE)/%.c | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/posix_fd_core.o: $(PROCESS)/posix_fd.c $(PROCESS)/posix_fd.h $(PROCESS)/task.h $(OBJECTS)/object.h $(FS)/vfs.h $(CORE)/spinlock.h | $(OBJ64)
+$(OBJ64)/%_core.o: $(CRYPTO)/%.c | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/posix_profile_core.o: $(PROCESS)/posix_profile.c $(PROCESS)/posix_profile.h $(PROCESS)/task.h $(OBJECTS)/object.h $(FS)/vfs.h $(CORE)/spinlock.h | $(OBJ64)
+$(OBJ64)/%_core.o: $(PROCESS)/%.c | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/posix_vfs_core.o: $(PROCESS)/posix_vfs.c $(PROCESS)/posix_vfs.h $(PROCESS)/posix_profile.h $(PROCESS)/posix_fd.h $(FS)/vfs.h | $(OBJ64)
+$(OBJ64)/%_core.o: $(OBJECTS)/%.c | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/posix_time_core.o: $(PROCESS)/posix_time.c $(PROCESS)/posix_time.h $(ARCH64_PLATFORM)/rtc64.h | $(OBJ64)
+$(OBJ64)/%_core.o: $(NET)/%.c | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/posix_pledge_core.o: $(PROCESS)/posix_pledge.c $(PROCESS)/posix_pledge.h $(PROCESS)/posix_abi.h $(PROCESS)/posix_profile.h $(FS)/vfs.h | $(OBJ64)
+$(OBJ64)/%_core.o: $(DRIVER)/%.c | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/posix_pipe_core.o: $(PROCESS)/posix_pipe.c $(PROCESS)/posix_pipe.h $(PROCESS)/posix_abi.h $(PROCESS)/posix_signal.h $(PROCESS)/posix_vfs.h | $(OBJ64)
+$(OBJ64)/%_core.o: $(FS)/%.c | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/posix_socket_core.o: $(PROCESS)/posix_socket.c $(PROCESS)/posix_socket.h $(PROCESS)/posix_abi.h $(PROCESS)/posix_fd.h $(PROCESS)/posix_signal.h $(PROCESS)/posix_vfs.h $(NET)/socket.h | $(OBJ64)
+$(OBJ64)/%_core.o: $(BLOCK)/%.c | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/posix_signal_core.o: $(PROCESS)/posix_signal.c $(PROCESS)/posix_signal.h $(PROCESS)/posix_abi.h | $(OBJ64)
+$(OBJ64)/scheduler_core.o: $(PROCESS)/scheduler_core.c | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/posix_process_core.o: $(PROCESS)/posix_process.c $(PROCESS)/posix_process.h | $(OBJ64)
+$(OBJ64)/test_%64.o: $(TEST64)/%_test.c | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/scheduler_core.o: $(PROCESS)/scheduler_core.c $(PROCESS)/scheduler.h $(PROCESS)/task.h | $(OBJ64)
+$(OBJ64)/test_%64.o: $(TEST64)/%.c | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/service_core.o: $(PROCESS)/service.c $(PROCESS)/service.h $(PROCESS)/task.h | $(OBJ64)
+$(OBJ64)/test_ipv4_64.o: $(TEST64)/ipv4_test.c $(TEST64)/tests64.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/object_core.o: $(OBJECTS)/object.c $(OBJECTS)/object.h $(PROCESS)/task.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/resource_core.o: $(OBJECTS)/resource.c $(OBJECTS)/resource.h $(OBJECTS)/object.h $(CORE)/pmm.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/iommu_core.o: $(OBJECTS)/iommu.c $(OBJECTS)/iommu.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/driver_core.o: $(DRIVER)/driver.c $(DRIVER)/driver.h $(OBJECTS)/object.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/driver_supervisor_core.o: $(DRIVER)/driver_supervisor.c $(DRIVER)/driver_supervisor.h $(OBJECTS)/object.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/driver_manager_core.o: $(DRIVER)/driver_manager.c $(DRIVER)/driver_manager.h $(DRIVER)/driver_supervisor.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/ring_core.o: $(OBJECTS)/ring.c $(OBJECTS)/ring.h $(OBJECTS)/resource.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/completion_core.o: $(OBJECTS)/completion.c $(OBJECTS)/completion.h $(OBJECTS)/event.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/timer_object_core.o: $(OBJECTS)/timer_object.c $(OBJECTS)/timer_object.h $(OBJECTS)/event.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/net_buffer_core.o: $(NET)/net_buffer.c $(NET)/net_buffer.h $(OBJECTS)/resource.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/vnic_core.o: $(NET)/vnic.c $(NET)/vnic.h $(NET)/net_buffer.h $(OBJECTS)/ring.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/vnic_benchmark.o: $(ARCH64_KERNEL)/vnic_benchmark.c $(NET)/vnic_benchmark.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/net_interface_core.o: $(NET)/net_interface.c $(NET)/net_interface.h $(DRIVER)/driver_supervisor.h $(CORE)/entropy.h $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/ethernet_core.o: $(NET)/ethernet.c $(NET)/ethernet.h $(NET)/vnic.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/arp_core.o: $(NET)/arp.c $(NET)/arp.h $(NET)/ethernet.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/ipv4_core.o: $(NET)/ipv4.c $(NET)/ipv4.h $(NET)/ethernet.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/ipv6_core.o: $(NET)/ipv6.c $(NET)/ipv6.h $(NET)/ethernet.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/icmp_core.o: $(NET)/icmp.c $(NET)/icmp.h $(NET)/ipv4.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/icmpv6_core.o: $(NET)/icmpv6.c $(NET)/icmpv6.h $(NET)/ipv6.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/loopback_core.o: $(NET)/loopback.c $(NET)/loopback.h $(NET)/ipv4.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/udp_core.o: $(NET)/udp.c $(NET)/udp.h $(NET)/ipv4.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/udpv6_core.o: $(NET)/udpv6.c $(NET)/udpv6.h $(NET)/ipv6.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/tcp_core.o: $(NET)/tcp.c $(NET)/tcp.h $(CRYPTO)/siphash.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/tcp_cc_core.o: $(NET)/tcp_cc.c $(NET)/tcp.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/pmtu_core.o: $(NET)/pmtu.c $(NET)/pmtu.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/route_core.o: $(NET)/route.c $(NET)/route.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/socket_core.o: $(NET)/socket.c $(NET)/socket.h $(NET)/udp.h $(NET)/route.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/dns_message_core.o: $(NET)/dns_message.c $(NET)/dns_message.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-
-
-$(OBJ64)/vfs_core.o: $(FS)/vfs.c $(FS)/vfs.h $(FS)/adytumfs.h $(OBJECTS)/object.h $(CORE)/entropy.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/crc32c_core.o: $(FS)/crc32c.c $(FS)/crc32c.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/adytumfs_super_core.o: $(FS)/adytumfs_super.c $(FS)/adytumfs_format.h $(FS)/crc32c.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/adytumfs_inode_core.o: $(FS)/adytumfs_inode.c $(FS)/adytumfs_format.h $(FS)/crc32c.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/adytumfs_volume_core.o: $(FS)/adytumfs_volume.c $(FS)/adytumfs_format.h $(FS)/crc32c.h $(BLOCK)/block.h $(BLOCK)/cache.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/adytumfs_verify_core.o: $(FS)/adytumfs_verify.c $(FS)/adytumfs_format.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/adytumfs_dir_core.o: $(FS)/adytumfs_dir.c $(FS)/adytumfs_format.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/adytumfs_file_core.o: $(FS)/adytumfs_file.c $(FS)/adytumfs_format.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/adytumfs_ops_core.o: $(FS)/adytumfs_ops.c $(FS)/adytumfs_format.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/adytumfs_core.o: $(FS)/adytumfs.c $(FS)/adytumfs.h $(FS)/vfs.h $(BLOCK)/block.h $(BLOCK)/cache.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/block_core.o: $(BLOCK)/block.c $(BLOCK)/block.h $(BLOCK)/block_abi.h $(BLOCK)/cache.h $(OBJECTS)/object.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/cache_core.o: $(BLOCK)/cache.c $(BLOCK)/cache.h $(BLOCK)/block.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/firmware_core.o: $(FS)/firmware.c $(FS)/firmware.h $(FS)/vfs.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_report64.o: $(TEST64)/test_report.c $(TEST64)/test_report.h | $(OBJ64)
+$(OBJ64)/test_ipv6_64.o: $(TEST64)/ipv6_test.c $(TEST64)/tests64.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
 $(OBJ64)/test_runner64.o: $(TEST64)/test_runner.c $(TEST64)/tests64.h $(TEST64)/test_report.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/test_object64.o: $(TEST64)/object_test.c $(TEST64)/tests64.h | $(OBJ64)
+$(OBJ64)/test_network_runner64.o: $(TEST64)/network_runner.c $(TEST64)/tests64.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/test_resource64.o: $(TEST64)/resource_test.c $(TEST64)/tests64.h | $(OBJ64)
+$(OBJ64)/test_net_support64.o: $(TEST64)/net_test_support.c $(TEST64)/tests64.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/test_async64.o: $(TEST64)/async_test.c $(TEST64)/tests64.h | $(OBJ64)
+$(OBJ64)/test_crash_boot64.o: $(TEST64)/crash_boot.c $(TEST64)/tests64.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
-$(OBJ64)/test_fpu64.o: $(TEST64)/fpu_test.c $(TEST64)/tests64.h $(TEST64)/net_test.h $(ARCH64_KERNEL)/kernel64_internal.h | $(OBJ64)
+$(OBJ64)/test_report64.o: $(TEST64)/test_report.c $(TEST64)/test_report.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_smp64.o: $(TEST64)/smp_test.c $(TEST64)/tests64.h $(TEST64)/test_report.h $(ARCH64_CPU)/smp64.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_driver64.o: $(TEST64)/driver_test.c $(TEST64)/tests64.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_hardware64.o: $(TEST64)/hardware_test.c $(TEST64)/tests64.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_network_runner64.o: $(TEST64)/network_runner.c $(TEST64)/tests64.h $(TEST64)/net_test.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_net_support64.o: $(TEST64)/net_test_support.c $(TEST64)/tests64.h $(TEST64)/net_test.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_net_foundation64.o: $(TEST64)/net_foundation_test.c $(TEST64)/tests64.h $(TEST64)/net_test.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_ipv4_64.o: $(TEST64)/ipv4_test.c $(TEST64)/tests64.h $(TEST64)/net_test.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_ipv6_64.o: $(TEST64)/ipv6_test.c $(TEST64)/tests64.h $(TEST64)/net_test.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_tcp64.o: $(TEST64)/tcp_test.c $(TEST64)/tests64.h $(TEST64)/net_test.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_dns64.o: $(TEST64)/dns_test.c $(TEST64)/tests64.h $(NET)/dns_message.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_udp_socket64.o: $(TEST64)/udp_socket_test.c $(TEST64)/tests64.h $(TEST64)/net_test.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_net_interface64.o: $(TEST64)/net_interface_test.c $(TEST64)/tests64.h $(TEST64)/net_test.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_vfs64.o: $(TEST64)/vfs_test.c $(TEST64)/tests64.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_posix_fd64.o: $(TEST64)/posix_fd_test.c $(TEST64)/tests64.h $(PROCESS)/posix_fd.h $(FS)/vfs.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_posix_profile64.o: $(TEST64)/posix_profile_test.c $(TEST64)/tests64.h $(PROCESS)/posix_profile.h $(FS)/vfs.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_posix_vfs64.o: $(TEST64)/posix_vfs_test.c $(TEST64)/tests64.h $(PROCESS)/posix_vfs.h $(FS)/vfs.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_posix_time64.o: $(TEST64)/posix_time_test.c $(TEST64)/tests64.h $(PROCESS)/posix_time.h $(PROCESS)/posix_abi.h $(ARCH64_PLATFORM)/rtc64.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_posix_signal64.o: $(TEST64)/posix_signal_test.c $(TEST64)/tests64.h $(PROCESS)/posix_signal.h $(PROCESS)/posix_abi.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_posix_pledge64.o: $(TEST64)/posix_pledge_test.c $(TEST64)/tests64.h $(PROCESS)/posix_pledge.h $(PROCESS)/posix_abi.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_posix_pipe64.o: $(TEST64)/posix_pipe_test.c $(TEST64)/tests64.h $(PROCESS)/posix_pipe.h $(PROCESS)/posix_abi.h $(PROCESS)/posix_pledge.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_posix_socket64.o: $(TEST64)/posix_socket_test.c $(TEST64)/tests64.h $(PROCESS)/posix_socket.h $(PROCESS)/posix_fd.h $(PROCESS)/posix_abi.h $(PROCESS)/posix_pledge.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_posix_process64.o: $(TEST64)/posix_process_test.c $(TEST64)/tests64.h $(PROCESS)/posix_process.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_block64.o: $(TEST64)/block_test.c $(TEST64)/tests64.h $(BLOCK)/block.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_cache64.o: $(TEST64)/cache_test.c $(TEST64)/tests64.h $(BLOCK)/cache.h $(BLOCK)/block.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-$(OBJ64)/test_entropy64.o: $(TEST64)/entropy_test.c $(TEST64)/tests64.h $(CORE)/entropy.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_rtc64.o: $(TEST64)/rtc_test.c $(TEST64)/tests64.h $(ARCH64_PLATFORM)/rtc64.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -DMICH_TEST_BUILD -Werror -c $< -o $@
-
-$(OBJ64)/test_siphash64.o: $(TEST64)/siphash_test.c $(TEST64)/tests64.h $(CRYPTO)/siphash.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -DMICH_TEST_BUILD -Werror -c $< -o $@
-
-
-
-
-
-
-
-
-
-
-
-
-$(OBJ64)/test_crc32c64.o: $(TEST64)/crc32c_test.c $(TEST64)/tests64.h $(FS)/crc32c.h $(FS)/adytumfs_format.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_adytumfs_super64.o: $(TEST64)/adytumfs_super_test.c $(TEST64)/tests64.h $(FS)/adytumfs_format.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_adytumfs_volume64.o: $(TEST64)/adytumfs_volume_test.c $(TEST64)/tests64.h $(FS)/adytumfs_format.h $(BLOCK)/block.h $(OBJECTS)/object.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_adytumfs_alloc64.o: $(TEST64)/adytumfs_alloc_test.c $(TEST64)/tests64.h $(FS)/adytumfs_format.h $(BLOCK)/block.h $(OBJECTS)/object.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_adytumfs_inode64.o: $(TEST64)/adytumfs_inode_test.c $(TEST64)/tests64.h $(FS)/adytumfs_format.h $(BLOCK)/block.h $(OBJECTS)/object.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_adytumfs_extent64.o: $(TEST64)/adytumfs_extent_test.c $(TEST64)/tests64.h $(FS)/adytumfs_format.h $(BLOCK)/block.h $(OBJECTS)/object.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_adytumfs_dir64.o: $(TEST64)/adytumfs_dir_test.c $(TEST64)/tests64.h $(FS)/adytumfs_format.h $(BLOCK)/block.h $(OBJECTS)/object.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_adytumfs_diriter64.o: $(TEST64)/adytumfs_diriter_test.c $(TEST64)/tests64.h $(FS)/adytumfs_format.h $(BLOCK)/block.h $(OBJECTS)/object.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_adytumfs_file64.o: $(TEST64)/adytumfs_file_test.c $(TEST64)/tests64.h $(FS)/adytumfs_format.h $(BLOCK)/block.h $(OBJECTS)/object.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_adytumfs_ops64.o: $(TEST64)/adytumfs_ops_test.c $(TEST64)/tests64.h $(FS)/adytumfs_format.h $(BLOCK)/block.h $(OBJECTS)/object.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_adytumfs64.o: $(TEST64)/adytumfs_test.c $(TEST64)/tests64.h $(FS)/vfs.h $(FS)/adytumfs.h $(BLOCK)/block.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_adytumfs_crash64.o: $(TEST64)/adytumfs_crash_test.c $(TEST64)/tests64.h $(FS)/adytumfs_format.h $(FS)/adytumfs.h $(FS)/vfs.h $(BLOCK)/block.h $(BLOCK)/cache.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_crash_boot64.o: $(TEST64)/crash_boot.c $(TEST64)/tests64.h $(FS)/adytumfs_format.h $(FS)/adytumfs.h $(FS)/vfs.h $(ARCH64_PLATFORM)/pci64.h $(ARCH64_DRIVERS)/nvme.h $(ARCH64_KERNEL)/kernel64_internal.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_nvme64.o: $(TEST64)/nvme_test.c $(TEST64)/tests64.h $(ARCH64_DRIVERS)/nvme.h $(BLOCK)/block.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/test_net_bench64.o: $(TEST64)/net_bench_test.c $(TEST64)/tests64.h $(TEST64)/net_test.h $(NET)/vnic_benchmark.h $(NET)/vnic.h $(NET)/net_buffer.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/event_core.o: $(OBJECTS)/event.c $(OBJECTS)/event.h $(OBJECTS)/object.h $(PROCESS)/task.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/endpoint_core.o: $(OBJECTS)/endpoint.c $(OBJECTS)/endpoint.h $(OBJECTS)/object.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/bridge_core.o: $(OBJECTS)/bridge.c $(OBJECTS)/bridge.h $(OBJECTS)/endpoint.h $(OBJECTS)/event.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/pmm_core.o: $(CORE)/pmm.c $(CORE)/pmm.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/mem_core.o: $(CORE)/mem.c $(CORE)/types.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-$(OBJ64)/entropy_core.o: $(CORE)/entropy.c $(CORE)/entropy.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/siphash_core.o: $(CRYPTO)/siphash.c $(CRYPTO)/siphash.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-$(OBJ64)/crypto_core.o: $(CRYPTO)/crypto.c $(CRYPTO)/crypto.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -Werror -c $< -o $@
-
-
-
-
-
-
-
 
 
 $(OBJ64)/gdt_asm.o: $(ARCH64_CPU)/gdt.asm | $(OBJ64)
