@@ -37,7 +37,7 @@ and block calls require the caller to be a registered driver domain.
 
 - The number space is not contiguous. Unlisted numbers are reserved.
 - Two ABIs share one dispatcher: the native Mich ABI (below) and a POSIX profile
-  (186-209 and 217) used by the static libc. The socket stream file calls hold
+  (186-209 and 217-261) used by the static libc. The socket stream file calls hold
   210 and 211, and their driver-domain helpers hold 212 through 216, so the
   POSIX profile continues at 217. **Number 186 is shared** - the native block
   capsule interface create (`SYS_BLOCK_INTERFACE_CREATE`) and POSIX `open`
@@ -395,3 +395,27 @@ admitted to a POSIX profile. They are defined in `src/process/posix_abi.h`.
 | 235 | clock_gettime | Read a clock into seconds and nanoseconds. Realtime (0) follows the wall clock, monotonic (1) counts ticks since boot. |
 | 236 | clock_getres | Report a clock's resolution: one timer tick, honestly. |
 | 237 | nanosleep | Park the task until the requested interval has passed. The interval is rounded up to whole ticks, so a sleep never wakes early. |
+| 238 | kill | Send a signal to a process; the default action of a fatal signal terminates it with the 128+signal exit code. |
+| 239 | sigaction | Install, ignore, or restore a handler for one signal, with its mask and flags. |
+| 240 | sigprocmask | Change the blocked signal set: SIG_BLOCK, SIG_UNBLOCK, or SIG_SETMASK. |
+| 241 | sigreturn | Restore the frame captured for a handler. Only frames carrying the sentinel are accepted. |
+| 242 | sigpending | Report the signals pending for the calling process. |
+| 243 | pledge | Narrow the promise set. A later call may only remove promises; execpromises take over at the next execve. |
+| 244 | unveil | Add one visible path rule (r, w, x, c). The first call drops the veil over the whole namespace, 12 entries is the budget, and unveil(NULL, NULL) locks the table for good. |
+| 245 | pipe | Create a pipe; each end is a descriptor feeding a bounded 4 KiB ring. |
+| 246 | socket | Create an AF_INET stream or datagram socket. |
+| 247 | bind | Bind a socket to a local address and port. |
+| 248 | listen | Mark a stream socket as accepting, with a backlog bound. |
+| 249 | accept | Accept a pending connection and return its descriptor. |
+| 250 | connect | Open a connection to a peer address, parking the caller until the handshake answers. |
+| 251 | send | Write into a connected socket. |
+| 252 | recv | Read from a connected socket. |
+| 253 | sendto | Send a datagram to an explicit peer address. |
+| 254 | recvfrom | Receive a datagram and report the sender address. |
+| 255 | sendmsg | Send gathering up to four caller segments. |
+| 256 | recvmsg | Receive scattering into up to four caller segments; control data must be empty. |
+| 257 | shutdown | Close the read, write, or both halves of a socket (SHUT_RD, SHUT_WR, SHUT_RDWR). |
+| 258 | getsockopt | Read SO_TYPE, SO_DOMAIN, SO_PROTOCOL, or SO_ERROR. |
+| 259 | setsockopt | Accept SO_REUSEADDR at the SOL_SOCKET level. |
+| 260 | getsockname | Report the local address a socket is bound to. |
+| 261 | getpeername | Report the peer address a connected socket reached. |
