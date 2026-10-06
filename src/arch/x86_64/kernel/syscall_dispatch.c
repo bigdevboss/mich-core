@@ -79,6 +79,7 @@
 #include "posix_pipe.h"
 #include "posix_socket.h"
 #include "posix_poll.h"
+#include "posix_tty.h"
 #include "entropy.h"
 #include "kernel64_internal.h"
 
@@ -3076,6 +3077,25 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         request.length = POSIX_SOCKADDR_IN_SIZE;
         return vm64_copy_to(task->page_dir, arg0, &request,
                             sizeof(request)) ? (u64)(i64)POSIX_VFS_EIO : 0;
+    }
+    if (number == POSIX_SYSCALL_IOCTL) {
+        struct task *task = &task_pool[current_task_slot];
+        if (!posix_profile_admitted(task)) return (u64)(i64)POSIX_VFS_EACCES;
+        int gate = posix_pledge_gate(task, (u32)number);
+        if (gate) return pledge_violation(task, gate);
+        // Only tty descriptors answer a request; the termios and winsize
+        // structures are both smaller than a page, so one range check per
+        // direction covers what the tty layer copies.
+        u32 index = 0;
+        if (posix_fd_tty_of(task, (int)arg0, &index))
+            return (u64)(i64)POSIX_TTY_ENOTTY;
+        usize_t size = arg1 == POSIX_TCGETS || arg1 == POSIX_TCSETS ?
+            sizeof(struct posix_termios) : sizeof(struct posix_winsize);
+        int writing = arg1 == POSIX_TCSETS || arg1 == POSIX_TIOCSWINSZ;
+        if (!arg2 || vm64_user_access(task->page_dir, (uptr_t)arg2, size,
+                                      writing))
+            return (u64)(i64)POSIX_VFS_EINVAL;
+        return (u64)(i64)posix_tty_ioctl(task, index, arg1, (uptr_t)arg2);
     }
     if (number == POSIX_SYSCALL_POLL) {
         struct task *task = &task_pool[current_task_slot];

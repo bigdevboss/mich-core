@@ -27,6 +27,8 @@
 // it, so size and offset carry no meaning for them.
 #define VFS_SPECIAL_NONE 0u
 #define VFS_SPECIAL_URANDOM 1u
+#define VFS_SPECIAL_NULL 2u
+#define VFS_SPECIAL_CONSOLE 3u
 
 #define VFS_FILESYSTEM_RAMFS 1
 #define VFS_FILESYSTEM_BOOTFS 2
@@ -83,6 +85,8 @@ int vfs_unmount(struct kernel_object *directory);
 struct kernel_object *vfs_create(struct kernel_object *directory,
                                  const char *name, u32 type);
 struct kernel_object *vfs_create_urandom(struct kernel_object *directory);
+struct kernel_object *vfs_create_null(struct kernel_object *directory);
+struct kernel_object *vfs_create_console(struct kernel_object *directory);
 struct kernel_object *vfs_create_mode(struct kernel_object *directory,
                                       const char *name, u32 type, u32 mode);
 struct kernel_object *vfs_lookup(struct kernel_object *directory,
@@ -117,6 +121,9 @@ int vfs_truncate(struct kernel_object *file, u32 size);
 int vfs_fsync(struct kernel_object *file);
 int vfs_sync(struct kernel_object *file);
 int vfs_stat(struct kernel_object *object, struct vfs_node_info *info);
+// The special-node kind behind an open file: the posix layer routes reads,
+// writes and ioctls by it without reaching into the vfs state itself.
+int vfs_special(struct kernel_object *file, u32 *special);
 // One used directory entry per call into name: 0 for an entry, 1 at the
 // end, -1 on error. The cursor is opaque and advances past the entry.
 int vfs_read_dir(struct kernel_object *file, u64 *cursor, char *name,

@@ -552,4 +552,56 @@ struct posix_poll_request {
     struct posix_poll_fd fds[POSIX_POLL_FD_MAX];
 };
 
+// ioctl carries the tty requests. The numbers are the Linux ones so a
+// ported program passes them unchanged; the kernel answers ENOTTY for a
+// request that does not belong to the descriptor it was aimed at.
+#define POSIX_SYSCALL_IOCTL 263u
+
+#define POSIX_TCGETS 0x5401u
+#define POSIX_TCSETS 0x5402u
+#define POSIX_TIOCGPGRP 0x540Fu
+#define POSIX_TIOCSPGRP 0x5410u
+#define POSIX_TIOCGWINSZ 0x5413u
+#define POSIX_TIOCSWINSZ 0x5414u
+
+// The termios layout the profile carries: the four flag words, the line
+// discipline selector, and the control characters. The array keeps the
+// Linux indices so the classic VINTR/VERASE spellings line up; the slots
+// the line discipline does not use stay as the caller left them.
+#define POSIX_NCCS 19u
+#define POSIX_VINTR 0u
+#define POSIX_VQUIT 1u
+#define POSIX_VERASE 2u
+#define POSIX_VKILL 3u
+#define POSIX_VEOF 4u
+#define POSIX_VSUSP 10u
+
+struct posix_termios {
+    u32 iflag;
+    u32 oflag;
+    u32 cflag;
+    u32 lflag;
+    u8 line;
+    u8 cc[POSIX_NCCS];
+};
+
+// Input flags: CR to NL is the one every interactive program relies on.
+#define POSIX_ICRNL 0x100u
+// Output flags: NL to CR-NL keeps a raw line feed from staircasing a
+// terminal dialed in over the serial port.
+#define POSIX_OPOST 0x1u
+#define POSIX_ONLCR 0x4u
+// Local flags: the three the line discipline implements. Everything else
+// a caller sets is refused rather than half-honored.
+#define POSIX_ISIG 0x1u
+#define POSIX_ICANON 0x2u
+#define POSIX_ECHO 0x8u
+
+struct posix_winsize {
+    u16 rows;
+    u16 cols;
+    u16 xpixel;
+    u16 ypixel;
+};
+
 #endif

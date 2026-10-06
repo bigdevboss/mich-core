@@ -1,4 +1,5 @@
 #include "vfs.h"
+#include "posix_tty.h"
 #include "spinlock.h"
 #include "resource.h"
 #include "adytumfs.h"
@@ -826,6 +827,30 @@ struct kernel_object *vfs_create_urandom(struct kernel_object *directory) {
     return object;
 }
 
+// The null device: reads answer end of file, writes go nowhere, and the
+// mode mirrors /dev/urandom because both are read-write character nodes.
+struct kernel_object *vfs_create_null(struct kernel_object *directory) {
+    struct kernel_object *object = vfs_create_mode(
+        directory, "null", VFS_NODE_REGULAR, VFS_MODE_REGULAR_DEFAULT);
+    if (!object) return 0;
+    struct vfs_node_state *node = node_for(object);
+    node->special = VFS_SPECIAL_NULL;
+    node->readonly = 0;
+    node->size = 0;
+    return object;
+}
+
+struct kernel_object *vfs_create_console(struct kernel_object *directory) {
+    struct kernel_object *object = vfs_create_mode(
+        directory, "console", VFS_NODE_REGULAR, VFS_MODE_REGULAR_DEFAULT);
+    if (!object) return 0;
+    struct vfs_node_state *node = node_for(object);
+    node->special = VFS_SPECIAL_CONSOLE;
+    node->readonly = 0;
+    node->size = 0;
+    return object;
+}
+
 struct kernel_object *vfs_symlink(struct kernel_object *directory,
                                   const char *name, const char *target) {
     // The target lives inline in the node, so it is bounded by the path
@@ -1415,6 +1440,18 @@ int vfs_read(struct kernel_object *object, u32 offset,
         *transferred = count;
         return 0;
     }
+    if (node->special == VFS_SPECIAL_NULL) {
+        *transferred = 0;
+        return 0;
+    }
+    if (node->special == VFS_SPECIAL_CONSOLE) {
+        int result = posix_tty_read(0, (u8 *)buffer, length, transferred);
+        if (result == POSIX_TTY_EAGAIN) {
+            *transferred = 0;
+            return 0;
+        }
+        return result;
+    }
     if (offset >= node->size) {
         *transferred = 0;
         return 0;
@@ -1463,6 +1500,12 @@ static int write_node(struct vfs_node_state *node, u32 offset,
         !transferred || offset > VFS_FILE_SIZE_MAX ||
         length > VFS_FILE_SIZE_MAX - offset)
         return -1;
+    if (node->special == VFS_SPECIAL_NULL) {
+        *transferred = length;
+        return 0;
+    }
+    if (node->special == VFS_SPECIAL_CONSOLE)
+        return posix_tty_write(0, (const u8 *)buffer, length, transferred);
     if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) {
         if (offset > ADYTUMFS_FILE_SIZE_MAX ||
             length > ADYTUMFS_FILE_SIZE_MAX - offset)
@@ -1641,6 +1684,14 @@ int vfs_fsync(struct kernel_object *object) {
     }
     // The ramfs keeps its bytes in memory only, so a durability call has
     // nothing further to push.
+    return 0;
+}
+
+int vfs_special(struct kernel_object *file, u32 *special) {
+    struct vfs_file_state *state = file_for(file);
+    struct vfs_node_state *node = state ? node_for(state->node) : 0;
+    if (!node || !special) return -1;
+    *special = node->special;
     return 0;
 }
 

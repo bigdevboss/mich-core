@@ -38,6 +38,7 @@ int test_posix_pledge64(void);
 int test_posix_pipe64(void);
 int test_posix_socket64(const struct test64_env *env);
 int test_posix_poll64(struct task *owner);
+int test_posix_tty64(struct task *owner);
 int test_block64(void);
 int test_cache64(void);
 int test_entropy64(void);

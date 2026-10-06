@@ -362,6 +362,20 @@ int posix_fd_socket_update(struct task *task, int descriptor, u32 flags,
 
 // The read and write paths ask whether a descriptor is a pipe end before
 // they route it at the vfs; the descriptor rights were already checked.
+// The console is the only tty descriptor today, and it is a devfs node
+// like /dev/urandom: the descriptor answers its special kind, not a second
+// table of its own.
+int posix_fd_tty_of(struct task *task, int descriptor, u32 *index) {
+    struct posix_ofd *ofd = retain_descriptor(task, descriptor, 0);
+    if (!ofd) return -1;
+    u32 special = VFS_SPECIAL_NONE;
+    int result = vfs_special(ofd->file, &special);
+    release_ofd(ofd);
+    if (result || special != VFS_SPECIAL_CONSOLE) return -1;
+    *index = 0;
+    return 0;
+}
+
 int posix_fd_pipe_of(struct task *task, int descriptor, u32 *pipe,
                      u32 *end) {
     int slot = live_task_slot(task);
