@@ -170,6 +170,7 @@ $(OBJ64)/posix_pledge_core.o: $(PROCESS)/posix_pledge.c $(PROCESS)/posix_pledge.
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
 $(OBJ64)/posix_pipe_core.o: $(PROCESS)/posix_pipe.c $(PROCESS)/posix_pipe.h $(PROCESS)/posix_abi.h $(PROCESS)/posix_signal.h $(PROCESS)/posix_vfs.h | $(OBJ64)
+	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
 $(OBJ64)/posix_socket_core.o: $(PROCESS)/posix_socket.c $(PROCESS)/posix_socket.h $(PROCESS)/posix_abi.h $(PROCESS)/posix_fd.h $(PROCESS)/posix_signal.h $(PROCESS)/posix_vfs.h $(NET)/socket.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
@@ -387,6 +388,7 @@ $(OBJ64)/test_posix_pledge64.o: $(TEST64)/posix_pledge_test.c $(TEST64)/tests64.
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
 $(OBJ64)/test_posix_pipe64.o: $(TEST64)/posix_pipe_test.c $(TEST64)/tests64.h $(PROCESS)/posix_pipe.h $(PROCESS)/posix_abi.h $(PROCESS)/posix_pledge.h | $(OBJ64)
+	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
 $(OBJ64)/test_posix_socket64.o: $(TEST64)/posix_socket_test.c $(TEST64)/tests64.h $(PROCESS)/posix_socket.h $(PROCESS)/posix_fd.h $(PROCESS)/posix_abi.h $(PROCESS)/posix_pledge.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
