@@ -355,8 +355,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             parent->state = TASK_RUNNING;
             return (u64)(i64)EDEADLK;
         }
-        scheduler64_switch();
-        return task_contexts[current_task_slot].rax;
+        return (u64)task64_block_switch();
     }
     if (number == 16) {
         u32 slot = smp64_running_slot();
@@ -401,8 +400,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         return 0;
     }
     if (number == 23) {
-        scheduler64_switch();
-        return task_contexts[current_task_slot].rax;
+        return (u64)task64_block_switch();
     }
     if (number == 32) {
         if (!(task_pool[current_task_slot].capabilities & CAP_TASK_ADMIN))
@@ -452,8 +450,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         if (!object) return (u64)-1;
         int result = event_wait(object, current_task_slot);
         if (result <= 0) return (u64)(i64)result;
-        scheduler64_switch();
-        return task_contexts[current_task_slot].rax;
+        return (u64)task64_block_switch();
     }
     if (number == 36) {
         struct kernel_object *object =
@@ -496,8 +493,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         if (!endpoint) return (u64)-1;
         int result = bridge_endpoint_wait(endpoint, current_task_slot);
         if (result <= 0) return (u64)(i64)result;
-        scheduler64_switch();
-        return task_contexts[current_task_slot].rax;
+        return (u64)task64_block_switch();
     }
     if (number == 41) {
         struct kernel_object *endpoint =
@@ -727,8 +723,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         int result = event_wait_timeout(object, current_task_slot,
                                         timer_ticks + (u32)arg1);
         if (result <= 0) return (u64)(i64)result;
-        scheduler64_switch();
-        return task_contexts[current_task_slot].rax;
+        return (u64)task64_block_switch();
     }
     if (number == 59) {
         u32 slot = PID_SLOT((u32)arg0);
@@ -974,8 +969,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         if (!event) return (u64)-1;
         int result = event_wait(event, current_task_slot);
         if (result <= 0) return (u64)(i64)result;
-        scheduler64_switch();
-        return task_contexts[current_task_slot].rax;
+        return (u64)task64_block_switch();
     }
     if (number == 82) {
         struct kernel_object *timer = timer_object_create();
@@ -1220,8 +1214,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         if (!event) return (u64)-1;
         int result = event_wait(event, current_task_slot);
         if (result <= 0) return (u64)(i64)result;
-        scheduler64_switch();
-        return task_contexts[current_task_slot].rax;
+        return (u64)task64_block_switch();
     }
     if (number == 102) {
         struct task *task = &task_pool[current_task_slot];
@@ -2401,8 +2394,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             task->state = TASK_BLOCKED_SLEEP;
             task->sleep_deadline = timer_ticks + ticks;
             task->sleep_request = arg0;
-            scheduler64_switch();
-            return task_contexts[current_task_slot].rax;
+            return (u64)task64_block_switch();
         }
         if (number == POSIX_SYSCALL_KILL) {
             int result = posix_signal_kill(task, (int)arg0, (u32)arg1);
