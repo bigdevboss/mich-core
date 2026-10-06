@@ -358,7 +358,7 @@ $(OBJ64)/test_tcp64.o: $(TEST64)/tcp_test.c $(TEST64)/tests64.h $(TEST64)/net_te
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
 $(OBJ64)/test_dns64.o: $(TEST64)/dns_test.c $(TEST64)/tests64.h $(NET)/dns_message.h | $(OBJ64)
-	$(CC) $(CFLAGS64) -c $< -o $@
+	$(CC) $(CFLAGS64) -Werror -c $< -o $@
 
 $(OBJ64)/test_udp_socket64.o: $(TEST64)/udp_socket_test.c $(TEST64)/tests64.h $(TEST64)/net_test.h | $(OBJ64)
 	$(CC) $(CFLAGS64) -Werror -c $< -o $@
