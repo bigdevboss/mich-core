@@ -1460,8 +1460,11 @@ void task64_set_result(u32 slot, i64 result) {
 }
 
 i64 task64_block_switch(void) {
+    // A wake stages its answer in the parking slot alone: reading the
+    // loaded slot here answered a recv with a byte count it never took.
+    u32 parked = current_task_slot;
     scheduler64_switch();
-    return (i64)task_contexts[current_task_slot].rax;
+    return (i64)task_contexts[parked].rax;
 }
 
 static void interrupt_save(struct task_context64 *context,
