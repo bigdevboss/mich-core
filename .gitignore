@@ -1,0 +1,3 @@
+# Build output. bin/ holds the kernel image, the module disks and every
+# object; nothing under it belongs in the tree.
+bin/
