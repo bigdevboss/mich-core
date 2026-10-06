@@ -196,6 +196,11 @@ int adytumfs_dir_iter(struct kernel_object *device,
             if (ADYTUMFS_DIR_HEADER + entry_name_len > rec_len) return -1;
             for (u32 index = 0; index < entry_name_len; index++)
                 name[index] = (char)adytumfs_dir_scratch[within + 12 + index];
+            // The VFS and the probes read the name as a C string, and a
+            // name at the bound fills the last byte of a bare
+            // ADYTUMFS_NAME_MAX buffer, so the terminator lands here and
+            // the callers size their buffers one byte past the bound.
+            name[entry_name_len] = 0;
             *name_len = entry_name_len;
             *inode_out = entry_inode;
             *type_out = entry_type;

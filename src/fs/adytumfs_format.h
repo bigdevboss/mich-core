@@ -326,8 +326,9 @@ int adytumfs_dir_remove(struct kernel_object *device,
                         struct adytumfs_superblock *super, u64 dir_inode,
                         const char *name, u32 name_len);
 // Iterate directory entries: start with *cursor = 0, get one used entry per call
-// (name needs an ADYTUMFS_NAME_MAX buffer) plus its length, inode, and type, and
-// an advanced cursor; returns 0 for an entry, 1 at the end, -1 on error.
+// (name needs an ADYTUMFS_NAME_MAX + 1 buffer, it comes back NUL-terminated)
+// plus its length, inode, and type, and an advanced cursor; returns 0 for an
+// entry, 1 at the end, -1 on error.
 int adytumfs_dir_iter(struct kernel_object *device,
                       const struct adytumfs_superblock *super, u64 dir_inode,
                       u64 *cursor, char *name, u32 *name_len, u64 *inode_out,

@@ -26,7 +26,7 @@ int test_adytumfs_diriter64(void) {
         adytumfs_dir_add(dev, &super, dir, "four", 4, 24, ADYTUMFS_DTYPE_REG) == 0 &&
         adytumfs_dir_remove(dev, &super, dir, "two", 3) == 0;
 
-    char name[ADYTUMFS_NAME_MAX];
+    char name[ADYTUMFS_NAME_MAX + 1];
     u32 name_len = 0;
     u64 inode = 0;
     u8 type = 0;

@@ -116,7 +116,7 @@ static int walk_tree(struct adytumfs_mount *m, adytumfs_alias_sink sink) {
         head++;
         u64 cursor = 0;
         for (;;) {
-            char name[ADYTUMFS_NAME_MAX];
+            char name[ADYTUMFS_NAME_MAX + 1];
             u32 name_len = 0;
             u64 target = 0;
             u8 type = 0;
@@ -834,7 +834,7 @@ int adytumfs_unlink(u32 mount, u32 inode, u64 generation, u32 parent,
         // The VFS only unlinks directories it sees as empty; hold the disk
         // to the same rule, because tombstoned records still own a data
         // block.
-        char probe[ADYTUMFS_NAME_MAX];
+        char probe[ADYTUMFS_NAME_MAX + 1];
         u32 probe_len = 0;
         u64 target = 0;
         u8 type = 0;
@@ -1053,7 +1053,7 @@ int adytumfs_inode_remove(u32 mount, u32 inode) {
     if (bits == ADYTUMFS_MODE_DIR) {
         // The VFS only unlinks directories it sees as empty; hold the disk to
         // the same rule, because tombstoned records still own a data block.
-        char name[ADYTUMFS_NAME_MAX];
+        char name[ADYTUMFS_NAME_MAX + 1];
         u32 name_len = 0;
         u64 target = 0;
         u8 type = 0;
