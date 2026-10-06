@@ -1,6 +1,6 @@
 # Mich Core
 
-[![build](https://github.com/bigdevboss/mich-core/actions/workflows/build.yml/badge.svg)](https://github.com/bigdevboss/mich-core/actions/workflows/build.yml)
+[![build](https://github.com/ukdaemonz/mich-core/actions/workflows/build.yml/badge.svg)](https://github.com/ukdaemonz/mich-core/actions/workflows/build.yml)
 
 ## License
 
@@ -743,13 +743,13 @@ yours lives somewhere else.
 ## Build
 
 ```bash
-git clone --recurse-submodules https://github.com/bigdevboss/mich-core.git
+git clone --recurse-submodules https://github.com/ukdaemonz/mich-core.git
 cd mich-core
 make -j2
 ```
 
 The userspace (init, libc, and driver capsules) lives in the
-[mich-userkit](https://github.com/bigdevboss/mich-userkit) submodule under
+[mich-userkit](https://github.com/ukdaemonz/mich-userkit) submodule under
 `src/user64`. If you cloned without `--recurse-submodules`, run
 `git submodule update --init` before building.
 

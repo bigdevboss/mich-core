@@ -920,7 +920,7 @@ live_primary="Mich test64: driver live primary bootstrap pass"
 }
 fi
 if [ "$profile" = "uefi" ]; then
-    grep -Fq "BigDevBoot UEFI 0.2.0 by bigdevboss" "$log" || {
+    grep -Fq "BigDevBoot UEFI 0.2.0 by ukdaemonz" "$log" || {
         cat "$log"
         exit 1
     }

@@ -453,7 +453,7 @@ efi_status __attribute__((ms_abi)) efi_main(efi_handle image,
     u64 cr4;
 
     serial_init();
-    serial_puts("BigDevBoot UEFI 0.2.0 by bigdevboss\r\n");
+    serial_puts("BigDevBoot UEFI 0.2.0 by ukdaemonz\r\n");
     if (!st || !st->boot_services) fail("uefi: no boot services\r\n");
     bs = st->boot_services;
 
