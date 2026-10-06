@@ -419,3 +419,5 @@ admitted to a POSIX profile. They are defined in `src/process/posix_abi.h`.
 | 259 | setsockopt | Accept SO_REUSEADDR at the SOL_SOCKET level. |
 | 260 | getsockname | Report the local address a socket is bound to. |
 | 261 | getpeername | Report the peer address a connected socket reached. |
+| 262 | poll | Wait for readiness on up to 16 descriptors, with a millisecond timeout and -1 for an endless wait. Descriptors report read and write readiness plus the error bits; a descriptor that names no open file is POLLNVAL. |
+| 263 | ioctl | Tty control: TCGETS and TCSETS carry the termios, TIOCGWINSZ and TIOCSWINSZ the window size. A descriptor that is not a tty, or a request the tty does not carry, answers ENOTTY. |

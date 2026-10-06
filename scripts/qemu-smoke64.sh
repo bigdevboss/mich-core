@@ -882,6 +882,7 @@ case "$profile" in
             "Mich x86_64: POSIX signals pass" \
             "Mich x86_64: POSIX sockets pass" \
             "Mich x86_64: POSIX poll pass" \
+            "Mich x86_64: POSIX tty console pass" \
             "Mich x86_64: POSIX application process pass" \
             "Mich x86_64: POSIX pledge and unveil pass" \
             "Mich x86_64: POSIX pipes pass" \
