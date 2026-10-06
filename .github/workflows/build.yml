@@ -5,6 +5,13 @@ name: build
 # smoke cannot reach main unnoticed. Profile coverage beyond the default smoke
 # stays in release-check because those profiles need tap, MSI hardware
 # programming or the netbench peer.
+#
+# The job runs inside Debian 13 on purpose: that is the toolchain the notes and
+# the release runs use (QEMU 10.0.13). The unit battery fails on the runner's
+# own Ubuntu 24.04 image, which ships QEMU 8.2: the guest panics with
+# "independent kernel tests" right after "adytumfs path operations pass". That
+# is a finding to chase on its own; CI should not hide it by pinning to the
+# stack the kernel was never tested on.
 
 on:
   push:
@@ -14,16 +21,22 @@ on:
 jobs:
   build-and-smoke:
     runs-on: ubuntu-latest
+    container: debian:trixie
     timeout-minutes: 30
+    # A shared runner is slower than the developer box, so the QEMU budget the
+    # runners default to is widened here rather than tuned down in the scripts.
+    env:
+      MICH_QEMU_TIMEOUT: "180"
     steps:
+      - name: Install the toolchain and the UEFI firmware
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git ca-certificates nodejs make gcc python3 nasm qemu-system-x86 ovmf
+
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-
-      - name: Install the toolchain and the UEFI firmware
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends nasm qemu-system-x86 ovmf
 
       - name: Build
         run: make -j2
