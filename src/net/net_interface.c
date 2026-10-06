@@ -1248,7 +1248,10 @@ int net_interface_tcp_shutdown(struct kernel_object *object, u64 connection) {
     int result = tcp_shutdown(interface->tcp, connection,
                               interface->now, &transmit);
     if (result < 0) return -1;
-    if (result == 0) return transmit_tcp(interface, &transmit);
+    // One means the frame queued behind an address resolution, which is
+    // success on its way; the descriptor layer maps any truthy value to EIO.
+    if (result == 0)
+        return transmit_tcp(interface, &transmit) < 0 ? -1 : 0;
     return flush_tcp(interface, connection);
 }
 
@@ -1273,7 +1276,7 @@ int net_interface_tcp_close(struct kernel_object *object, u64 connection) {
     int result = tcp_detach(interface->tcp, connection,
                             interface->now, &transmit);
     if (result < 0) return -1;
-    if (result > 0 && transmit_tcp(interface, &transmit)) return -1;
+    if (result > 0 && transmit_tcp(interface, &transmit) < 0) return -1;
     return flush_tcp(interface, connection);
 }
 
