@@ -4,15 +4,16 @@ name: build
 # a developer runs locally, on a clean machine, so a dropped recipe or a flaky
 # smoke cannot reach main unnoticed. Profile coverage beyond the default smoke
 # stays in release-check because those profiles need tap, MSI hardware
-# programming or the netbench peer; the tcp wire profile is the exception,
-# because it needs nothing but the guest and a host process to echo to.
+# programming or the netbench peer; the tcp wire and dns profiles are the
+# exceptions, because they need nothing but the guest and QEMU's user network.
 #
-# The jobs run inside Debian 13 on purpose: that is the toolchain the notes and
-# the release runs use (QEMU 10.0.13). The unit battery fails on the runner's
-# own Ubuntu 24.04 image, which ships QEMU 8.2: the guest panics with
-# "independent kernel tests" right after "adytumfs path operations pass". That
-# is a finding to chase on its own; CI should not hide it by pinning to the
-# stack the kernel was never tested on.
+# The build jobs run inside Debian 13 on purpose: that is the toolchain the
+# notes and the release runs use (QEMU 10.0.13). The unit battery also runs on
+# the runner's own Ubuntu 24.04 image (gcc 13, QEMU 8.2), because that is the
+# only configuration that caught H9: a directory name handed out without its
+# terminator read a stale stack byte there and tripped the battery, while the
+# Debian runs stayed green. Both unit jobs run the same recipe on purpose, so
+# a codegen-dependent bug has nowhere to hide.
 
 on:
   push:
@@ -90,3 +91,48 @@ jobs:
 
       - name: TCP wire smoke
         run: make test64-tcpwire
+
+  dns-smoke:
+    # The resolver path against QEMU's user network DNS responder; the test
+    # image prints its own markers and the profile gate holds it to them.
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    timeout-minutes: 20
+    steps:
+      - name: Install the toolchain and the UEFI firmware
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git ca-certificates nodejs make gcc python3 nasm qemu-system-x86 ovmf
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: DNS smoke
+        run: make test64-dns
+
+  unit-ubuntu:
+    # The same battery on the runner's own Ubuntu 24.04 image: gcc 13 with the
+    # distribution QEMU 8.2 and OVMF. This configuration exists because it is
+    # the one that caught H9, and a green Debian run said nothing about it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MICH_QEMU_TIMEOUT: "180"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install the toolchain and the UEFI firmware
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            nasm qemu-system-x86 ovmf
+
+      - name: Build
+        run: make -j2
+
+      - name: Unit battery
+        run: make test64-unit
