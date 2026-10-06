@@ -78,6 +78,7 @@
 #include "posix_pledge.h"
 #include "posix_pipe.h"
 #include "posix_socket.h"
+#include "posix_poll.h"
 #include "entropy.h"
 #include "kernel64_internal.h"
 
@@ -3075,6 +3076,21 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         request.length = POSIX_SOCKADDR_IN_SIZE;
         return vm64_copy_to(task->page_dir, arg0, &request,
                             sizeof(request)) ? (u64)(i64)POSIX_VFS_EIO : 0;
+    }
+    if (number == POSIX_SYSCALL_POLL) {
+        struct task *task = &task_pool[current_task_slot];
+        struct posix_poll_request request;
+        // The revents array comes back even on a zero-ready answer, so the
+        // whole request must be writable before anything is copied.
+        if (vm64_user_access(task->page_dir, arg0, sizeof(request), 1) ||
+            vm64_copy_from(task->page_dir, &request, arg0, sizeof(request)) ||
+            request.reserved || !request.count ||
+            request.count > POSIX_POLL_FD_MAX || (i64)arg1 < -1)
+            return (u64)(i64)POSIX_VFS_EINVAL;
+        for (u32 index = 0; index < request.count; index++)
+            if (request.fds[index].events & ~(u32)POSIX_POLL_REQUEST_MASK)
+                return (u64)(i64)POSIX_VFS_EINVAL;
+        return (u64)(i64)posix_poll(task, arg0, &request, (i64)arg1);
     }
     if (number == 4) {
         serial64_write("Mich x86_64: syscall/sysret pass\n");

@@ -317,6 +317,7 @@ static u32 required_promises(u32 number) {
     case POSIX_SYSCALL_SIGRETURN:
     case POSIX_SYSCALL_SIGPENDING:
     case POSIX_SYSCALL_PIPE:
+    case POSIX_SYSCALL_POLL:
         return POSIX_PLEDGE_STDIO;
     case POSIX_SYSCALL_STAT:
     case POSIX_SYSCALL_LSTAT:

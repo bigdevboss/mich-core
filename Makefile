@@ -305,7 +305,7 @@ $(USER64_OBJ_DIR)/posixapp.o: src/user64/posixapp/main.c src/user64/include/errn
 $(POSIXAPP64_ELF): $(POSIXAPP64_OBJS) src/user64/linker.ld | $(USER64_DIR)
 	$(LD) -m elf_x86_64 -T src/user64/linker.ld -o $@ $(POSIXAPP64_OBJS)
 
-$(USER64_OBJ_DIR)/posixdemo.o:src/user64/posixdemo/main.c src/user64/include/errno.h src/user64/include/fcntl.h src/user64/include/signal.h src/user64/include/time.h src/user64/include/unistd.h src/user64/include/string.h src/user64/include/stdio.h src/user64/include/stdlib.h src/user64/include/sys/stat.h src/user64/include/sys/wait.h src/user64/include/mich/syscall.h src/user64/include/sys/random.h src/user64/include/sys/socket.h src/user64/include/netinet/in.h | $(USER64_OBJ_DIR) src/user64/include/sys/random.h
+$(USER64_OBJ_DIR)/posixdemo.o:src/user64/posixdemo/main.c src/user64/include/errno.h src/user64/include/fcntl.h src/user64/include/signal.h src/user64/include/time.h src/user64/include/unistd.h src/user64/include/string.h src/user64/include/stdio.h src/user64/include/stdlib.h src/user64/include/sys/stat.h src/user64/include/sys/wait.h src/user64/include/mich/syscall.h src/user64/include/sys/random.h src/user64/include/sys/socket.h src/user64/include/netinet/in.h src/user64/include/poll.h src/user64/include/sys/select.h | $(USER64_OBJ_DIR) src/user64/include/sys/random.h
 	$(CC) $(USER64_CFLAGS) -Werror -c $< -o $@
 
 $(POSIXDEMO64_ELF): $(POSIXDEMO64_OBJS) src/user64/linker.ld | $(USER64_DIR)

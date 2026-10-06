@@ -75,6 +75,7 @@
 #define POSIX_SYSCALL_SETSOCKOPT 259u
 #define POSIX_SYSCALL_GETSOCKNAME 260u
 #define POSIX_SYSCALL_GETPEERNAME 261u
+#define POSIX_SYSCALL_POLL 262u
 
 // The bounded signal set the profile carries. The numbers are the POSIX
 // ones; everything outside this list is rejected as EINVAL rather than
@@ -518,6 +519,37 @@ struct posix_socket_shutdown_request {
     i32 descriptor;
     u32 how;
     u32 reserved;
+};
+
+// poll event bits, the POSIX values. The caller asks with the low two and
+// the kernel answers with those it found plus the error bits, which are
+// always reported: a caller that asked only for readability still learns
+// the write end died.
+#define POSIX_POLLIN 0x001u
+#define POSIX_POLLOUT 0x004u
+#define POSIX_POLLERR 0x008u
+#define POSIX_POLLHUP 0x010u
+#define POSIX_POLLNVAL 0x020u
+
+// The bits a caller may ask for; the error bits are answers only and a
+// request carrying one is a bug on the caller's side, not a silent no-op.
+#define POSIX_POLL_REQUEST_MASK (POSIX_POLLIN | POSIX_POLLOUT)
+
+struct posix_poll_fd {
+    i32 descriptor;
+    u16 events;
+    u16 revents;
+};
+
+// The descriptor array rides inline in the copied request; a poll list
+// longer than the descriptor table could only repeat it, and the timeout
+// arrives as the second syscall argument so -1 means wait forever.
+#define POSIX_POLL_FD_MAX 16u
+
+struct posix_poll_request {
+    u32 count;
+    u32 reserved;
+    struct posix_poll_fd fds[POSIX_POLL_FD_MAX];
 };
 
 #endif

@@ -62,6 +62,7 @@ int socket_receive_from_ipv6(struct kernel_object *socket,
                              struct udpv6_datagram *datagram);
 int socket_local_address(struct kernel_object *socket,
                          u32 *address, u16 *port);
+int socket_datagram_pending(struct kernel_object *socket);
 struct kernel_object *socket_wait_event(struct kernel_object *socket);
 int socket_stream_take_notify(struct kernel_object *socket);
 u32 socket_active_count(void);

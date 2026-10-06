@@ -604,6 +604,7 @@ for marker in \
     "Mich test64: POSIX VFS authority and mode pass" \
     "Mich test64: POSIX process stack layout pass" \
     "Mich test64: POSIX clocks and sleep pass" \
+    "Mich test64: POSIX poll readiness pass" \
     "Mich test64: block device objects pass" \
     "Mich test64: ramdisk read and write pass" \
     "Mich test64: block request generation pass" \
@@ -880,6 +881,7 @@ case "$profile" in
             "Mich x86_64: POSIX clocks pass" \
             "Mich x86_64: POSIX signals pass" \
             "Mich x86_64: POSIX sockets pass" \
+            "Mich x86_64: POSIX poll pass" \
             "Mich x86_64: POSIX application process pass" \
             "Mich x86_64: POSIX pledge and unveil pass" \
             "Mich x86_64: POSIX pipes pass" \

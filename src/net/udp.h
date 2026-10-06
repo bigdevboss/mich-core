@@ -76,6 +76,10 @@ struct kernel_object *udp_binding_event(struct udp_context *udp,
                                         u64 binding_id);
 int udp_binding_local(struct udp_context *udp, u64 binding_id,
                       u32 *address, u16 *port);
+// The readiness probe the poll path asks: does a receive return without
+// parking. A receive drains the queue, so a caller that never reads keeps
+// the answer true, which is what a level-triggered poll wants.
+int udp_binding_pending(struct udp_context *udp, u64 binding_id);
 int udp_ipv4_handler(struct ipv4_context *ipv4,
                      const struct ipv4_packet_view *packet,
                      void *context);

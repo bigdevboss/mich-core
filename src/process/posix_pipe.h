@@ -2,6 +2,7 @@
 #define POSIX_PIPE_H
 
 #include "types.h"
+#include "posix_abi.h"
 #include "posix_vfs.h"
 
 // The pipe pool is static and bounded, like the task and ofd pools: no
@@ -38,6 +39,12 @@ int posix_pipe_io(struct task *task, u32 index, u32 end, uptr_t request,
 // on an empty ring and writes are all-or-nothing under PIPE_BUF, so the
 // interrupted call always owes its whole request and answers EINTR.
 i64 posix_pipe_signal(struct task *target);
+
+// The readiness one end of a pipe carries, before the caller's requested
+// event set narrows it: data or a hangup on the read end, room or a dead
+// peer on the write end. An index that names no live pipe answers
+// POSIX_POLLNVAL.
+u16 posix_pipe_poll(u32 index, u32 end);
 
 u32 posix_pipe_active_count(void);
 

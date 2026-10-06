@@ -72,6 +72,9 @@ int udpv6_receive(struct udpv6_context *udp, u64 binding_id,
                   struct udpv6_datagram *datagram);
 struct kernel_object *udpv6_binding_event(struct udpv6_context *udp,
                                           u64 binding_id);
+// The readiness probe the poll path asks: does a receive return without
+// parking, the same question the udp context answers for IPv4.
+int udpv6_binding_pending(struct udpv6_context *udp, u64 binding_id);
 int udpv6_ipv6_handler(struct ipv6_context *ipv6,
                        const struct ipv6_packet_view *packet,
                        void *context);

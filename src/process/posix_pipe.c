@@ -1,5 +1,6 @@
 #include "posix_pipe.h"
 #include "posix_abi.h"
+#include "posix_poll.h"
 #include "posix_signal.h"
 #include "posix_vfs.h"
 #include "task.h"
@@ -224,6 +225,7 @@ int posix_pipe_io(struct task *task, u32 index, u32 end, uptr_t request,
             // The space opens before the writers wake, so each completed
             // writer finds room for its whole request.
             wake_writers(index);
+            posix_poll_notify();
             return (int)take;
         }
         if (!pipe->writers) {
@@ -274,6 +276,7 @@ int posix_pipe_io(struct task *task, u32 index, u32 end, uptr_t request,
     u32 transferred = length;
     patch_result(task, request, transferred);
     wake_readers(index);
+    posix_poll_notify();
     return (int)length;
 }
 
@@ -285,6 +288,24 @@ i64 posix_pipe_signal(struct task *target) {
     waits[slot].request = 0;
     waits[slot].length = 0;
     return POSIX_SIGNAL_EINTR;
+}
+
+u16 posix_pipe_poll(u32 index, u32 end) {
+    if (index >= POSIX_PIPE_MAX || !pipes[index].active) return POSIX_POLLNVAL;
+    struct posix_pipe_state *pipe = &pipes[index];
+    if (end == POSIX_PIPE_END_READ) {
+        u16 ready = pipe->count ? POSIX_POLLIN : 0;
+        // The last writer leaving reports the hangup whether or not the
+        // ring still holds bytes, which is where a reader parked on an
+        // empty ring gets its EOF from.
+        if (!pipe->writers) ready |= POSIX_POLLHUP;
+        return ready;
+    }
+    if (end != POSIX_PIPE_END_WRITE) return POSIX_POLLNVAL;
+    u16 ready = 0;
+    if (!pipe->readers) ready |= POSIX_POLLERR;
+    else if (ring_free(pipe)) ready |= POSIX_POLLOUT;
+    return ready;
 }
 
 u32 posix_pipe_active_count(void) {

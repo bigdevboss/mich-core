@@ -35,6 +35,10 @@ int posix_fd_socket_update(struct task *task, int descriptor, u32 flags,
                            const struct posix_sockaddr_in *local,
                            const struct posix_sockaddr_in *peer);
 int posix_fd_validate(struct task *task, int descriptor, u32 access);
+// The readiness one poll entry resolves to: the raw bits the object
+// carries. A negative descriptor is the POSIX ignore slot, answered with
+// a zero mask; anything else that names no open descriptor is POLLNVAL.
+u16 posix_fd_poll_events(struct task *task, int descriptor);
 int posix_fd_close(struct task *task, int descriptor);
 int posix_fd_dup(struct task *task, int descriptor);
 int posix_fd_dup2(struct task *task, int descriptor, int replacement);

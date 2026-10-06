@@ -11,6 +11,7 @@
 #include "posix_process.h"
 #include "posix_time.h"
 #include "posix_signal.h"
+#include "posix_poll.h"
 #include "posix_pledge.h"
 #include "entropy.h"
 #include "spinlock.h"
@@ -1823,6 +1824,7 @@ void timer64_dispatch(struct interrupt_frame64 *frame) {
     timer_ticks++;
     ipc64_tick(timer_ticks);
     posix_time_tick(timer_ticks);
+    posix_poll_tick(timer_ticks);
     event_tick(timer_ticks, ETIMEDOUT);
     completion_tick(timer_ticks, ETIMEDOUT);
     timer_object_tick(timer_ticks);

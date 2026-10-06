@@ -93,4 +93,9 @@ i64 posix_socket_io_write(struct task *task, int descriptor,
 // clean the wait and answer EINTR.
 i64 posix_socket_signal(struct task *target);
 
+// The readiness a socket carries, before the caller's requested event set
+// narrows it: a stream socket reports what the connection state probe
+// says, a datagram socket reports a queued datagram and a writable peer.
+u16 posix_socket_poll(struct kernel_object *socket, u32 type);
+
 #endif

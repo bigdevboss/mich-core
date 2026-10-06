@@ -244,3 +244,8 @@ struct kernel_object *udpv6_binding_event(struct udpv6_context *udp,
     struct udpv6_binding *binding = binding_for(udp, binding_id);
     return binding ? binding->event : 0;
 }
+
+int udpv6_binding_pending(struct udpv6_context *udp, u64 binding_id) {
+    struct udpv6_binding *binding = binding_for(udp, binding_id);
+    return binding && binding->count;
+}

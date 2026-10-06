@@ -1,4 +1,5 @@
 #include "posix_socket.h"
+#include "posix_poll.h"
 #include "posix_fd.h"
 #include "posix_signal.h"
 #include "posix_vfs.h"
@@ -366,6 +367,9 @@ static u32 posix_socket_wake_index(u32 index) {
         matched++;
         complete_wait(slot);
     }
+    // The poll waiters ride the same change: one scan covers whichever
+    // sockets each of them listed.
+    posix_poll_notify();
     return matched;
 }
 
@@ -380,6 +384,32 @@ i64 posix_socket_signal(struct task *target) {
     waits[slot].request = 0;
     object_release(socket);
     return POSIX_SIGNAL_EINTR;
+}
+
+u16 posix_socket_poll(struct kernel_object *socket, u32 type) {
+    if (!socket || socket->type != KOBJECT_SOCKET) return POSIX_POLLNVAL;
+    if (type == POSIX_SOCK_DGRAM) {
+        u16 ready = POSIX_POLLOUT;
+        if (socket_datagram_pending(socket) ||
+            socket_stream_take_notify(socket))
+            ready |= POSIX_POLLIN;
+        return ready;
+    }
+    u32 state = 0;
+    u32 readiness = 0;
+    i32 error = 0;
+    u32 eof = 0;
+    u32 granted = 0;
+    if (socket_stream_state(socket, &state, &readiness, &error, &eof,
+                            &granted))
+        return 0;
+    u16 ready = 0;
+    if (readiness & SOCKET_READY_ERROR) ready |= POSIX_POLLERR;
+    if (readiness & (SOCKET_READY_READABLE | SOCKET_READY_ACCEPT))
+        ready |= POSIX_POLLIN;
+    if (readiness & SOCKET_READY_WRITABLE) ready |= POSIX_POLLOUT;
+    if (readiness & SOCKET_READY_HANGUP) ready |= POSIX_POLLHUP;
+    return ready;
 }
 
 void posix_socket_init(void) {

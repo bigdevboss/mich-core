@@ -321,6 +321,11 @@ int udp_binding_local(struct udp_context *udp, u64 binding_id,
     return 0;
 }
 
+int udp_binding_pending(struct udp_context *udp, u64 binding_id) {
+    struct udp_binding *binding = binding_for(udp, binding_id, 0);
+    return binding && binding->count;
+}
+
 u32 udp_binding_count(const struct udp_context *udp) {
     if (!udp) return 0;
     u32 count = 0;

@@ -6,6 +6,7 @@
 #include "posix_profile.h"
 #include "posix_pipe.h"
 #include "posix_socket.h"
+#include "posix_poll.h"
 #include "posix_abi.h"
 #include "spinlock.h"
 
@@ -131,6 +132,14 @@ static struct posix_ofd *retain_descriptor(struct task *task, int descriptor,
     return ofd;
 }
 
+// A descriptor appearing, moving or disappearing moves a pipe end count,
+// and a zero count is a hangup or an error to a poll waiter; the scan that
+// reads it takes this same lock, so the notify waits until it is dropped.
+static void unlock_and_notify(void) {
+    spin_unlock(&posix_fd_lock);
+    posix_poll_notify();
+}
+
 void posix_fd_init(void) {
     posix_fd_lock.ticket = 0;
     posix_fd_lock.served = 0;
@@ -242,7 +251,7 @@ int posix_fd_install_pipe(struct task *task, u32 pipe, u32 end, u32 access) {
     tables[slot][descriptor].ofd = ofd;
     tables[slot][descriptor].flags = 0;
     posix_pipe_retain(pipe, end);
-    spin_unlock(&posix_fd_lock);
+    unlock_and_notify();
     return (int)descriptor;
 }
 
@@ -382,6 +391,35 @@ int posix_fd_validate(struct task *task, int descriptor, u32 access) {
     return result;
 }
 
+u16 posix_fd_poll_events(struct task *task, int descriptor) {
+    if (descriptor < 0) return 0;
+    int slot = live_task_slot(task);
+    if (slot < 0 || descriptor >= POSIX_FD_MAX) return POSIX_POLLNVAL;
+    spin_lock(&posix_fd_lock);
+    struct posix_ofd *ofd = descriptor_for_locked((u32)slot, descriptor);
+    u32 pipe = ofd ? ofd->pipe : 0;
+    u32 pipe_end = ofd ? ofd->pipe_end : 0;
+    u32 access = ofd ? ofd->access : 0;
+    struct kernel_object *socket = ofd ? ofd->file : 0;
+    u32 socket_type = ofd ? ofd->socket_type : 0;
+    spin_unlock(&posix_fd_lock);
+    if (!ofd) return POSIX_POLLNVAL;
+    u16 ready;
+    if (pipe) {
+        ready = posix_pipe_poll(pipe - 1u, pipe_end);
+    } else if (socket && socket->type == KOBJECT_SOCKET) {
+        ready = posix_socket_poll(socket, socket_type);
+    } else {
+        // Everything else answers without parking, so it is always ready
+        // for whichever direction the descriptor was opened.
+        ready = (access & POSIX_FD_ACCESS_READ ? POSIX_POLLIN : 0) |
+            (access & POSIX_FD_ACCESS_WRITE ? POSIX_POLLOUT : 0);
+    }
+    if (!(access & POSIX_FD_ACCESS_READ)) ready &= (u16)~POSIX_POLLIN;
+    if (!(access & POSIX_FD_ACCESS_WRITE)) ready &= (u16)~POSIX_POLLOUT;
+    return ready;
+}
+
 int posix_fd_close(struct task *task, int descriptor) {
     int slot = live_task_slot(task);
     if (slot < 0 || descriptor < 0 || descriptor >= POSIX_FD_MAX) return -1;
@@ -392,7 +430,7 @@ int posix_fd_close(struct task *task, int descriptor) {
     }
     struct kernel_object *file = detach_descriptor_locked((u32)slot,
                                                            (u32)descriptor);
-    spin_unlock(&posix_fd_lock);
+    unlock_and_notify();
     if (file) object_release(file);
     return 0;
 }
@@ -414,7 +452,7 @@ int posix_fd_dup(struct task *task, int descriptor) {
     }
     tables[slot][replacement].ofd = ofd;
     tables[slot][replacement].flags = 0;
-    spin_unlock(&posix_fd_lock);
+    unlock_and_notify();
     return (int)replacement;
 }
 
@@ -442,7 +480,7 @@ int posix_fd_dup2(struct task *task, int descriptor, int replacement) {
         file = detach_descriptor_locked((u32)slot, (u32)replacement);
     tables[slot][replacement].ofd = ofd;
     tables[slot][replacement].flags = 0;
-    spin_unlock(&posix_fd_lock);
+    unlock_and_notify();
     if (file) object_release(file);
     return replacement;
 }
@@ -765,7 +803,7 @@ int posix_fd_fork(struct task *parent, struct task *child) {
         tables[child_slot][index].ofd = ofd;
         tables[child_slot][index].flags = tables[parent_slot][index].flags;
     }
-    spin_unlock(&posix_fd_lock);
+    unlock_and_notify();
     return 0;
 }
 
@@ -782,7 +820,7 @@ static void close_descriptors(struct task *task, int cloexec_only) {
         struct kernel_object *file = detach_descriptor_locked((u32)slot, index);
         if (file) files[count++] = file;
     }
-    spin_unlock(&posix_fd_lock);
+    unlock_and_notify();
     release_files(files, count);
 }
 
@@ -810,7 +848,7 @@ u32 posix_fd_revoke_object(struct kernel_object *object) {
             revoked++;
         }
     }
-    spin_unlock(&posix_fd_lock);
+    unlock_and_notify();
     release_files(files, count);
     return revoked;
 }

@@ -23,6 +23,7 @@ struct mmio_grant {
 #define TASK_BLOCKED_SLEEP 8
 #define TASK_BLOCKED_PIPE 9
 #define TASK_BLOCKED_SOCKET 10
+#define TASK_BLOCKED_POLL 11
 
 // Spawn flag (syscall arg1): the child is created but held off the scheduler
 // until its parent resumes it, so the parent can delegate capabilities before
@@ -98,6 +99,8 @@ struct task {
     // User address of the nanosleep request the task parked on, so a
     // signal that breaks the sleep can answer the remainder pointer.
     uptr_t sleep_request;
+    // Absolute tick a timed poll parks until; zero is the endless wait.
+    u32 poll_deadline;
     u32 capabilities;
     u32 irq_rights;
     // POSIX credentials: a single uid and gid, no supplementary groups, and

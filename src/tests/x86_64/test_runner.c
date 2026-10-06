@@ -63,6 +63,9 @@ int tests64_run(const struct test64_env *env) {
     if (test_report_record(TEST_ID_POSIX_SOCKET, test_posix_socket64(env)))
         return -1;
     serial64_write("Mich test64: POSIX socket substrate pass\n");
+    if (test_report_record(TEST_ID_POSIX_POLL, test_posix_poll64(env->owner)))
+        return -1;
+    serial64_write("Mich test64: POSIX poll readiness pass\n");
     if (test_report_record(TEST_ID_BLOCK, test_block64())) return -1;
     serial64_write("Mich test64: block device objects pass\n");
     serial64_write("Mich test64: ramdisk read and write pass\n");

@@ -619,6 +619,19 @@ int socket_receive_from(struct kernel_object *object,
         udp_receive(state->udp, state->binding_id, datagram) : -1;
 }
 
+// The readiness probe behind poll on a datagram socket: a queued datagram
+// answers a receive without parking. Stream sockets have no queue to ask,
+// their readiness comes from the connection state probe.
+int socket_datagram_pending(struct kernel_object *object) {
+    struct socket_state *state = state_for(object);
+    if (!state || !state->bound) return 0;
+    if (state->family == 4 && state->udp)
+        return udp_binding_pending(state->udp, state->binding_id);
+    if (state->family == 6 && state->udpv6)
+        return udpv6_binding_pending(state->udpv6, state->binding_id);
+    return 0;
+}
+
 int socket_local_address(struct kernel_object *object,
                          u32 *address, u16 *port) {
     struct socket_state *state = state_for(object);
