@@ -26,6 +26,11 @@
 #define POSIX_SOCKET_WAIT_RECVFROM 4u
 #define POSIX_SOCKET_WAIT_SEND 5u
 
+// The answer a completion attempt gives while the wait stays open, so a
+// park that ran one knows to fall through to the blocking switch. It sits
+// far below the POSIX error range on purpose.
+#define POSIX_SOCKET_WAIT_OPEN (-4096)
+
 // Which user layout a parked request patches: the plain io pair the read
 // and write paths share, the socket io request the dedicated calls use,
 // or a message header whose vectors the wake scatters into.
@@ -86,6 +91,8 @@ static i64 stream_take_error(struct kernel_object *socket) {
     return error ? (i64)error : POSIX_VFS_EIO;
 }
 
+static i64 complete_wait(u32 slot);
+
 static i64 socket_park(struct task *task, struct kernel_object *socket,
                        u32 descriptor, u32 kind, u32 flavor, uptr_t request,
                        u32 length, u32 offset, const u8 *staging,
@@ -105,6 +112,14 @@ static i64 socket_park(struct task *task, struct kernel_object *socket,
     for (u32 index = 0; index < length; index++)
         waits[slot].staging[index] = staging ? staging[index] : 0;
     task->state = TASK_BLOCKED_SOCKET;
+    // A notification that lands between the caller's readiness read and
+    // this commit reaches no parked waiter, and the socket keeps that
+    // fact: one completion attempt spends it instead of sleeping a wakeup
+    // away, which is how a half-close read parked forever.
+    if (socket_stream_take_notify(socket)) {
+        i64 answer = complete_wait(slot);
+        if (answer != POSIX_SOCKET_WAIT_OPEN) return answer;
+    }
     if (scheduler_pick_next(slot) < 0) {
         // Nothing else can run, so the park would freeze the CPU inside
         // the syscall; the pipe and ipc parks answer the same deadlock.
@@ -118,7 +133,7 @@ static i64 socket_park(struct task *task, struct kernel_object *socket,
     return task64_block_switch();
 }
 
-static void finish_wait(u32 slot, i64 answer) {
+static i64 finish_wait(u32 slot, i64 answer) {
     struct kernel_object *socket = waits[slot].socket;
     waits[slot].socket = 0;
     waits[slot].request = 0;
@@ -130,6 +145,7 @@ static void finish_wait(u32 slot, i64 answer) {
     task_pool[slot].state = TASK_RUNNING;
     if (socket) object_release(socket);
     task64_set_result(slot, answer);
+    return answer;
 }
 
 // Hand received bytes to a parked caller across whichever request layout
@@ -189,7 +205,7 @@ static int deliver_source(u32 slot, u32 address, u16 port) {
                         &length, sizeof(length)) ? -1 : 0;
 }
 
-static void complete_wait(u32 slot) {
+static i64 complete_wait(u32 slot) {
     struct task *task = &task_pool[slot];
     struct kernel_object *socket = waits[slot].socket;
     u32 kind = waits[slot].kind;
@@ -202,22 +218,19 @@ static void complete_wait(u32 slot) {
         i32 error = 0;
         if (socket_stream_state(socket, &state, &readiness, &error, &eof,
                                 &granted)) {
-            finish_wait(slot, POSIX_VFS_EIO);
-            return;
+            return finish_wait(slot, POSIX_VFS_EIO);
         }
         if (readiness & SOCKET_READY_CONNECTED) {
             // The connect flag lands here rather than at initiation, so
             // an interrupted or still settling connect stays answerable.
             posix_fd_socket_update(task, waits[slot].descriptor,
                                    POSIX_SOCKET_OFD_CONNECTED, 0, 0);
-            finish_wait(slot, 0);
-            return;
+            return finish_wait(slot, 0);
         }
         if (readiness & (SOCKET_READY_ERROR | SOCKET_READY_HANGUP)) {
-            finish_wait(slot, stream_take_error(socket));
-            return;
+            return finish_wait(slot, stream_take_error(socket));
         }
-        return;
+        return POSIX_SOCKET_WAIT_OPEN;
     }
 
     if (kind == POSIX_SOCKET_WAIT_ACCEPT) {
@@ -228,30 +241,25 @@ static void complete_wait(u32 slot) {
         i32 error = 0;
         if (socket_stream_state(socket, &state, &readiness, &error, &eof,
                                 &granted)) {
-            finish_wait(slot, POSIX_VFS_EIO);
-            return;
+            return finish_wait(slot, POSIX_VFS_EIO);
         }
         if (readiness & SOCKET_READY_ERROR) {
-            finish_wait(slot, stream_take_error(socket));
-            return;
+            return finish_wait(slot, stream_take_error(socket));
         }
-        if (!(readiness & SOCKET_READY_ACCEPT)) return;
+        if (!(readiness & SOCKET_READY_ACCEPT)) return POSIX_SOCKET_WAIT_OPEN;
         struct kernel_object *accepted = socket_stream_accept(socket);
         if (!accepted) {
-            finish_wait(slot, POSIX_VFS_EIO);
-            return;
+            return finish_wait(slot, POSIX_VFS_EIO);
         }
         int fresh = posix_fd_install_socket(task, accepted,
                                             POSIX_SOCK_STREAM);
         object_release(accepted);
         if (fresh < 0) {
-            finish_wait(slot, POSIX_VFS_EMFILE);
-            return;
+            return finish_wait(slot, POSIX_VFS_EMFILE);
         }
         posix_fd_socket_update(task, fresh, POSIX_SOCKET_OFD_CONNECTED, 0,
                                0);
-        finish_wait(slot, (i64)fresh);
-        return;
+        return finish_wait(slot, (i64)fresh);
     }
 
     if (kind == POSIX_SOCKET_WAIT_RECV) {
@@ -262,12 +270,10 @@ static void complete_wait(u32 slot) {
         i32 error = 0;
         if (socket_stream_state(socket, &state, &readiness, &error, &eof,
                                 &granted)) {
-            finish_wait(slot, POSIX_VFS_EIO);
-            return;
+            return finish_wait(slot, POSIX_VFS_EIO);
         }
         if (readiness & SOCKET_READY_ERROR) {
-            finish_wait(slot, stream_take_error(socket));
-            return;
+            return finish_wait(slot, stream_take_error(socket));
         }
         if (readiness & SOCKET_READY_READABLE) {
             u8 staging[POSIX_IO_MAX];
@@ -277,23 +283,19 @@ static void complete_wait(u32 slot) {
             if (socket_stream_receive(socket, staging, capacity,
                                       &received) ||
                 !received) {
-                finish_wait(slot, POSIX_VFS_EIO);
-                return;
+                return finish_wait(slot, POSIX_VFS_EIO);
             }
             if (deliver_received(slot, staging, received)) {
-                finish_wait(slot, POSIX_VFS_EIO);
-                return;
+                return finish_wait(slot, POSIX_VFS_EIO);
             }
-            finish_wait(slot, (i64)received);
-            return;
+            return finish_wait(slot, (i64)received);
         }
         if (eof || (readiness & SOCKET_READY_HANGUP)) {
             // The buffered bytes drained above outrank the hangup, so a
             // zero here only answers after the last byte left.
-            finish_wait(slot, 0);
-            return;
+            return finish_wait(slot, 0);
         }
-        return;
+        return POSIX_SOCKET_WAIT_OPEN;
     }
 
     if (kind == POSIX_SOCKET_WAIT_RECVFROM) {
@@ -305,21 +307,18 @@ static void complete_wait(u32 slot) {
             if (deliver_received(slot, datagram.payload, take) ||
                 deliver_source(slot, datagram.source_address,
                                datagram.source_port)) {
-                finish_wait(slot, POSIX_VFS_EIO);
-                return;
+                return finish_wait(slot, POSIX_VFS_EIO);
             }
-            finish_wait(slot, (i64)take);
-            return;
+            return finish_wait(slot, (i64)take);
         }
-        return;
+        return POSIX_SOCKET_WAIT_OPEN;
     }
 
     if (kind == POSIX_SOCKET_WAIT_SEND) {
         u32 total = waits[slot].length;
         u32 offset = waits[slot].offset;
         if (offset >= total) {
-            finish_wait(slot, (i64)total);
-            return;
+            return finish_wait(slot, (i64)total);
         }
         u32 remaining = total - offset;
         if (socket_stream_send(socket, waits[slot].staging + offset,
@@ -331,8 +330,7 @@ static void complete_wait(u32 slot) {
             i32 error = 0;
             if (socket_stream_state(socket, &state, &readiness, &error,
                                     &eof, &granted)) {
-                finish_wait(slot, POSIX_VFS_EIO);
-                return;
+                return finish_wait(slot, POSIX_VFS_EIO);
             }
             if (readiness & (SOCKET_READY_ERROR | SOCKET_READY_HANGUP)) {
                 // Bytes already queued are lost when the peer goes away,
@@ -341,31 +339,34 @@ static void complete_wait(u32 slot) {
                 i32 error_taken = 0;
                 if (!socket_stream_take_error(socket, &error_taken) &&
                     error_taken) {
-                    finish_wait(slot, (i64)error_taken);
-                    return;
+                    return finish_wait(slot, (i64)error_taken);
                 }
-                finish_wait(slot, POSIX_VFS_EPIPE);
-                return;
+                return finish_wait(slot, POSIX_VFS_EPIPE);
             }
             // Back-pressure only: stay parked until the acks open room.
-            return;
+            return POSIX_SOCKET_WAIT_OPEN;
         }
         waits[slot].offset = total;
-        finish_wait(slot, (i64)total);
-        return;
+        return finish_wait(slot, (i64)total);
     }
+    // Nothing the wait was for happened, so the park keeps sleeping until
+    // the next change on the socket tries again.
+    return POSIX_SOCKET_WAIT_OPEN;
 }
 
 // The net layer hands a socket slot index here on every state change it
 // signals, and each parked waiter on that socket gets one completion try.
-static void posix_socket_wake_index(u32 index) {
+static u32 posix_socket_wake_index(u32 index) {
+    u32 matched = 0;
     for (u32 slot = 0; slot < (u32)task_pool_count; slot++) {
         if (task_pool[slot].state != TASK_BLOCKED_SOCKET ||
             !waits[slot].socket ||
             waits[slot].socket->value != (u64)index + 1u)
             continue;
+        matched++;
         complete_wait(slot);
     }
+    return matched;
 }
 
 i64 posix_socket_signal(struct task *target) {

@@ -3,6 +3,7 @@
 #include "vfs.h"
 #include "event.h"
 #include "socket_abi.h"
+#include "irq.h"
 
 struct socket_state {
     struct udp_context *udp;
@@ -17,6 +18,7 @@ struct socket_state {
     u32 listening;
     u32 backlog;
     u32 active;
+    u32 notify_pending;
 };
 
 struct socket_udp_context {
@@ -37,8 +39,9 @@ void socket_set_wake_hook(socket_wake_hook hook) {
     wake_hook = hook;
 }
 
-static void wake_index(u32 index) {
-    if (wake_hook) wake_hook(index);
+static u32 wake_index(u32 index) {
+    if (!wake_hook) return 0;
+    return wake_hook(index);
 }
 
 static struct socket_state *state_for(const struct kernel_object *object) {
@@ -234,6 +237,7 @@ struct kernel_object *socket_create(void) {
         state->family = 4;
         state->bound = 0;
         state->active = 1;
+        state->notify_pending = 0;
         struct kernel_object *object = object_create(
             KOBJECT_SOCKET, index + 1, socket_destroy);
         if (!object) state->active = 0;
@@ -253,6 +257,7 @@ struct kernel_object *socket_create_ipv6(void) {
         state->family = 6;
         state->bound = 0;
         state->active = 1;
+        state->notify_pending = 0;
         struct kernel_object *object = object_create(
             KOBJECT_SOCKET, index + 1, socket_destroy);
         if (!object) state->active = 0;
@@ -280,6 +285,7 @@ struct kernel_object *socket_create_stream(void) {
         state->listening = 0;
         state->backlog = 0;
         state->active = 1;
+        state->notify_pending = 0;
         struct kernel_object *object = object_create(
             KOBJECT_SOCKET, index + 1, socket_destroy);
         if (!object) {
@@ -453,6 +459,19 @@ int socket_stream_shutdown(struct kernel_object *object) {
                                    state->tcp_connection) : -1;
 }
 
+// Takes the flag a notification left when it reached no parked waiter, so
+// the park path can spend it on one completion attempt: masking keeps a
+// notification that lands mid-read from losing its flag.
+int socket_stream_take_notify(struct kernel_object *object) {
+    struct socket_state *state = state_for(object);
+    if (!state) return 0;
+    irq_state_t irq = irq_save();
+    int pending = state->notify_pending != 0;
+    state->notify_pending = 0;
+    irq_restore(irq);
+    return pending;
+}
+
 int socket_stream_state(struct kernel_object *object,
                         u32 *state_out, u32 *readiness,
                         i32 *error_out, u32 *eof_out,
@@ -507,7 +526,7 @@ void socket_tcp_abort_context(struct tcp_context *tcp, i32 error) {
             !state->tcp_connection)
             continue;
         if (state->event) event_signal(state->event);
-        wake_index(index);
+        if (!wake_index(index)) state->notify_pending = 1;
     }
 }
 
@@ -523,7 +542,7 @@ void socket_tcp_notify(struct tcp_context *tcp, u64 connection_id) {
         if (state->tcp_connection == connection_id ||
             (state->listening && state->tcp_connection == listener_id)) {
             event_signal(state->event);
-            wake_index(index);
+            if (!wake_index(index)) state->notify_pending = 1;
         }
     }
 }
