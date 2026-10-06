@@ -642,7 +642,6 @@ $(VIRTIO_NET_RECOVERY_RIP_H): $(VIRTIO_NET64_ELF) scripts/gen-virtio-net-recover
 
 $(VIRTIO_NET_SAFE64_ELF): $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_LIB64_OBJ) $(VIRTIO_NET_SAFE64_OBJ) src/user64/linker.ld | $(USER64_DIR)
 	$(LD) -m elf_x86_64 -x -T src/user64/linker.ld -o $@ $(USER64_OBJ_DIR)/crt0.o $(USER64_OBJ_DIR)/syscall.o $(VIRTIO_LIB64_OBJ) $(VIRTIO_NET_SAFE64_OBJ)
-
 $(KERNEL64_ELF): $(OBJS64) $(ARCH64_BOOT)/linker.ld | $(BIN64)
 	$(LD) $(LDFLAGS64) -o $@ $(OBJS64)
 
@@ -804,9 +803,16 @@ test64-panic: $(DISK64_PANIC)
 test64-crash: $(DISK64_CRASH)
 	sh ./scripts/qemu-crash64.sh $(DISK64_CRASH) 128M
 
+# A rule that lost its recipe still satisfies make, so the breakage only shows
+# up at link time (twice now, on the pipe objects). Ask make itself whether
+# every object the lists name can be built before anything else runs.
+check-build:
+	@MAKE="$(MAKE)" sh scripts/check-build.sh $(OBJS64) $(TEST64_OBJS) $(PORTABLE64_OBJS)
+
 release-check:
 	$(MAKE) clean
 	$(MAKE) all
+	$(MAKE) check-build
 	$(MAKE) test64
 	$(MAKE) test64-prod
 	$(MAKE) test64-unit
@@ -831,4 +837,4 @@ DEPFILES = $(OBJS64:.o=.d) $(OBJS64_TEST:.o=.d) $(PORTABLE64_OBJS:.o=.d) \
 clean:
 	rm -rf $(BIN_DIR)
 
-.PHONY: all user64-virtio-blk test64-virtio-blk user64-nvme test64-nvme run64 test64 test64-prod test64-crash test64-unit test64-highmem test64-dns test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-msi-restart-stability test64-msi-circuit-stability test64-msi-recovery-stability test64-pcie test64-panic release-check clean
+.PHONY: all user64-virtio-blk test64-virtio-blk user64-nvme test64-nvme run64 test64 test64-prod test64-crash test64-unit test64-highmem test64-dns test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-msi-restart-stability test64-msi-circuit-stability test64-msi-recovery-stability test64-pcie test64-panic check-build release-check clean
