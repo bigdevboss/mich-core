@@ -420,6 +420,110 @@ elif [ "$profile" = "nvme" ]; then
     do
         require_marker "$marker"
     done
+elif [ "$profile" = "dns" ]; then
+    # Same network composition as tcpwire with the resolver capsule instead,
+    # so the same reasoning applies: no init userspace battery to ask for
+    # (disk-test covers it), and the gate names the wire path plus the
+    # resolver behaviour the profile exists to prove.
+    for marker in \
+        "Mich Core 0.2.0 x86_64: long mode alive" \
+        "Mich x86_64: GDT and TSS alive" \
+        "Mich x86_64: IDT alive" \
+        "Mich x86_64: panic subsystem ready" \
+        "Mich x86_64: E820 PMM alive" \
+        "Mich x86_64: ACPI tables pass" \
+        "Mich x86_64: PCI enumeration pass" \
+        "Mich x86_64: LAPIC controller pass" \
+        "Mich x86_64: IOAPIC routing pass" \
+        "Mich x86_64: APIC timer pass" \
+        "Mich x86_64: preemptive scheduler pass" \
+        "Mich virtio-net: bootstrap pass" \
+        "Mich virtio-net: feature negotiation pass" \
+        "Mich virtio-net: stable device config pass" \
+        "Mich virtio-net: RX and TX queue setup pass" \
+        "Mich virtio-net: MSI-X queue vectors pass" \
+        "Mich virtio-net: RX buffers published" \
+        "Mich virtio-net: DRIVER_OK pass" \
+        "Mich virtio-net: network interface registered" \
+        "Mich virtio-net: userspace capsule running" \
+        "Mich virtio-net: real RX completion pass" \
+        "Mich virtio-net: real TX completion pass" \
+        "Mich virtio-net: batched RX/TX datapath pass" \
+        "Mich virtio-net: adaptive interrupt moderation pass" \
+        "Mich virtio-net: interrupt-driven RX/TX pass" \
+        "Mich virtio-net: DHCP Offer receive pass" \
+        "Mich virtio-net: DHCP Request transmit pass" \
+        "Mich virtio-net: DHCP ACK receive pass" \
+        "Mich virtio-net: DHCP IPv4 lease applied" \
+        "Mich virtio-net: external ping reply pass" \
+        "Mich virtio-net: external UDP reply pass" \
+        "Mich virtio-net: external IPv6 DAD pass" \
+        "Mich virtio-net: external IPv6 RA and SLAAC pass" \
+        "Mich virtio-net: external IPv6 ping reply pass" \
+        "Mich virtio-net: external UDPv6 ICMP error pass" \
+        "Mich dnsprobe: resolver ready" \
+        "Mich dnsprobe: transport pass" \
+        "Mich dnsprobe: TCP fallback and framing pass" \
+        "Mich dnsprobe: cached answer pass" \
+        "Mich dnsprobe: refused name rejected pass"
+    do
+        require_marker "$marker"
+    done
+elif [ "$profile" = "tcpwire" ]; then
+    # This image boots the network composition (init plus the virtio-net and
+    # tcpwire capsules), so it runs the in-kernel net battery and the external
+    # lab but never the init userspace battery that the disk-test profile
+    # covers. Asking for those markers here failed on a line the image was
+    # never built to print, so this gate is boot-essential plus the wire path
+    # the profile exists to prove.
+    for marker in \
+        "Mich Core 0.2.0 x86_64: long mode alive" \
+        "Mich x86_64: GDT and TSS alive" \
+        "Mich x86_64: IDT alive" \
+        "Mich x86_64: panic subsystem ready" \
+        "Mich x86_64: E820 PMM alive" \
+        "Mich x86_64: ACPI tables pass" \
+        "Mich x86_64: PCI enumeration pass" \
+        "Mich x86_64: LAPIC controller pass" \
+        "Mich x86_64: IOAPIC routing pass" \
+        "Mich x86_64: APIC timer pass" \
+        "Mich x86_64: preemptive scheduler pass" \
+        "Mich virtio-net: bootstrap pass" \
+        "Mich virtio-net: feature negotiation pass" \
+        "Mich virtio-net: stable device config pass" \
+        "Mich virtio-net: RX and TX queue setup pass" \
+        "Mich virtio-net: MSI-X queue vectors pass" \
+        "Mich virtio-net: RX buffers published" \
+        "Mich virtio-net: DRIVER_OK pass" \
+        "Mich virtio-net: network interface registered" \
+        "Mich virtio-net: userspace capsule running" \
+        "Mich virtio-net: real RX completion pass" \
+        "Mich virtio-net: real TX completion pass" \
+        "Mich virtio-net: batched RX/TX datapath pass" \
+        "Mich virtio-net: adaptive interrupt moderation pass" \
+        "Mich virtio-net: interrupt-driven RX/TX pass" \
+        "Mich virtio-net: DHCP Offer receive pass" \
+        "Mich virtio-net: DHCP Request transmit pass" \
+        "Mich virtio-net: DHCP ACK receive pass" \
+        "Mich virtio-net: DHCP IPv4 lease applied" \
+        "Mich virtio-net: stream socket connect queued" \
+        "Mich virtio-net: stream socket send pass" \
+        "Mich virtio-net: stream socket receive pass" \
+        "Mich virtio-net: stream socket shutdown pass" \
+        "Mich virtio-net: TCP stream soak pass" \
+        "Mich virtio-net: external ping reply pass" \
+        "Mich virtio-net: external UDP reply pass" \
+        "Mich virtio-net: external socket UDP reply pass" \
+        "Mich virtio-net: external TCP handshake and echo pass" \
+        "Mich virtio-net: external TCP FIN lifecycle pass" \
+        "Mich virtio-net: external IPv6 DAD pass" \
+        "Mich virtio-net: external IPv6 RA and SLAAC pass" \
+        "Mich virtio-net: IPv6 lifecycle timer pass" \
+        "Mich virtio-net: external IPv6 ping reply pass" \
+        "Mich virtio-net: external UDPv6 ICMP error pass"
+    do
+        require_marker "$marker"
+    done
 else
 for marker in \
     "Mich Core 0.2.0 x86_64: long mode alive" \
