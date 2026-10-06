@@ -1,0 +1,57 @@
+name: build
+
+# The house rule is that a green tree is the only tree: this job repeats what a
+# developer runs locally, on a clean machine, so a dropped recipe or a flaky
+# smoke cannot reach main unnoticed. Profile coverage beyond the default smoke
+# stays in release-check because those profiles need tap, MSI hardware
+# programming or the netbench peer.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install the toolchain and the UEFI firmware
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nasm qemu-system-x86 ovmf
+
+      - name: Build
+        run: make -j2
+
+      - name: Check every listed object has a recipe
+        run: make check-build
+
+      - name: Unit battery
+        run: make test64-unit
+
+      - name: Smoke
+        run: |
+          set -o pipefail
+          make test64 2>&1 | tee smoke.log
+
+      # The retry loop in the test64 target exists for a human at a console.
+      # Here it is a flake detector: a retry means a race worth looking at.
+      - name: Refuse a smoke that needed a retry
+        run: |
+          if grep -q 'transient smoke failure' smoke.log; then
+            echo "the smoke needed a retry: treat this run as a failure" >&2
+            exit 1
+          fi
+
+      - name: Keep the smoke log when something failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-log
+          path: smoke.log
+          if-no-files-found: ignore

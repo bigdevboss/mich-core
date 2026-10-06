@@ -1,5 +1,7 @@
 # Mich Core
 
+[![build](https://github.com/bigdevboss/mich-core/actions/workflows/build.yml/badge.svg)](https://github.com/bigdevboss/mich-core/actions/workflows/build.yml)
+
 ## License
 
 Mich Core is available under the [GNU General Public License v3.0](LICENSE).
