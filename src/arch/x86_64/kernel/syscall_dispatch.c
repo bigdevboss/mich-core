@@ -1023,8 +1023,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             timer_ticks + request.timeout, request.timeout != 0, &ready);
         if (result < 0) return (u64)-1;
         if (!result) return ready;
-        scheduler64_switch();
-        return task_contexts[current_task_slot].rax;
+        return (u64)task64_block_switch();
     }
     if (number == 87) {
         struct task *task = &task_pool[current_task_slot];
