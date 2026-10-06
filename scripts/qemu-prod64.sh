@@ -3,10 +3,11 @@ set -eu
 image="${1:-bin/x86_64/disk.img}"
 . "$(dirname "$0")/uefi-firmware.sh"
 mich_uefi_firmware
+qemu_timeout="${MICH_QEMU_TIMEOUT:-40}"
 log="$(mktemp)"
 trap 'rm -f "$log" "$uefi_vars"' EXIT
 set +e
-timeout 40s qemu-system-x86_64 \
+timeout "$qemu_timeout" qemu-system-x86_64 \
     -machine q35 \
     -cpu qemu64,+aes,+pclmulqdq,+ssse3 \
     -drive if=pflash,format=raw,readonly=on,file="$uefi_code" \

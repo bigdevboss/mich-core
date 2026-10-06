@@ -3,10 +3,13 @@ set -eu
 image="${1:-bin/x86_64/disk-unit.img}"
 . "$(dirname "$0")/uefi-firmware.sh"
 mich_uefi_firmware
+# The smoke runner grew MICH_QEMU_TIMEOUT for hosts slower than the developer
+# box; a shared CI runner needs the same escape hatch here.
+qemu_timeout="${MICH_QEMU_TIMEOUT:-45}"
 log="$(mktemp)"
 trap 'rm -f "$log" "$uefi_vars"' EXIT
 set +e
-timeout 45s qemu-system-x86_64 \
+timeout "$qemu_timeout" qemu-system-x86_64 \
     -machine q35 \
     -cpu qemu64,+aes,+pclmulqdq,+ssse3 \
     -drive if=pflash,format=raw,readonly=on,file="$uefi_code" \
