@@ -8,6 +8,7 @@
 #include "posix_fd.h"
 #include "posix_socket.h"
 #include "posix_tty.h"
+#include "posix_pgroup.h"
 #include "posix_profile.h"
 #include "posix_process.h"
 #include "posix_time.h"
@@ -1146,6 +1147,9 @@ int fork64(void) {
         return -1;
     }
     posix_signal_fork(parent, child);
+    posix_pgroup_fork(parent, child);
+    child->stop_report = 0;
+    child->continued_report = 0;
     posix_pledge_fork(parent, child);
     return child->id;
 }
@@ -1534,11 +1538,10 @@ static int wake_waiting_parent(u32 child_slot) {
         u64 status_address = parent->wait_status_address;
         parent->wait_status_address = 0;
         // Match the 4-byte int status contract; a wider store would
-        // clobber the woken parent's frame past the status slot. A
-        // signalled death packs the termsig into the low bits, which is
-        // what WIFSIGNALED reads, instead of the exit byte shift.
-        u32 status = child->exit_signal ? (child->exit_signal & 0x7Fu) :
-            (u32)((u32)code & 0xFFu) << 8;
+        // clobber the woken parent's frame past the status slot.
+        u32 status = posix_wait_status((u32)code, child->exit_signal,
+                                       child->stop_report,
+                                       child->continued_report);
         if (status_address)
             vm64_copy_to(parent->page_dir, status_address, &status, 4);
         task_contexts[parent_slot].rax = (u64)(u32)child->id;
@@ -1547,6 +1550,43 @@ static int wake_waiting_parent(u32 child_slot) {
     }
     task_free_slot(child);
     return code;
+}
+
+// A child stopped or resumed: publish the report to a parent that is
+// parked in a waitpid and asked for it. The parent keeps running when it
+// did not ask, and the report stays on the child for a later waitpid, so
+// a shell that waits without WUNTRACED still learns the state when it
+// asks. The child itself stays alive either way.
+void task64_report_child(u32 child_slot) {
+    if (child_slot >= (u32)task_pool_count) return;
+    struct task *child = &task_pool[child_slot];
+    if (!child->stop_report && !child->continued_report) return;
+    u32 parent_slot = PID_SLOT((u32)child->parent_id);
+    if (parent_slot == 0 || parent_slot >= (u32)task_pool_count) return;
+    struct task *parent = &task_pool[parent_slot];
+    if (parent->id != child->parent_id || parent->state != TASK_BLOCKED_WAIT ||
+        !parent->wait_posix ||
+        (parent->wait_pid != -1 && parent->wait_pid != child->id))
+        return;
+    if (child->stop_report && !(parent->wait_options & POSIX_WAIT_UNTRACED))
+        return;
+    if (child->continued_report &&
+        !(parent->wait_options & POSIX_WAIT_CONTINUED))
+        return;
+    u32 status = posix_wait_status((u32)child->exit_code, 0,
+                                   child->stop_report,
+                                   child->continued_report);
+    uptr_t status_address = parent->wait_status_address;
+    child->stop_report = 0;
+    child->continued_report = 0;
+    parent->wait_pid = -1;
+    parent->wait_posix = 0;
+    parent->wait_options = 0;
+    parent->wait_status_address = 0;
+    parent->state = TASK_RUNNING;
+    if (status_address)
+        vm64_copy_to(parent->page_dir, status_address, &status, 4);
+    task_contexts[parent_slot].rax = (u64)(u32)child->id;
 }
 
 static void reparent_children(int dead_pid) {
@@ -2010,6 +2050,7 @@ void kernel64_main(u32 magic, struct bd_info *info) {
     vfs_init();
     posix_fd_init();
     posix_socket_init();
+    posix_pgroup_init();
     posix_tty_init();
     if (console64_init()) KERNEL_PANIC("console tty");
     posix_profile_init();

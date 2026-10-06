@@ -79,9 +79,9 @@
 
 // The bounded signal set the profile carries. The numbers are the POSIX
 // ones; everything outside this list is rejected as EINVAL rather than
-// mapped onto a near relative. Job control (SIGSTOP, SIGCONT) and realtime
-// signals stay out: there is no process group or queued signal semantics
-// to hang them on.
+// mapped onto a near relative. The set now carries the job-control five
+// (CONT, STOP, TSTP, TTIN, TTOU); realtime signals stay out, since
+// nothing here queues more than one instance of a signal.
 #define POSIX_SIG_HUP 1u
 #define POSIX_SIG_INT 2u
 #define POSIX_SIG_QUIT 3u
@@ -96,7 +96,15 @@
 #define POSIX_SIG_ALRM 14u
 #define POSIX_SIG_TERM 15u
 #define POSIX_SIG_CHLD 17u
-#define POSIX_SIG_COUNT 32u
+#define POSIX_SIG_CONT 18u
+#define POSIX_SIG_STOP 19u
+#define POSIX_SIG_TSTP 20u
+#define POSIX_SIG_TTIN 21u
+#define POSIX_SIG_TTOU 22u
+// The table is indexed by signal number, so the bound is the highest
+// number the set reaches and not the count of members: everything above
+// the last one is EINVAL at the dispatcher.
+#define POSIX_SIG_COUNT 22u
 
 // Dispositions: the default action, explicit ignore, or a handler address.
 // Anything above one is a user instruction pointer.
@@ -182,6 +190,19 @@ struct posix_sigframe {
 #define POSIX_FCNTL_SETFD 2u
 #define POSIX_FD_CLOEXEC_VALUE 1u
 #define POSIX_WAIT_NOHANG 1u
+// A stopped or continued child is reported only when the caller asked for
+// it, which is what these two options spell.
+#define POSIX_WAIT_UNTRACED 2u
+#define POSIX_WAIT_CONTINUED 4u
+// The status word the profile packs into the caller's int: a low byte of
+// zero means an exit (code shifted up, what the profile always did), a
+// nonzero low byte below 0x7F means a death carrying the signal there, and
+// the two reports that are not a death take the low byte whole so no exit
+// code can ever be mistaken for one: a stop reads 0x7F with the stopping
+// signal below it, a continue reads all ones. This is the Linux shape,
+// which is what a caller carrying Linux habits already tests for.
+#define POSIX_WAIT_STATUS_STOPPED 0x7Fu
+#define POSIX_WAIT_STATUS_CONTINUED 0xFFFFu
 // The two reserved tv_nsec spellings: stamp the current time or leave the
 // field alone. tv_sec is ignored whenever a value carries either one.
 #define POSIX_UTIME_NOW 0x3FFFFFFEu
@@ -556,6 +577,11 @@ struct posix_poll_request {
 // ported program passes them unchanged; the kernel answers ENOTTY for a
 // request that does not belong to the descriptor it was aimed at.
 #define POSIX_SYSCALL_IOCTL 263u
+#define POSIX_SYSCALL_GETPGRP 264u
+// arg0 is the pid (0 means the caller), arg1 the group (0 means the pid).
+#define POSIX_SYSCALL_SETPGID 265u
+#define POSIX_SYSCALL_TCGETPGRP 266u
+#define POSIX_SYSCALL_TCSETPGRP 267u
 
 #define POSIX_TCGETS 0x5401u
 #define POSIX_TCSETS 0x5402u

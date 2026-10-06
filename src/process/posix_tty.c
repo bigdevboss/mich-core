@@ -1,4 +1,9 @@
 #include "posix_tty.h"
+#include "posix_io.h"
+#include "posix_poll.h"
+#include "posix_signal.h"
+#include "runtime64.h"
+#include "scheduler.h"
 #include "task.h"
 #include "vm64.h"
 
@@ -21,9 +26,24 @@ struct posix_tty_state {
     u32 queue_head;
     u32 queue_count;
     u32 eof_pending;
+    u32 foreground;
 };
 
 static struct posix_tty_state ttys[POSIX_TTY_MAX];
+
+// One parked reader per task slot, the way the pipe path keeps its wait
+// table: the profile has a single console, so a list per tty would be
+// state without users, and the slot is where the request to answer into
+// is remembered while the caller's frame is abandoned.
+struct tty_wait {
+    u32 index;
+    uptr_t request;
+    u32 length;
+};
+
+static struct tty_wait tty_waits[MAX_TASKS];
+
+static void tty_wake_readers(u32 index);
 
 static struct posix_tty_state *tty_for(u32 index) {
     if (index >= POSIX_TTY_MAX) return 0;
@@ -34,6 +54,11 @@ void posix_tty_init(void) {
     for (u32 index = 0; index < POSIX_TTY_MAX; index++) {
         for (u32 byte = 0; byte < sizeof(ttys[index]); byte++)
             ((u8 *)&ttys[index])[byte] = 0;
+    }
+    for (u32 slot = 0; slot < MAX_TASKS; slot++) {
+        tty_waits[slot].index = 0;
+        tty_waits[slot].request = 0;
+        tty_waits[slot].length = 0;
     }
 }
 
@@ -135,6 +160,8 @@ u32 posix_tty_input_byte(u32 index, u8 byte) {
     if (!(termios->lflag & POSIX_ICANON)) {
         queue_push(tty, &byte, 1);
         tty_echo(tty, byte);
+        tty_wake_readers(index);
+        posix_poll_notify();
         return POSIX_TTY_EVENT_NONE;
     }
     if (byte == '\n') {
@@ -142,6 +169,8 @@ u32 posix_tty_input_byte(u32 index, u8 byte) {
         tty->line_length = 0;
         queue_push(tty, &byte, 1);
         tty_echo(tty, byte);
+        tty_wake_readers(index);
+        posix_poll_notify();
         return POSIX_TTY_EVENT_NONE;
     }
     if (termios->cc[POSIX_VERASE] && byte == termios->cc[POSIX_VERASE]) {
@@ -168,6 +197,8 @@ u32 posix_tty_input_byte(u32 index, u8 byte) {
         } else {
             tty->eof_pending = 1;
         }
+        tty_wake_readers(index);
+        posix_poll_notify();
         return POSIX_TTY_EVENT_NONE;
     }
     if (tty->line_length < POSIX_TTY_LINE_MAX) {
@@ -175,6 +206,16 @@ u32 posix_tty_input_byte(u32 index, u8 byte) {
         tty_echo(tty, byte);
     }
     return POSIX_TTY_EVENT_NONE;
+}
+
+static int tty_ready(const struct posix_tty_state *tty) {
+    return tty->queue_count || tty->eof_pending;
+}
+
+static void tty_clear_wait(u32 slot) {
+    tty_waits[slot].index = 0;
+    tty_waits[slot].request = 0;
+    tty_waits[slot].length = 0;
 }
 
 int posix_tty_read(u32 index, u8 *buffer, u32 length, u32 *transferred) {
@@ -207,6 +248,116 @@ int posix_tty_write(u32 index, const u8 *data, u32 length, u32 *transferred) {
     for (u32 offset = 0; offset < length; offset++)
         tty_emit(tty, data[offset]);
     *transferred = length;
+    return 0;
+}
+
+// Hand the waiting line to every reader parked on this tty. Each takes
+// what is there up to what it asked for, and a reader still without a line
+// stays parked; the loop stops as soon as the queue drains.
+static void tty_wake_readers(u32 index) {
+    struct posix_tty_state *tty = &ttys[index];
+    u8 staging[POSIX_IO_MAX];
+    for (u32 slot = 0; slot < (u32)task_pool_count; slot++) {
+        struct task *reader = &task_pool[slot];
+        if (reader->state != TASK_BLOCKED_TTY ||
+            tty_waits[slot].index != index + 1u)
+            continue;
+        if (!tty_ready(tty)) return;
+        u32 transferred = 0;
+        i64 answer = 0;
+        if (posix_tty_read(index, staging, tty_waits[slot].length,
+                           &transferred) ||
+            vm64_copy_to(reader->page_dir, tty_waits[slot].request +
+                         POSIX_IO_DATA_OFFSET, staging, transferred) ||
+            posix_io_patch_result(reader, tty_waits[slot].request,
+                                  transferred))
+            answer = POSIX_TTY_EIO;
+        else
+            answer = (i64)transferred;
+        tty_clear_wait(slot);
+        reader->state = TASK_RUNNING;
+        task64_set_result(slot, answer);
+    }
+}
+
+int posix_tty_park(struct task *task, u32 index, uptr_t request, u32 length) {
+    u32 slot = (u32)(task - task_pool);
+    if (slot >= (u32)MAX_TASKS || !tty_for(index) || !request || !length)
+        return -1;
+    tty_waits[slot].index = index + 1u;
+    tty_waits[slot].request = request;
+    tty_waits[slot].length = length;
+    task->state = TASK_BLOCKED_TTY;
+    return 0;
+}
+
+i64 posix_tty_io_read(struct task *task, u32 index, uptr_t request,
+                      u32 length) {
+    struct posix_tty_state *tty = tty_for(index);
+    if (!tty) return POSIX_TTY_ENOTTY;
+    if (!request || !length) return POSIX_TTY_EINVAL;
+    int slot = scheduler_current();
+    if (slot < 0 || &task_pool[slot] != task) return POSIX_TTY_EIO;
+    if (tty_ready(tty)) {
+        u8 staging[POSIX_IO_MAX];
+        u32 transferred = 0;
+        int result = posix_tty_read(index, staging, length, &transferred);
+        if (result) return result;
+        if (vm64_copy_to(task->page_dir, request + POSIX_IO_DATA_OFFSET,
+                         staging, transferred) ||
+            posix_io_patch_result(task, request, transferred))
+            return POSIX_TTY_EIO;
+        return (i64)transferred;
+    }
+    // Nothing typed yet, so the read parks and the input path completes it
+    // in the caller's own request, because this frame is abandoned on the
+    // switch the way a pipe read's is.
+    if (posix_tty_park(task, index, request, length)) return POSIX_TTY_EIO;
+    if (scheduler_pick_next(slot) < 0) {
+        tty_clear_wait((u32)slot);
+        task->state = TASK_RUNNING;
+        return POSIX_TTY_EDEADLK;
+    }
+    return (i64)task64_block_switch();
+}
+
+u32 posix_tty_blocked_count(u32 index) {
+    u32 count = 0;
+    if (index >= POSIX_TTY_MAX) return 0;
+    for (u32 slot = 0; slot < (u32)task_pool_count; slot++) {
+        if (task_pool[slot].state != TASK_BLOCKED_TTY) continue;
+        if (tty_waits[slot].index == index + 1u) count++;
+    }
+    return count;
+}
+
+u16 posix_tty_poll(u32 index) {
+    struct posix_tty_state *tty = tty_for(index);
+    if (!tty) return 0;
+    u16 ready = POSIX_POLLOUT;
+    if (tty_ready(tty)) ready |= POSIX_POLLIN;
+    return ready;
+}
+
+i64 posix_tty_signal(struct task *target) {
+    u32 slot = (u32)(target - task_pool);
+    if (slot >= (u32)MAX_TASKS || target->state != TASK_BLOCKED_TTY) return 0;
+    tty_clear_wait(slot);
+    return POSIX_SIGNAL_EINTR;
+}
+
+u32 posix_tty_foreground_get(u32 index) {
+    struct posix_tty_state *tty = tty_for(index);
+    return tty ? tty->foreground : 0;
+}
+
+int posix_tty_foreground_set(u32 index, u32 pgid) {
+    struct posix_tty_state *tty = tty_for(index);
+    if (!tty) return POSIX_TTY_ENOTTY;
+    // Zero is the "nobody owns the line" spelling the getter reports, so
+    // it is what a caller restores; the syscall path refuses it before it
+    // reaches here, since a caller cannot hand the terminal to no group.
+    tty->foreground = pgid;
     return 0;
 }
 

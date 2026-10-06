@@ -80,6 +80,8 @@
 #include "posix_socket.h"
 #include "posix_poll.h"
 #include "posix_tty.h"
+#include "posix_pgroup.h"
+#include "posix_process.h"
 #include "entropy.h"
 #include "kernel64_internal.h"
 
@@ -2216,6 +2218,15 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                 }
                 return (u64)(i64)piped;
             }
+            // A read of a tty goes through the line discipline, which may
+            // park the caller until a whole line lands; a write never
+            // parks, because the UART absorbs it, so it keeps the vfs
+            // path (and with it the ONLCR mapping the console wants).
+            u32 tty_index = 0;
+            if (number == POSIX_SYSCALL_READ &&
+                !posix_fd_tty_of(task, request.descriptor, &tty_index))
+                return (u64)posix_tty_io_read(task, tty_index, arg0,
+                                              request.length);
             // A socket descriptor answers the same bytes recv and send
             // do, through the plain io request the file path already
             // copied; the path authority never applies because a socket
@@ -2399,19 +2410,53 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             return (u64)task64_block_switch();
         }
         if (number == POSIX_SYSCALL_KILL) {
-            int result = posix_signal_kill(task, (int)arg0, (u32)arg1);
-            if (result == 1) {
-                u32 target_slot = PID_SLOT((u32)arg0);
-                int code = 128 + (int)arg1;
-                // Self termination cannot return through the normal path:
-                // the frame is already dying, so it takes the exit dance.
-                if (target_slot == current_task_slot)
-                    return exit64_dispatch((u64)code);
-                task_pool[target_slot].exit_signal = (u32)arg1;
-                terminate64(target_slot, code);
-                return 0;
+            u32 signo = (u32)arg1;
+            int pid = (int)arg0;
+            // Signal zero is the existence probe: it changes nothing and
+            // answers whether the target is there, so the bounded set only
+            // gates the signals that actually do something.
+            if (signo && !posix_signal_known(signo))
+                return (u64)(i64)POSIX_SIGNAL_EINVAL;
+            // pid -1 spells "everything this caller may signal", which has
+            // no bounded answer in a profile without sessions; it is
+            // refused rather than widened into a group.
+            if (pid == -1) return (u64)(i64)POSIX_SIGNAL_EINVAL;
+            struct task *targets[MAX_TASKS];
+            u32 count = 0;
+            if (pid > 0) {
+                struct task *target = posix_signal_target(pid);
+                if (!target) return (u64)(i64)POSIX_SIGNAL_ESRCH;
+                targets[count++] = target;
+            } else {
+                u32 group = pid == 0 ? posix_pgroup_get(task) : (u32)(-pid);
+                count = posix_pgroup_members(group, targets, MAX_TASKS);
+                if (!count) return (u64)(i64)POSIX_SIGNAL_ESRCH;
             }
-            return result ? (u64)(i64)result : 0;
+            int self_stop = 0;
+            for (u32 index = 0; index < count; index++) {
+                struct task *target = targets[index];
+                int result = posix_signal_one(task, target, signo);
+                if (result == 1) {
+                    int code = 128 + (int)signo;
+                    // Self termination cannot return through the normal
+                    // path: the frame is already dying, so it takes the
+                    // exit dance.
+                    if (target == task) return exit64_dispatch((u64)code);
+                    target->exit_signal = signo;
+                    terminate64((u32)(target - task_pool), code);
+                    continue;
+                }
+                if (result == 2) self_stop = 1;
+                else if (result < 0) return (u64)(i64)result;
+            }
+            if (self_stop) {
+                // The stop already landed on the task table; the syscall
+                // frame is abandoned and answered on the resume.
+                task64_set_result(current_task_slot, 0);
+                scheduler64_switch();
+                return task_contexts[current_task_slot].rax;
+            }
+            return 0;
         }
         if (number == POSIX_SYSCALL_SIGACTION) {
             struct posix_sigaction_request request;
@@ -2739,7 +2784,9 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             int pid = (int)arg0;
             u64 status_address = arg1;
             u32 options = (u32)arg2;
-            if (options & ~POSIX_WAIT_NOHANG || pid == 0 || pid < -1)
+            if (options & ~(POSIX_WAIT_NOHANG | POSIX_WAIT_UNTRACED |
+                            POSIX_WAIT_CONTINUED) ||
+                pid == 0 || pid < -1)
                 return (u64)(i64)POSIX_PROCESS_EINVAL;
             if (status_address &&
                 vm64_user_access(parent->page_dir, status_address, 4, 1))
@@ -2762,6 +2809,24 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                         return posix_waitpid_reaped(parent, status_address,
                                                     reaped_id, code, signal);
                     }
+                    // A stop or a continue is only news to a caller that
+                    // asked for it, and the report is spent when read.
+                    int want_stop = (options & POSIX_WAIT_UNTRACED) &&
+                        candidate->stop_report;
+                    int want_cont = (options & POSIX_WAIT_CONTINUED) &&
+                        candidate->continued_report;
+                    if (want_stop || want_cont) {
+                        u32 status = posix_wait_status(0, 0,
+                                                       candidate->stop_report,
+                                                       candidate->continued_report);
+                        candidate->stop_report = 0;
+                        candidate->continued_report = 0;
+                        if (status_address &&
+                            vm64_copy_to(parent->page_dir, status_address,
+                                         &status, 4))
+                            return (u64)(i64)POSIX_PROCESS_EINVAL;
+                        return (u64)(u32)candidate->id;
+                    }
                     child = candidate;
                 }
             } else {
@@ -2782,16 +2847,33 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                 }
             }
             if (!child) return (u64)(i64)POSIX_PROCESS_ECHILD;
+            // The same report on the single-pid path, and the answer a
+            // caller with NOHANG gets instead of a zero.
+            int child_wants = ((options & POSIX_WAIT_UNTRACED) &&
+                               child->stop_report) ||
+                ((options & POSIX_WAIT_CONTINUED) && child->continued_report);
+            if (child_wants) {
+                u32 status = posix_wait_status(0, 0, child->stop_report,
+                                               child->continued_report);
+                child->stop_report = 0;
+                child->continued_report = 0;
+                if (status_address &&
+                    vm64_copy_to(parent->page_dir, status_address, &status, 4))
+                    return (u64)(i64)POSIX_PROCESS_EINVAL;
+                return (u64)(u32)child->id;
+            }
             if (options & POSIX_WAIT_NOHANG) return 0;
             // A blocking dispatch frame is abandoned on switch, so the wake
             // path delivers the pid and publishes the status word itself.
             parent->wait_pid = pid;
             parent->wait_posix = 1;
+            parent->wait_options = options;
             parent->wait_status_address = status_address;
             parent->state = TASK_BLOCKED_WAIT;
             if (scheduler_pick_next((int)current_task_slot) < 0) {
                 parent->wait_pid = -1;
                 parent->wait_posix = 0;
+                parent->wait_options = 0;
                 parent->wait_status_address = 0;
                 parent->state = TASK_RUNNING;
                 return (u64)(i64)POSIX_PROCESS_EINVAL;
@@ -3077,6 +3159,37 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         request.length = POSIX_SOCKADDR_IN_SIZE;
         return vm64_copy_to(task->page_dir, arg0, &request,
                             sizeof(request)) ? (u64)(i64)POSIX_VFS_EIO : 0;
+    }
+    if (number == POSIX_SYSCALL_GETPGRP) {
+        struct task *task = &task_pool[current_task_slot];
+        return (u64)(i64)posix_pgroup_get(task);
+    }
+    if (number == POSIX_SYSCALL_SETPGID) {
+        struct task *task = &task_pool[current_task_slot];
+        int pid = (int)arg0;
+        struct task *target = pid == 0 ? task : posix_signal_target(pid);
+        if (!target) return (u64)(i64)POSIX_PROCESS_ESRCH;
+        // A parent can name its child; anyone else's group is not the
+        // caller's to move.
+        if (target != task && target->parent_id != task->id)
+            return (u64)(i64)POSIX_PROCESS_EPERM;
+        u32 pgid = (u32)arg1 ? (u32)arg1 : (u32)target->id;
+        if (posix_pgroup_set(target, pgid))
+            return (u64)(i64)POSIX_PROCESS_ESRCH;
+        return 0;
+    }
+    if (number == POSIX_SYSCALL_TCGETPGRP ||
+        number == POSIX_SYSCALL_TCSETPGRP) {
+        struct task *task = &task_pool[current_task_slot];
+        u32 index = 0;
+        if (posix_fd_tty_of(task, (int)arg0, &index))
+            return (u64)(i64)POSIX_TTY_ENOTTY;
+        if (number == POSIX_SYSCALL_TCGETPGRP)
+            return (u64)(i64)posix_tty_foreground_get(index);
+        u32 pgid = (u32)arg1;
+        if (!posix_pgroup_live(pgid))
+            return (u64)(i64)POSIX_PROCESS_ESRCH;
+        return (u64)(i64)posix_tty_foreground_set(index, pgid);
     }
     if (number == POSIX_SYSCALL_IOCTL) {
         struct task *task = &task_pool[current_task_slot];

@@ -2,6 +2,10 @@
 #include "posix_pipe.h"
 #include "posix_socket.h"
 #include "posix_poll.h"
+#include "posix_tty.h"
+#include "posix_pgroup.h"
+#include "runtime64.h"
+#include "scheduler.h"
 #include "posix_abi.h"
 #include "runtime64.h"
 #include "task.h"
@@ -22,6 +26,8 @@ struct posix_signal_state {
 };
 
 static struct posix_signal_state states[MAX_TASKS];
+
+static void wake_with_eintr(struct task *target);
 
 static struct posix_signal_state *state_for(struct task *task) {
     u32 slot = (u32)(task - task_pool);
@@ -47,15 +53,28 @@ static int sig_known(u32 signo) {
     case POSIX_SIG_ALRM:
     case POSIX_SIG_TERM:
     case POSIX_SIG_CHLD:
+    case POSIX_SIG_CONT:
+    case POSIX_SIG_STOP:
+    case POSIX_SIG_TSTP:
+    case POSIX_SIG_TTIN:
+    case POSIX_SIG_TTOU:
         return 1;
     }
     return 0;
 }
 
+// The four signals whose default action is to stop, and the one whose
+// default action is to resume. Everything that is neither these nor
+// SIGCHLD terminates by default, which is what sig_default_term answers.
+static int sig_default_stop(u32 signo) {
+    return signo == POSIX_SIG_STOP || signo == POSIX_SIG_TSTP ||
+        signo == POSIX_SIG_TTIN || signo == POSIX_SIG_TTOU;
+}
+
 // Signals whose default action terminates the process. SIGCHLD defaults to
 // ignore and SIGKILL is handled before dispositions are ever consulted.
 static int sig_default_term(u32 signo) {
-    return signo != POSIX_SIG_CHLD;
+    return signo != POSIX_SIG_CHLD && signo != POSIX_SIG_CONT;
 }
 
 void posix_signal_reset(struct task *task) {
@@ -102,6 +121,99 @@ u32 posix_signal_fault_signo(u32 vector) {
     return 0u;
 }
 
+// A stop signal with a default disposition parks the task outside the
+// scheduler: TASK_STOPPED is invisible to pick_next until SIGCONT clears
+// it. The report stays on the task until the parent collects it, and the
+// parent that waits with WUNTRACED is woken by the report itself.
+void posix_signal_stop(struct task *target, u32 signo) {
+    if (target->state == TASK_STOPPED) return;
+    if (target->state != TASK_RUNNING) {
+        // A parked call is broken the way any other signal breaks it, so
+        // the task stops as a runnable one that will answer EINTR; POSIX
+        // would keep the park and resume it after the continue.
+        wake_with_eintr(target);
+        target->state = TASK_STOPPED;
+        target->stop_report = signo;
+        task64_report_child((u32)(target - task_pool));
+        return;
+    }
+    target->state = TASK_STOPPED;
+    target->stop_report = signo;
+    task64_report_child((u32)(target - task_pool));
+}
+
+// SIGCONT: a stopped task runs again and the stop report becomes a
+// continue report, because that is what a waiting parent must see. A stop
+// that was posted but never delivered is discarded, which is the race a
+// shell wins when it stops and continues a job quickly.
+void posix_signal_continue_task(struct task *target) {
+    struct posix_signal_state *state = state_for(target);
+    if (state) {
+        state->pending &= ~(POSIX_SIGNAL_BIT(POSIX_SIG_STOP) |
+                            POSIX_SIGNAL_BIT(POSIX_SIG_TSTP) |
+                            POSIX_SIGNAL_BIT(POSIX_SIG_TTIN) |
+                            POSIX_SIGNAL_BIT(POSIX_SIG_TTOU));
+    }
+    if (target->state != TASK_STOPPED) return;
+    target->state = TASK_RUNNING;
+    target->stop_report = 0;
+    target->continued_report = 1;
+    task64_report_child((u32)(target - task_pool));
+}
+
+// One target, one signal, the whole disposition rules. Returns 0 when the
+// signal was posted or needed no action, 1 when the target must terminate
+// (the caller owns the death dance), 2 when the target stopped itself and
+// the caller must yield the CPU, and a negative errno otherwise.
+int posix_signal_one(struct task *caller, struct task *target, u32 signo) {
+    if (!caller || !target) return POSIX_SIGNAL_ESRCH;
+    // Zero is the existence probe and the only number outside the bounded
+    // set that is not an error: the group walk relies on this staying
+    // fail closed, since it hands every member here unchecked.
+    if (!signo) return 0;
+    if (!sig_known(signo)) return POSIX_SIGNAL_EINVAL;
+    if (caller->uid != target->uid && caller->uid != 0)
+        return POSIX_SIGNAL_EPERM;
+    if (signo == POSIX_SIG_KILL) return 1;
+    struct posix_signal_state *state = state_for(target);
+    if (!state) return POSIX_SIGNAL_ESRCH;
+    u64 bit = POSIX_SIGNAL_BIT(signo);
+    if (state->handler[signo - 1u] == POSIX_SIG_IGN) {
+        // An ignored stop signal does not stop, but an ignored SIGCONT
+        // resumes anyway: the disposition cannot hold a task parked.
+        if (signo == POSIX_SIG_CONT) posix_signal_continue_task(target);
+        return 0;
+    }
+    if (state->blocked & bit) {
+        // Blocked stays pending and wakes nothing: POSIX holds the signal
+        // until the mask opens, even when its action would stop or kill.
+        state->pending |= bit;
+        return 0;
+    }
+    if (state->handler[signo - 1u] == POSIX_SIG_DFL) {
+        if (signo == POSIX_SIG_CONT) {
+            posix_signal_continue_task(target);
+            return 0;
+        }
+        if (sig_default_stop(signo)) {
+            // Stopping the only runnable task would leave the CPU with
+            // nobody to send the continue; the caller gets the deadlock
+            // instead of a machine that never runs anything again.
+            if (target == caller &&
+                scheduler_pick_next((int)(caller - task_pool)) < 0)
+                return POSIX_SIGNAL_EDEADLK;
+            posix_signal_stop(target, signo);
+            return target == caller ? 2 : 0;
+        }
+        if (!sig_default_term(signo)) return 0;
+        return 1;
+    }
+    state->pending |= bit;
+    if (signo == POSIX_SIG_CONT) posix_signal_continue_task(target);
+    wake_with_eintr(target);
+    return 0;
+}
+
 // Break a park the way the owning dispatcher would: put the task back to
 // RUNNING and publish the result its syscall frame will return. The sleep
 // park additionally answers the interrupted nanosleep with the time it
@@ -145,6 +257,12 @@ static void wake_with_eintr(struct task *target) {
         task64_set_result(slot, answer);
         return;
     }
+    if (target->state == TASK_BLOCKED_TTY) {
+        i64 answer = posix_tty_signal(target);
+        target->state = TASK_RUNNING;
+        task64_set_result(slot, answer);
+        return;
+    }
     if (target->state == TASK_BLOCKED_WAIT) {
         target->wait_pid = -1;
         target->wait_posix = 0;
@@ -154,49 +272,41 @@ static void wake_with_eintr(struct task *target) {
     }
 }
 
+// Single-target resolution, kept for the callers that already know which
+// pid they mean; the dispatcher resolves group kills with the group module
+// and calls posix_signal_one directly.
 int posix_signal_kill(struct task *caller, int pid, u32 signo) {
-    // The profile has no process groups, so a non positive pid has no
-    // meaning to hide behind: reject it rather than guess a group.
     if (pid <= 0) return POSIX_SIGNAL_EINVAL;
-    if (signo > 31u || (signo && !sig_known(signo)))
-        return POSIX_SIGNAL_EINVAL;
+    struct task *target = posix_signal_target(pid);
+    if (!target) return POSIX_SIGNAL_ESRCH;
+    return posix_signal_one(caller, target, signo);
+}
+
+struct task *posix_signal_target(int pid) {
     u32 slot = PID_SLOT((u32)pid);
-    if (!slot || slot >= (u32)task_pool_count ||
-        task_pool[slot].id != pid ||
-        task_pool[slot].state == TASK_FREE ||
-        task_pool[slot].state == TASK_ZOMBIE)
-        return POSIX_SIGNAL_ESRCH;
+    if (!slot || slot >= (u32)task_pool_count) return 0;
     struct task *target = &task_pool[slot];
-    if (caller->uid != target->uid && caller->uid != 0)
-        return POSIX_SIGNAL_EPERM;
-    if (!signo) return 0;
-    if (signo == POSIX_SIG_KILL) return 1;
-    struct posix_signal_state *state = state_for(target);
-    if (!state) return POSIX_SIGNAL_ESRCH;
-    u64 bit = POSIX_SIGNAL_BIT(signo);
-    if (state->handler[signo - 1u] == POSIX_SIG_IGN) return 0;
-    if (state->blocked & bit) {
-        // Blocked stays pending and wakes nothing: POSIX holds the signal
-        // until the mask opens, even when its action would kill.
-        state->pending |= bit;
+    if (target->id != pid || target->state == TASK_FREE ||
+        target->state == TASK_ZOMBIE)
         return 0;
-    }
-    if (state->handler[signo - 1u] == POSIX_SIG_DFL) {
-        if (!sig_default_term(signo)) return 0;
-        return 1;
-    }
-    state->pending |= bit;
-    wake_with_eintr(target);
-    return 0;
+    return target;
+}
+
+int posix_signal_known(u32 signo) {
+    return signo && signo <= POSIX_SIG_COUNT && sig_known(signo);
 }
 
 int posix_signal_action(struct task *task, u32 signo, void *record) {
     struct posix_sigaction_request *request = record;
     struct posix_signal_state *state = state_for(task);
-    if (!state || !signo || signo > 31u || signo == POSIX_SIG_KILL)
+    if (!state || !signo || !sig_known(signo)) return POSIX_SIGNAL_EINVAL;
+    // The two signals POSIX makes uncatchable reject the call outright:
+    // a handler for either would be a promise the kernel cannot keep,
+    // because the default action is the only way they ever run.
+    if (signo == POSIX_SIG_KILL || signo == POSIX_SIG_STOP)
         return POSIX_SIGNAL_EINVAL;
-    // SIGKILL rejects the call outright in the dispatcher; nothing else in
-    // the bounded set is untouchable, so the swap is unconditional.
+    // Everything else in the bounded set is touchable, so the swap is
+    // unconditional.
     u32 index = signo - 1u;
     // The previous set is read before the swap, since the new values land
     // in the same slots the answer copies from. Without the apply flag the

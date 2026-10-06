@@ -37,6 +37,10 @@ i64 task64_block_switch(void);
 void exception64_dispatch(struct exception_frame64 *frame);
 void timer64_dispatch(struct interrupt_frame64 *frame);
 void irq64_dispatch(struct exception_frame64 *frame);
+// A child stopped or resumed, so a parent parked in a waitpid that asked
+// for the report is woken with the status word, the way the exit path
+// wakes it. The report stays on the child until a waitpid collects it.
+void task64_report_child(u32 child_slot);
 u64 syscall64_validate_return(u64 result);
 u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2);
 void kernel64_main(u32 magic, struct bd_info *info);

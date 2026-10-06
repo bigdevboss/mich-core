@@ -10,6 +10,9 @@ struct task;
 #define POSIX_SIGNAL_ESRCH (-3)
 #define POSIX_SIGNAL_EINTR (-4)
 #define POSIX_SIGNAL_EINVAL (-22)
+// Stopping the only runnable task would park the CPU with nobody left to
+// send the continue, so that stop is refused instead.
+#define POSIX_SIGNAL_EDEADLK (-35)
 
 // One bit per signal number, signals 1 through 31. Signal zero is the
 // existence probe and never sets a bit.
@@ -35,13 +38,32 @@ u32 posix_signal_fault_signo(u32 vector);
 
 // Post a signal and act on it. Returns 0 when the signal was posted or
 // needs no action, 1 when the caller must terminate the target at once
-// (SIGKILL, or a default-terminate disposition that is deliverable), and a
+// (SIGKILL, or a default-terminate disposition that is deliverable), 2
+// when the target stopped itself and the caller must yield the CPU, and a
 // negative errno otherwise: -EINVAL for a signal outside the bounded set
 // or a non positive pid, -ESRCH when the pid names no live task, -EPERM
 // when the caller's uid owns neither side. A catchable signal parks the
 // bit, wakes a sleeping or waiting target with EINTR, and lets the
 // delivery points run the disposition.
 int posix_signal_kill(struct task *caller, int pid, u32 signo);
+
+// One target, one signal, the disposition rules: the shape the group
+// walk and the single-pid call share. The return codes are the ones
+// posix_signal_kill documents.
+int posix_signal_one(struct task *caller, struct task *target, u32 signo);
+
+// Resolve a pid to a live task, or 0. Excludes the free and the zombie.
+struct task *posix_signal_target(int pid);
+
+// Whether the bounded set carries the number, which is the gate every
+// entry point opens with.
+int posix_signal_known(u32 signo);
+
+// Stop and continue, the two state transitions a job-control signal owns.
+// Stopping breaks a park with EINTR first, and both publish the report the
+// parent collects through waitpid's WUNTRACED and WCONTINUED.
+void posix_signal_stop(struct task *target, u32 signo);
+void posix_signal_continue_task(struct task *target);
 
 // The number of a pending, unblocked signal, lowest first, or 0. The
 // delivery points call this to decide whether to build a frame.

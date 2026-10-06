@@ -1,4 +1,5 @@
 #include "posix_pipe.h"
+#include "posix_io.h"
 #include "posix_abi.h"
 #include "posix_poll.h"
 #include "posix_signal.h"
@@ -7,12 +8,6 @@
 #include "vm64.h"
 #include "scheduler.h"
 #include "runtime64.h"
-
-// The parked dispatch frame is abandoned on the switch, so the peer that
-// completes the operation patches the parked caller's request in place:
-// the data array and the transferred word at these fixed offsets.
-#define IO_TRANSFERRED_OFFSET 8u
-#define IO_DATA_OFFSET 12u
 
 struct posix_pipe_state {
     u8 ring[POSIX_PIPE_BUF];
@@ -62,11 +57,6 @@ static void ring_take(struct posix_pipe_state *pipe, u8 *destination,
     pipe->count -= length;
 }
 
-static int patch_result(struct task *task, uptr_t request, u32 transferred) {
-    return vm64_copy_to(task->page_dir, request + IO_TRANSFERRED_OFFSET,
-                        &transferred, sizeof(transferred));
-}
-
 // Hand the ring's bytes to the parked readers of one pipe. Each reader
 // takes what is there up to what it asked for; the loop stops when the
 // ring drains. Readers parked on an empty ring stay parked, which is
@@ -87,8 +77,8 @@ static void wake_readers(u32 index) {
         i64 answer = (i64)take;
         u32 transferred = take;
         if (vm64_copy_to(reader->page_dir, waits[slot].request +
-                         IO_DATA_OFFSET, staging, take) ||
-            patch_result(reader, waits[slot].request, transferred))
+                         POSIX_IO_DATA_OFFSET, staging, take) ||
+            posix_io_patch_result(reader, waits[slot].request, transferred))
             answer = (i64)POSIX_VFS_EIO;
         waits[slot].pipe = 0;
         waits[slot].request = 0;
@@ -112,7 +102,7 @@ static void wake_writers(u32 index) {
         if (waits[slot].length > ring_free(pipe)) return;
         struct task *writer = &task_pool[slot];
         if (vm64_copy_from(writer->page_dir, staging, waits[slot].request +
-                           IO_DATA_OFFSET, waits[slot].length)) {
+                           POSIX_IO_DATA_OFFSET, waits[slot].length)) {
             waits[slot].pipe = 0;
             waits[slot].request = 0;
             waits[slot].length = 0;
@@ -122,7 +112,7 @@ static void wake_writers(u32 index) {
         }
         ring_put(pipe, staging, waits[slot].length);
         u32 transferred = waits[slot].length;
-        patch_result(writer, waits[slot].request, transferred);
+        posix_io_patch_result(writer, waits[slot].request, transferred);
         waits[slot].pipe = 0;
         waits[slot].request = 0;
         waits[slot].length = 0;
@@ -141,7 +131,7 @@ static void wake_writers_broken(u32 index) {
             waits[slot].end != POSIX_PIPE_END_WRITE)
             continue;
         struct task *writer = &task_pool[slot];
-        patch_result(writer, waits[slot].request, 0);
+        posix_io_patch_result(writer, waits[slot].request, 0);
         waits[slot].pipe = 0;
         waits[slot].request = 0;
         waits[slot].length = 0;
@@ -188,7 +178,7 @@ void posix_pipe_release(u32 index, u32 end) {
                 waits[slot].pipe != index + 1u ||
                 waits[slot].end != POSIX_PIPE_END_READ)
                 continue;
-            patch_result(&task_pool[slot], waits[slot].request, 0);
+            posix_io_patch_result(&task_pool[slot], waits[slot].request, 0);
             waits[slot].pipe = 0;
             waits[slot].request = 0;
             waits[slot].length = 0;
@@ -218,9 +208,9 @@ int posix_pipe_io(struct task *task, u32 index, u32 end, uptr_t request,
             u32 take = pipe->count < length ? pipe->count : length;
             ring_take(pipe, staging, take);
             u32 transferred = take;
-            if (vm64_copy_to(task->page_dir, request + IO_DATA_OFFSET,
+            if (vm64_copy_to(task->page_dir, request + POSIX_IO_DATA_OFFSET,
                              staging, take) ||
-                patch_result(task, request, transferred))
+                posix_io_patch_result(task, request, transferred))
                 return POSIX_VFS_EIO;
             // The space opens before the writers wake, so each completed
             // writer finds room for its whole request.
@@ -229,7 +219,7 @@ int posix_pipe_io(struct task *task, u32 index, u32 end, uptr_t request,
             return (int)take;
         }
         if (!pipe->writers) {
-            patch_result(task, request, 0);
+            posix_io_patch_result(task, request, 0);
             return 0;
         }
         waits[slot].pipe = index + 1u;
@@ -269,12 +259,12 @@ int posix_pipe_io(struct task *task, u32 index, u32 end, uptr_t request,
         }
         return (int)task64_block_switch();
     }
-    if (vm64_copy_from(task->page_dir, staging, request + IO_DATA_OFFSET,
+    if (vm64_copy_from(task->page_dir, staging, request + POSIX_IO_DATA_OFFSET,
                        length))
         return POSIX_VFS_EIO;
     ring_put(pipe, staging, length);
     u32 transferred = length;
-    patch_result(task, request, transferred);
+    posix_io_patch_result(task, request, transferred);
     wake_readers(index);
     posix_poll_notify();
     return (int)length;

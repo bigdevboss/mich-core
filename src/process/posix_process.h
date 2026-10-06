@@ -14,6 +14,8 @@
 #define POSIX_PROCESS_EACCES (-13)
 #define POSIX_PROCESS_EISDIR (-21)
 #define POSIX_PROCESS_EINVAL (-22)
+#define POSIX_PROCESS_ESRCH (-3)
+#define POSIX_PROCESS_EPERM (-1)
 
 // Strings live in one caller-owned arena; argv/envp point into it.
 struct posix_exec_vectors {
@@ -29,6 +31,13 @@ struct posix_exec_vectors {
 // argv pointers plus NULL, envp pointers plus NULL, then the string arena.
 // stack_rsp receives the 16-byte-aligned entry rsp. Pure function: no
 // allocation, no user memory, safe to unit-test in ring 0.
+// The status word waitpid writes into the caller's int: an exit reports
+// the code shifted up, a signalled death the signal in the low bits, and
+// the two job-control reports carry a flag bit of their own (see
+// posix_abi.h). One function so the blocked wake and the reaping path can
+// never drift apart.
+u32 posix_wait_status(u32 code, u32 signal, u32 stop_signal, u32 continued);
+
 int posix_process_build_stack(u8 *stack_page,
                               const struct posix_exec_vectors *vectors,
                               u64 stack_base, u64 *stack_rsp);

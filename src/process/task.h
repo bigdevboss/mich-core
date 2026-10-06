@@ -24,6 +24,8 @@ struct mmio_grant {
 #define TASK_BLOCKED_PIPE 9
 #define TASK_BLOCKED_SOCKET 10
 #define TASK_BLOCKED_POLL 11
+#define TASK_STOPPED 12
+#define TASK_BLOCKED_TTY 13
 
 // Spawn flag (syscall arg1): the child is created but held off the scheduler
 // until its parent resumes it, so the parent can delegate capabilities before
@@ -86,6 +88,14 @@ struct task {
     // publish the encoded status word into the waiter's memory.
     int wait_posix;
     uptr_t wait_status_address;
+    // The options the waiter parked with: a stop or a continue is only
+    // published to a parent that asked for one.
+    u32 wait_options;
+    // Stop reporting: the signal that stopped this task stays here until
+    // the parent collects the report, the way a zombie keeps its exit
+    // code. A continue sets the flag below instead.
+    u32 stop_report;
+    u32 continued_report;
     paddr_t kstack_phys;
     u32 exec_gate;
     u32 recv_expect;

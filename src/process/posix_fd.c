@@ -6,6 +6,7 @@
 #include "posix_profile.h"
 #include "posix_pipe.h"
 #include "posix_socket.h"
+#include "posix_tty.h"
 #include "posix_poll.h"
 #include "posix_abi.h"
 #include "spinlock.h"
@@ -416,6 +417,11 @@ u16 posix_fd_poll_events(struct task *task, int descriptor) {
     u32 access = ofd ? ofd->access : 0;
     struct kernel_object *socket = ofd ? ofd->file : 0;
     u32 socket_type = ofd ? ofd->socket_type : 0;
+    // The console answers readiness from the line discipline instead of
+    // the always-ready default: an empty line is not readable, and a
+    // parked poller has to wake when a line lands.
+    u32 special = 0;
+    if (socket) vfs_special(socket, &special);
     spin_unlock(&posix_fd_lock);
     if (!ofd) return POSIX_POLLNVAL;
     u16 ready;
@@ -423,6 +429,10 @@ u16 posix_fd_poll_events(struct task *task, int descriptor) {
         ready = posix_pipe_poll(pipe - 1u, pipe_end);
     } else if (socket && socket->type == KOBJECT_SOCKET) {
         ready = posix_socket_poll(socket, socket_type);
+    } else if (special == VFS_SPECIAL_CONSOLE) {
+        // The console is the only tty a descriptor can name until /dev/tty
+        // exists, and it is tty zero.
+        ready = posix_tty_poll(0);
     } else {
         // Everything else answers without parking, so it is always ready
         // for whichever direction the descriptor was opened.

@@ -93,6 +93,7 @@
 #define TEST_ID_POSIX_SOCKET 111
 #define TEST_ID_POSIX_POLL 112
 #define TEST_ID_POSIX_TTY 113
+#define TEST_ID_POSIX_JOB 114
 
 struct test_result64 {
     u32 id;

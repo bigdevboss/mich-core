@@ -369,7 +369,7 @@ admitted to a POSIX profile. They are defined in `src/process/posix_abi.h`.
 | 202 | fork | Fork the current process. |
 | 203 | execve | Replace the process image. |
 | 204 | exit | Terminate the process. |
-| 205 | waitpid | Wait for a child process. |
+| 205 | waitpid | Wait for a child process. WNOHANG answers zero when nothing changed, WUNTRACED adds a stopped child and WCONTINUED a resumed one; a stop reports 0x7F in the low byte with the stopping signal above it, a continue reports all ones. |
 | 206 | getpid | Get the process id. |
 | 207 | getppid | Get the parent process id. |
 | 208 | brk | Adjust the program break (heap). |
@@ -395,7 +395,7 @@ admitted to a POSIX profile. They are defined in `src/process/posix_abi.h`.
 | 235 | clock_gettime | Read a clock into seconds and nanoseconds. Realtime (0) follows the wall clock, monotonic (1) counts ticks since boot. |
 | 236 | clock_getres | Report a clock's resolution: one timer tick, honestly. |
 | 237 | nanosleep | Park the task until the requested interval has passed. The interval is rounded up to whole ticks, so a sleep never wakes early. |
-| 238 | kill | Send a signal to a process; the default action of a fatal signal terminates it with the 128+signal exit code. |
+| 238 | kill | Send a signal to a process; the default action of a fatal signal terminates it with the 128+signal exit code. A pid of zero names the caller's group and a negative pid that group, signal zero is the existence probe, and a stop signal that would leave nothing runnable answers EDEADLK. |
 | 239 | sigaction | Install, ignore, or restore a handler for one signal, with its mask and flags. |
 | 240 | sigprocmask | Change the blocked signal set: SIG_BLOCK, SIG_UNBLOCK, or SIG_SETMASK. |
 | 241 | sigreturn | Restore the frame captured for a handler. Only frames carrying the sentinel are accepted. |
@@ -421,3 +421,7 @@ admitted to a POSIX profile. They are defined in `src/process/posix_abi.h`.
 | 261 | getpeername | Report the peer address a connected socket reached. |
 | 262 | poll | Wait for readiness on up to 16 descriptors, with a millisecond timeout and -1 for an endless wait. Descriptors report read and write readiness plus the error bits; a descriptor that names no open file is POLLNVAL. |
 | 263 | ioctl | Tty control: TCGETS and TCSETS carry the termios, TIOCGWINSZ and TIOCSWINSZ the window size. A descriptor that is not a tty, or a request the tty does not carry, answers ENOTTY. |
+| 264 | getpgrp | Report the calling process's group. A process that never named one leads its own. |
+| 265 | setpgid | Put a process into a group: naming its own pid creates the group it then leads, any other id must name a group somebody is live in. |
+| 266 | tcgetpgrp | Report the foreground group of a tty descriptor, zero when nobody owns the line. |
+| 267 | tcsetpgrp | Hand a tty descriptor to a live group; a dead group and a non-tty descriptor are refused. |

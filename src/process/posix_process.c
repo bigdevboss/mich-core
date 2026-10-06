@@ -1,4 +1,5 @@
 #include "posix_process.h"
+#include "posix_abi.h"
 
 static void store_u64(u8 *destination, u64 value) {
     for (u32 index = 0; index < 8; index++)
@@ -37,6 +38,14 @@ static int vectors_valid(const struct posix_exec_vectors *vectors) {
             !string_terminated(vectors->envp[index], vectors))
             return POSIX_PROCESS_EINVAL;
     return 0;
+}
+
+u32 posix_wait_status(u32 code, u32 signal, u32 stop_signal, u32 continued) {
+    if (continued) return POSIX_WAIT_STATUS_CONTINUED;
+    if (stop_signal)
+        return POSIX_WAIT_STATUS_STOPPED | ((stop_signal & 0x7Fu) << 8);
+    if (signal) return signal & 0x7Fu;
+    return ((u32)code & 0xFFu) << 8;
 }
 
 int posix_process_build_stack(u8 *stack_page,

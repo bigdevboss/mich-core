@@ -25,6 +25,7 @@
 #define POSIX_TTY_ENOTTY (-25)
 #define POSIX_TTY_ENFILE (-23)
 #define POSIX_TTY_EINVAL (-22)
+#define POSIX_TTY_EDEADLK (-35)
 #define POSIX_TTY_EIO (-5)
 
 // The flag bits this line discipline implements, so a termios carrying
@@ -74,6 +75,14 @@ int posix_tty_read(u32 index, u8 *buffer, u32 length, u32 *transferred);
 
 int posix_tty_write(u32 index, const u8 *data, u32 length, u32 *transferred);
 
+// The foreground group of the line: the group a read waits for and the
+// group the stop and quit characters are sent to. Zero means no group has
+// claimed the line yet, which reads as "everyone is foreground".
+u32 posix_tty_foreground_get(u32 index);
+// A zero group clears the claim, which is what the unit test restores; the
+// syscall validates a live group before it gets here.
+int posix_tty_foreground_set(u32 index, u32 pgid);
+
 int posix_tty_termios_get(u32 index, struct posix_termios *out);
 int posix_tty_termios_set(u32 index, const struct posix_termios *in);
 int posix_tty_winsize_get(u32 index, struct posix_winsize *out);
@@ -86,5 +95,24 @@ i64 posix_tty_ioctl(struct task *task, u32 index, u64 request,
                     uptr_t argument);
 
 u32 posix_tty_active_count(void);
+
+// The read a descriptor takes: the whole request is handed to the line
+// discipline, because only the input path can complete a read that parks.
+// A request with a line waiting answers in place; an empty one parks the
+// caller until a line arrives, a signal breaks it, or nothing else can
+// run and the park would freeze the CPU (EDEADLK).
+i64 posix_tty_io_read(struct task *task, u32 index, uptr_t request,
+                      u32 length);
+
+// The park on its own, without the switch: the parked caller's request is
+// remembered here, which is what the input path and the signal path both
+// need to reach.
+int posix_tty_park(struct task *task, u32 index, uptr_t request, u32 length);
+
+// How many readers are parked on one tty, and the readiness a poll row
+// reports for it: always writable, readable once a line is waiting.
+u32 posix_tty_blocked_count(u32 index);
+u16 posix_tty_poll(u32 index);
+i64 posix_tty_signal(struct task *target);
 
 #endif

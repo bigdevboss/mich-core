@@ -3,6 +3,7 @@
 #include "posix_fd.h"
 #include "posix_profile.h"
 #include "posix_signal.h"
+#include "posix_pgroup.h"
 #include "posix_pledge.h"
 
 struct task task_pool[MAX_TASKS];
@@ -70,6 +71,7 @@ void task_free_slot(struct task *t) {
     posix_fd_close_all(t);
     posix_profile_release(t);
     posix_signal_reset(t);
+    posix_pgroup_reset(t);
     posix_pledge_reset(t);
     arch_task_release(t);
     task_clear_dynamic(t);
@@ -87,6 +89,7 @@ void task_mark_zombie(struct task *t, int code) {
     posix_fd_close_all(t);
     posix_profile_release(t);
     posix_signal_reset(t);
+    posix_pgroup_reset(t);
     posix_pledge_reset(t);
     t->exit_code = code;
     t->on_cpu = TASK_CPU_NONE;
