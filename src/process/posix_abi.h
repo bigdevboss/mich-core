@@ -622,6 +622,10 @@ struct posix_termios {
 #define POSIX_ISIG 0x1u
 #define POSIX_ICANON 0x2u
 #define POSIX_ECHO 0x8u
+// TOSTOP: a background group may not write the line when it is set. It
+// is off by default, which is what keeps console output from a background
+// job working without anyone asking for it.
+#define POSIX_TOSTOP 0x10u
 
 struct posix_winsize {
     u16 rows;

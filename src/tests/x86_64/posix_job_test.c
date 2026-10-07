@@ -148,6 +148,71 @@ int test_posix_job64(struct task *owner) {
         posix_tty_poll((u32)spare) == POSIX_POLLOUT;
     posix_tty_destroy((u32)spare);
 
+    // The background rules. The peer leads the group that owns the line,
+    // so the probe is background on it: a read stops the probe with
+    // SIGTTIN, an ignored SIGTTIN turns the read into EIO instead of a
+    // wait that may never end, and the gates leave the owner alone.
+    int spare_second = posix_tty_create();
+    valid = valid && spare_second >= 1 &&
+        posix_pgroup_set(peer, (u32)peer->id) == 0 &&
+        posix_tty_foreground_set((u32)spare_second, (u32)peer->id) == 0;
+    posix_signal_reset(probe);
+    probe->state = TASK_RUNNING;
+    probe->stop_report = 0;
+    valid = valid && posix_tty_check_read(probe, (u32)spare_second) == 1 &&
+        probe->state == TASK_STOPPED &&
+        probe->stop_report == POSIX_SIG_TTIN;
+    valid = valid && posix_signal_one(probe, probe, POSIX_SIG_CONT) == 0 &&
+        probe->state == TASK_RUNNING;
+    probe->continued_report = 0;
+    struct posix_sigaction_request ignore;
+    for (u32 index = 0; index < sizeof(ignore); index++)
+        ((u8 *)&ignore)[index] = 0;
+    ignore.signo = (i32)POSIX_SIG_TTIN;
+    ignore.flags = POSIX_SA_APPLY;
+    ignore.handler = POSIX_SIG_IGN;
+    valid = valid && posix_signal_action(probe, POSIX_SIG_TTIN, &ignore) == 0 &&
+        posix_tty_check_read(probe, (u32)spare_second) == POSIX_TTY_EIO &&
+        probe->state == TASK_RUNNING;
+    // The owner reads, writes and hands over without a signal, which is
+    // what makes the foreground group the foreground group.
+    valid = valid && posix_tty_check_read(peer, (u32)spare_second) == 0 &&
+        posix_tty_check_write(peer, (u32)spare_second) == 0 &&
+        posix_tty_check_foreground(peer, (u32)spare_second) == 0;
+
+    // A background write asks only under TOSTOP, and then stops the
+    // writer with SIGTTOU; the handover asks even without TOSTOP.
+    posix_signal_reset(probe);
+    probe->state = TASK_RUNNING;
+    probe->stop_report = 0;
+    valid = valid && posix_tty_check_write(probe, (u32)spare_second) == 0;
+    struct posix_termios termios;
+    valid = valid && posix_tty_termios_get((u32)spare_second, &termios) == 0;
+    termios.lflag |= POSIX_TOSTOP;
+    valid = valid && posix_tty_termios_set((u32)spare_second, &termios) == 0 &&
+        posix_tty_check_write(probe, (u32)spare_second) == 1 &&
+        probe->state == TASK_STOPPED &&
+        probe->stop_report == POSIX_SIG_TTOU;
+    valid = valid && posix_signal_one(probe, probe, POSIX_SIG_CONT) == 0 &&
+        probe->state == TASK_RUNNING;
+    probe->continued_report = 0;
+    valid = valid &&
+        posix_tty_check_foreground(probe, (u32)spare_second) == 1 &&
+        probe->state == TASK_STOPPED &&
+        probe->stop_report == POSIX_SIG_TTOU;
+    valid = valid && posix_signal_one(probe, probe, POSIX_SIG_CONT) == 0 &&
+        probe->state == TASK_RUNNING;
+    probe->continued_report = 0;
+    // An ignored SIGTTOU lets both through, which is the escape a
+    // background logger and a shell's own handover use.
+    ignore.signo = (i32)POSIX_SIG_TTOU;
+    ignore.handler = POSIX_SIG_IGN;
+    valid = valid && posix_signal_action(probe, POSIX_SIG_TTOU, &ignore) == 0 &&
+        posix_tty_check_write(probe, (u32)spare_second) == 0 &&
+        posix_tty_check_foreground(probe, (u32)spare_second) == 0 &&
+        probe->state == TASK_RUNNING;
+    posix_tty_destroy((u32)spare_second);
+
     posix_signal_reset(probe);
     posix_signal_reset(peer);
     posix_pgroup_reset(probe);

@@ -1,6 +1,7 @@
 #include "posix_tty.h"
 #include "posix_io.h"
 #include "posix_poll.h"
+#include "posix_pgroup.h"
 #include "posix_signal.h"
 #include "runtime64.h"
 #include "scheduler.h"
@@ -208,6 +209,54 @@ u32 posix_tty_input_byte(u32 index, u8 byte) {
     return POSIX_TTY_EVENT_NONE;
 }
 
+// A zero foreground group means nobody claimed the line, which reads as
+// everyone being foreground: the rules only exist once a group owns it.
+static int tty_background(struct task *task,
+                            const struct posix_tty_state *tty) {
+    if (!tty->foreground) return 0;
+    return posix_pgroup_get(task) != tty->foreground;
+}
+
+// The two SIGTTOU gates. A background write asks only when TOSTOP is set,
+// while the handover always asks, because taking the line from the group
+// that owns it is the one move a background group may never make quietly.
+static int tty_tou_gate(struct task *task, u32 index, int always) {
+    struct posix_tty_state *tty = tty_for(index);
+    if (!tty || !task) return POSIX_TTY_ENOTTY;
+    if (!always && !(tty->termios.lflag & POSIX_TOSTOP)) return 0;
+    if (!tty_background(task, tty)) return 0;
+    int posted = posix_signal_one(task, task, POSIX_SIG_TTOU);
+    // An ignored, caught or blocked SIGTTOU lets the call through, which
+    // is the escape a background logger and a shell's handover use.
+    return posted == 2 ? 1 : posted;
+}
+
+int posix_tty_check_write(struct task *task, u32 index) {
+    return tty_tou_gate(task, index, 0);
+}
+
+int posix_tty_check_foreground(struct task *task, u32 index) {
+    return tty_tou_gate(task, index, 1);
+}
+
+// The background read rule, which is the one place the disposition has to
+// be known: a stopped caller resumes with EINTR once it is continued, and
+// a caller that keeps running did not take the stop, so the read fails.
+int posix_tty_check_read(struct task *task, u32 index) {
+    struct posix_tty_state *tty = tty_for(index);
+    if (!tty || !task) return POSIX_TTY_ENOTTY;
+    if (!tty_background(task, tty)) return 0;
+    // The read owes EINTR to the resume; the continue hands it over.
+    task->stop_answer = POSIX_SIGNAL_EINTR;
+    task->stop_answer_set = 1;
+    int posted = posix_signal_one(task, task, POSIX_SIG_TTIN);
+    if (posted == 2) return 1;
+    task->stop_answer = 0;
+    task->stop_answer_set = 0;
+    if (posted < 0) return posted;
+    return POSIX_TTY_EIO;
+}
+
 static int tty_ready(const struct posix_tty_state *tty) {
     return tty->queue_count || tty->eof_pending;
 }
@@ -298,6 +347,11 @@ i64 posix_tty_io_read(struct task *task, u32 index, uptr_t request,
     if (!request || !length) return POSIX_TTY_EINVAL;
     int slot = scheduler_current();
     if (slot < 0 || &task_pool[slot] != task) return POSIX_TTY_EIO;
+    // The foreground check comes before the data check: a line waiting in
+    // the queue is still not the background's to take.
+    int gate = posix_tty_check_read(task, index);
+    if (gate == 1) return task64_self_stop((u32)slot);
+    if (gate < 0) return gate;
     if (tty_ready(tty)) {
         u8 staging[POSIX_IO_MAX];
         u32 transferred = 0;
@@ -429,6 +483,22 @@ i64 posix_tty_ioctl(struct task *task, u32 index, u64 request,
         if (vm64_copy_from(task->page_dir, &copy, argument, sizeof(copy)))
             return POSIX_TTY_EIO;
         return posix_tty_winsize_set(index, &copy);
+    }
+    case POSIX_TIOCGPGRP: {
+        u32 pgid = posix_tty_foreground_get(index);
+        if (vm64_copy_to(task->page_dir, argument, &pgid, sizeof(pgid)))
+            return POSIX_TTY_EIO;
+        return 0;
+    }
+    case POSIX_TIOCSPGRP: {
+        u32 pgid = 0;
+        if (vm64_copy_from(task->page_dir, &pgid, argument, sizeof(pgid)))
+            return POSIX_TTY_EIO;
+        int gate = posix_tty_check_foreground(task, index);
+        if (gate == 1) return task64_self_stop((u32)(task - task_pool));
+        if (gate < 0) return gate;
+        if (!posix_pgroup_live(pgid)) return POSIX_TTY_ESRCH;
+        return posix_tty_foreground_set(index, pgid);
     }
     default:
         return POSIX_TTY_ENOTTY;

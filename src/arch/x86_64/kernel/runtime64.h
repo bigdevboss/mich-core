@@ -34,6 +34,12 @@ struct interrupt_frame64;
 
 void task64_set_result(u32 slot, i64 result);
 i64 task64_block_switch(void);
+
+// The caller stopped itself inside its own syscall: it switches away here
+// and the answer it owes comes back through the resume. Whoever continues
+// the task publishes that answer, because the context save inside this
+// switch runs after any write made before the call and would overwrite it.
+i64 task64_self_stop(u32 slot);
 void exception64_dispatch(struct exception_frame64 *frame);
 void timer64_dispatch(struct interrupt_frame64 *frame);
 void irq64_dispatch(struct exception_frame64 *frame);

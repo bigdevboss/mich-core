@@ -2248,6 +2248,16 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                 }
                 return (u64)moved;
             }
+            // A background write asks for permission only when the line
+            // carries TOSTOP; the gate answers 1 when the caller stopped
+            // itself, which abandons the frame the way any self-stop does.
+            if (number == POSIX_SYSCALL_WRITE &&
+                !posix_fd_tty_of(task, request.descriptor, &tty_index)) {
+                int gate = posix_tty_check_write(task, tty_index);
+                if (gate == 1)
+                    return (u64)task64_self_stop(current_task_slot);
+                if (gate < 0) return (u64)(i64)gate;
+            }
             if (number == POSIX_SYSCALL_WRITE &&
                 !posix_profile_vfs_authorized(task))
                 return (u64)(i64)POSIX_VFS_EACCES;
@@ -2449,13 +2459,9 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                 if (result == 2) self_stop = 1;
                 else if (result < 0) return (u64)(i64)result;
             }
-            if (self_stop) {
-                // The stop already landed on the task table; the syscall
-                // frame is abandoned and answered on the resume.
-                task64_set_result(current_task_slot, 0);
-                scheduler64_switch();
-                return task_contexts[current_task_slot].rax;
-            }
+            // The stop already landed on the task table; the syscall
+            // frame is abandoned and answered on the resume.
+            if (self_stop) return (u64)task64_self_stop(current_task_slot);
             return 0;
         }
         if (number == POSIX_SYSCALL_SIGACTION) {
@@ -3187,6 +3193,10 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         if (number == POSIX_SYSCALL_TCGETPGRP)
             return (u64)(i64)posix_tty_foreground_get(index);
         u32 pgid = (u32)arg1;
+        int gate = posix_tty_check_foreground(task, index);
+        if (gate == 1)
+            return (u64)task64_self_stop(current_task_slot);
+        if (gate < 0) return (u64)(i64)gate;
         if (!posix_pgroup_live(pgid))
             return (u64)(i64)POSIX_PROCESS_ESRCH;
         return (u64)(i64)posix_tty_foreground_set(index, pgid);
@@ -3202,9 +3212,12 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         u32 index = 0;
         if (posix_fd_tty_of(task, (int)arg0, &index))
             return (u64)(i64)POSIX_TTY_ENOTTY;
-        usize_t size = arg1 == POSIX_TCGETS || arg1 == POSIX_TCSETS ?
-            sizeof(struct posix_termios) : sizeof(struct posix_winsize);
-        int writing = arg1 == POSIX_TCSETS || arg1 == POSIX_TIOCSWINSZ;
+        int is_pgid = arg1 == POSIX_TIOCGPGRP || arg1 == POSIX_TIOCSPGRP;
+        usize_t size = is_pgid ? sizeof(u32) :
+            (arg1 == POSIX_TCGETS || arg1 == POSIX_TCSETS ?
+             sizeof(struct posix_termios) : sizeof(struct posix_winsize));
+        int writing = arg1 == POSIX_TCSETS || arg1 == POSIX_TIOCSWINSZ ||
+            arg1 == POSIX_TIOCSPGRP;
         if (!arg2 || vm64_user_access(task->page_dir, (uptr_t)arg2, size,
                                       writing))
             return (u64)(i64)POSIX_VFS_EINVAL;

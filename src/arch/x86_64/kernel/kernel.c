@@ -1150,6 +1150,8 @@ int fork64(void) {
     posix_pgroup_fork(parent, child);
     child->stop_report = 0;
     child->continued_report = 0;
+    child->stop_answer = 0;
+    child->stop_answer_set = 0;
     posix_pledge_fork(parent, child);
     return child->id;
 }
@@ -1465,6 +1467,11 @@ void task64_set_result(u32 slot, i64 result) {
     }
 }
 
+i64 task64_self_stop(u32 slot) {
+    scheduler64_switch();
+    return (i64)task_contexts[slot].rax;
+}
+
 i64 task64_block_switch(void) {
     // A wake stages its answer in the parking slot alone: reading the
     // loaded slot here answered a recv with a byte count it never took.
@@ -1538,10 +1545,12 @@ static int wake_waiting_parent(u32 child_slot) {
         u64 status_address = parent->wait_status_address;
         parent->wait_status_address = 0;
         // Match the 4-byte int status contract; a wider store would
-        // clobber the woken parent's frame past the status slot.
-        u32 status = posix_wait_status((u32)code, child->exit_signal,
-                                       child->stop_report,
-                                       child->continued_report);
+        // clobber the woken parent's frame past the status slot. The child
+        // died, so its death is the report: a stop or continue the parent
+        // never collected must not hide the exit status behind itself.
+        u32 status = posix_wait_status((u32)code, child->exit_signal, 0, 0);
+        child->stop_report = 0;
+        child->continued_report = 0;
         if (status_address)
             vm64_copy_to(parent->page_dir, status_address, &status, 4);
         task_contexts[parent_slot].rax = (u64)(u32)child->id;

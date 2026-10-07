@@ -26,13 +26,15 @@
 #define POSIX_TTY_ENFILE (-23)
 #define POSIX_TTY_EINVAL (-22)
 #define POSIX_TTY_EDEADLK (-35)
+#define POSIX_TTY_ESRCH (-3)
 #define POSIX_TTY_EIO (-5)
 
 // The flag bits this line discipline implements, so a termios carrying
 // anything else is refused instead of silently half-applied.
 #define POSIX_TTY_IFLAG_KNOWN POSIX_ICRNL
 #define POSIX_TTY_OFLAG_KNOWN (POSIX_OPOST | POSIX_ONLCR)
-#define POSIX_TTY_LFLAG_KNOWN (POSIX_ISIG | POSIX_ICANON | POSIX_ECHO)
+#define POSIX_TTY_LFLAG_KNOWN (POSIX_ISIG | POSIX_ICANON | POSIX_ECHO | \
+                             POSIX_TOSTOP)
 
 // The only line discipline the profile carries; a termios asking for
 // another one is refused rather than quietly running this one.
@@ -108,6 +110,19 @@ i64 posix_tty_io_read(struct task *task, u32 index, uptr_t request,
 // remembered here, which is what the input path and the signal path both
 // need to reach.
 int posix_tty_park(struct task *task, u32 index, uptr_t request, u32 length);
+
+// The foreground rules, run by whichever syscall path touches the line:
+// 0 to proceed, 1 when the caller stopped itself inside the call (the
+// caller then yields the CPU through task64_self_stop), or a negative
+// errno. A background group reading the tty takes SIGTTIN, and one that
+// ignores the signal gets EIO rather than data (POSIX's rule, so a
+// background reader cannot wait forever on a line it may never be given).
+// The TOSTOP and handover gates take SIGTTOU instead and let the call
+// through when the signal is ignored, which is what a background logger
+// and a shell's own tcsetpgrp rely on.
+int posix_tty_check_read(struct task *task, u32 index);
+int posix_tty_check_write(struct task *task, u32 index);
+int posix_tty_check_foreground(struct task *task, u32 index);
 
 // How many readers are parked on one tty, and the readiness a poll row
 // reports for it: always writable, readable once a line is waiting.

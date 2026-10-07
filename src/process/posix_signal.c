@@ -158,6 +158,16 @@ void posix_signal_continue_task(struct task *target) {
     target->state = TASK_RUNNING;
     target->stop_report = 0;
     target->continued_report = 1;
+    // The answer a self-stopped syscall owes is published here and not at
+    // stop time: the context save that follows the stop's own switch would
+    // have overwritten it, while a write from this task lands after that
+    // save and is what the resume returns. A stop that published nothing
+    // (a park broken by EINTR, say) is left untouched.
+    if (target->stop_answer_set) {
+        task64_set_result((u32)(target - task_pool), target->stop_answer);
+        target->stop_answer = 0;
+        target->stop_answer_set = 0;
+    }
     task64_report_child((u32)(target - task_pool));
 }
 
@@ -203,6 +213,13 @@ int posix_signal_one(struct task *caller, struct task *target, u32 signo) {
                 scheduler_pick_next((int)(caller - task_pool)) < 0)
                 return POSIX_SIGNAL_EDEADLK;
             posix_signal_stop(target, signo);
+            if (target == caller && !target->stop_answer_set) {
+                // The caller will switch away inside its own syscall and
+                // resume through a continue: zero is the answer a plain
+                // self-stop (SIGSTOP, an ignored stop refused) owes.
+                target->stop_answer = 0;
+                target->stop_answer_set = 1;
+            }
             return target == caller ? 2 : 0;
         }
         if (!sig_default_term(signo)) return 0;

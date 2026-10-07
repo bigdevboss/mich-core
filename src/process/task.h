@@ -96,6 +96,12 @@ struct task {
     // code. A continue sets the flag below instead.
     u32 stop_report;
     u32 continued_report;
+    // The answer a self-stopped syscall owes its resume. Staged at stop
+    // time because the context save inside the very switch that follows
+    // overwrites anything published before it; whoever continues the task
+    // publishes this instead.
+    i64 stop_answer;
+    u32 stop_answer_set;
     paddr_t kstack_phys;
     u32 exec_gate;
     u32 recv_expect;
