@@ -338,6 +338,88 @@ static void irq64_preempt(struct exception_frame64 *frame) {
     vm64_activate(task_pool[current_task_slot].page_dir);
 }
 
+// The console's receive side. The UART is armed for the received-data
+// interrupt only: the transmit path stays polled and non-blocking, because
+// serial64_putc deliberately never touches the line status while writing.
+// COM1 is the console's own port and the line the guest answers on; the
+// console wire profile moves the receive side to COM2 instead, so a rig can
+// type into the machine while the console stays a plain file the runner
+// logs. The discipline sees bytes either way and cannot tell them apart.
+#define CONSOLE_UART_BASE 0x3F8u
+#define CONSOLE_UART_ALT_BASE 0x2F8u
+#define CONSOLE_UART_IRQ 4u
+#define CONSOLE_UART_ALT_IRQ 3u
+
+// The line the receive drain reads and the vector that arms it, chosen once
+// at boot: the console's own port unless the boot asked for the alternate.
+static u16 console64_rx_port = CONSOLE_UART_BASE;
+static u32 console64_rx_irq = CONSOLE_UART_IRQ;
+
+static inline void console64_outb(u16 port, u8 value) {
+    __asm__ volatile("outb %0, %1" : : "a"(value), "Nd"(port));
+}
+
+static inline u8 console64_inb(u16 port) {
+    u8 value;
+    __asm__ volatile("inb %1, %0" : "=a"(value) : "Nd"(port));
+    return value;
+}
+
+// A host that has a line for the guest raises the received-data interrupt;
+// a virtual machine with no console peer simply never raises it and the
+// input path stays idle. The divisor is the firmware's 115200, re-armed
+// here because the firmware's own setup runs before it hands over.
+static int console64_uart_init(void) {
+    u16 base = console64_rx_port;
+    console64_outb((u16)(base + 3u), 0x80);
+    console64_outb(base, 0x01);
+    console64_outb((u16)(base + 1u), 0x00);
+    console64_outb((u16)(base + 3u), 0x03);
+    // The FIFO is enabled and cleared so one interrupt carries a line
+    // rather than a byte, which is what keeps a fast host from burying
+    // the drain in interrupts.
+    console64_outb((u16)(base + 2u), 0xC7);
+    console64_outb((u16)(base + 4u), 0x0B);
+    console64_outb((u16)(base + 1u), 0x01);
+    (void)console64_inb(base);
+    return 0;
+}
+
+// The receive line opens once the interrupt controllers exist: boot routes
+// every legacy line masked, because a line only opens when somebody binds
+// it, and the console is the kernel's own line with nothing to bind it.
+static int console64_wire_init(u64 boot_flags) {
+    if (boot_flags & BD_MODULE_TTY_WIRE) {
+        console64_rx_port = CONSOLE_UART_ALT_BASE;
+        console64_rx_irq = CONSOLE_UART_ALT_IRQ;
+    }
+    if (console64_uart_init()) return -1;
+    return platform64_irq_enable(console64_rx_irq);
+}
+
+// One drain. A byte whose line status carries an error bit is dropped with
+// its byte rather than fed to the discipline, a control character goes to
+// the line's group as a signal and never reaches the queue, and everything
+// else lands in the line discipline, echo included, which is what
+// completes a parked read. The guard bounds the loop so a line that keeps
+// claiming data cannot hold the IRQ forever.
+static void console64_rx_drain(void) {
+    for (u32 guard = 0; guard < 256u; guard++) {
+        u8 status = console64_inb((u16)(console64_rx_port + 5u));
+        if (!(status & 0x01u)) break;
+        u8 byte = console64_inb(console64_rx_port);
+        if (status & 0x1Eu) continue;
+        u32 event = posix_tty_input_byte(0, byte);
+        if (event) posix_tty_deliver(0, event);
+    }
+    // The drain runs on the interrupted task's own stack, and a control
+    // character can stop or kill that very task: the IRQ return then has
+    // to switch away instead of resuming a task that left the runnable
+    // set. The preempt path only does so for a ring-3 interruption, which
+    // is where a user typing at the console finds its task.
+    if (task_pool[current_task_slot].state != TASK_RUNNING) resched_pending = 1;
+}
+
 void irq64_dispatch(struct exception_frame64 *frame) {
     u64 vector = frame->vector;
     // Only wakes raised inside this dispatch should preempt: clear first so
@@ -349,8 +431,13 @@ void irq64_dispatch(struct exception_frame64 *frame) {
             struct kernel_object *object = platform_irq[irq];
             struct irq_resource *resource = irq_resource_get(object);
             if (!resource || resource->vector != vector) continue;
-            irq_resource_signal(object);
-            irq_resource_set_mask(object, 1);
+            // The console's receive line is the kernel's own: it has no
+            // userspace driver to answer the event or unmask the line
+            // again, so IRQ 4 is drained below and left open.
+            if (irq != console64_rx_irq) {
+                irq_resource_signal(object);
+                irq_resource_set_mask(object, 1);
+            }
             break;
         }
     } else if (vector >= SMP64_IPI_FIRST && vector <= SMP64_IPI_LAST) {
@@ -363,6 +450,7 @@ void irq64_dispatch(struct exception_frame64 *frame) {
             irq_resource_set_mask(object, 1);
         }
     }
+    if (vector == 0x30u + console64_rx_irq) console64_rx_drain();
     // A device IRQ that unblocked a task hands the CPU over on iret instead
     // of resuming the interrupted ring-3 task until the next timer tick.
     if (resched_pending)
@@ -1472,6 +1560,12 @@ i64 task64_self_stop(u32 slot) {
     return (i64)task_contexts[slot].rax;
 }
 
+void task64_terminate(u32 slot, u32 signo) {
+    if (slot >= (u32)task_pool_count) return;
+    task_pool[slot].exit_signal = signo;
+    terminate64(slot, 128 + (int)signo);
+}
+
 i64 task64_block_switch(void) {
     // A wake stages its answer in the parking slot alone: reading the
     // loaded slot here answered a recv with a byte count it never took.
@@ -1937,6 +2031,14 @@ static int devfs64_init(void) {
         return -1;
     }
     object_release(node);
+    node = vfs_create_tty(directory);
+    if (!node) {
+        object_release(directory);
+        vfs_unlink(root, "dev");
+        object_release(root);
+        return -1;
+    }
+    object_release(node);
     object_release(directory);
     object_release(root);
     return 0;
@@ -2217,6 +2319,8 @@ void kernel64_main(u32 magic, struct bd_info *info) {
         serial64_write("Mich x86_64: PCIe ECAM pass\n");
     if (platform64_interrupts_init(acpi64_madt()))
         KERNEL_PANIC("APIC platform init");
+    if (console64_wire_init(init_module->flags))
+        KERNEL_PANIC("console wire");
     if (msi64_init(apic64_id())) KERNEL_PANIC("MSI backend init");
     if (msix64_init(apic64_id())) KERNEL_PANIC("MSI-X backend init");
 #ifdef MICH_TEST_BUILD

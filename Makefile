@@ -68,6 +68,7 @@ DISK64_HARDWARE = $(BIN64)/disk-hardware.img
 DISK64_DNS = $(BIN64)/disk-dns.img
 DISK64_NETBENCH = $(BIN64)/disk-netbench.img
 DISK64_TCPWIRE = $(BIN64)/disk-tcpwire.img
+DISK64_TTY = $(BIN64)/disk-tty.img
 DISK64_VIRTIO_BLK = $(BIN64)/disk-virtio-blk.img
 DISK64_NVME = $(BIN64)/disk-nvme.img
 DISK64_HARDWARE_RESTART = $(BIN64)/disk-hardware-restart.img
@@ -415,6 +416,13 @@ $(DISK64_TEST): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_
 	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
 		--efi $(UEFI64_EFI) $@ init64:0x30000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF)
 
+# The console wire profile: the same battery as the test disk, with the
+# flag that lets the demo run its input stage. The runner types into the
+# serial port, so nothing here is reachable on a plain boot.
+$(DISK64_TTY): mkuefi64.py $(KERNEL64_TEST_ELF) $(KERNEL64_TEST_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(POSIXAPP64_ELF) $(POSIXDEMO64_ELF)
+	$(PYTHON) mkuefi64.py --kernel $(KERNEL64_TEST_ELF) --kernel-flat $(KERNEL64_TEST_FLAT) \
+		--efi $(UEFI64_EFI) $@ init64:0x32000C9=$(INIT64_ELF) posixapp:0=$(POSIXAPP64_ELF) posixdemo:0=$(POSIXDEMO64_ELF)
+
 # Ships the default disk (kernel, init, posix images so init's process tests
 # still pass) plus the virtio-blk capsule the kernel spots by module name.
 $(DISK64_VIRTIO_BLK): mkuefi64.py $(KERNEL64_ELF) $(KERNEL64_FLAT) $(UEFI64_EFI) $(INIT64_ELF) $(POSIXAPP64_ELF) $(POSIXDEMO64_ELF) $(VIRTIO_BLK64_ELF)
@@ -504,6 +512,9 @@ test64-netbench: $(DISK64_NETBENCH)
 
 test64-tcpwire: $(DISK64_TCPWIRE)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_TCPWIRE) 256M tcpwire
+
+test64-tty: $(DISK64_TTY)
+	sh ./scripts/qemu-smoke64.sh $(DISK64_TTY) 128M tty
 test64-virtio-blk: $(DISK64_VIRTIO_BLK)
 	sh ./scripts/qemu-smoke64.sh $(DISK64_VIRTIO_BLK) 256M virtio-blk
 test64-nvme: $(DISK64_NVME)

@@ -2,6 +2,8 @@
 #include "posix_profile.h"
 #include "posix_pledge.h"
 #include "posix_fd.h"
+#include "posix_pgroup.h"
+#include "posix_tty.h"
 #include "task.h"
 #include "object.h"
 #include "rtc64.h"
@@ -77,6 +79,17 @@ static int install_file(struct task *task, struct kernel_object *node,
                         int truncate) {
     struct kernel_object *file = vfs_open(node);
     if (!file) return POSIX_VFS_ENFILE;
+    // /dev/tty names the line the calling group holds, so a caller without
+    // one has no terminal to open: that is ENXIO, the answer a shell
+    // reports for a process with no controlling terminal.
+    {
+        u32 special = VFS_SPECIAL_NONE;
+        if (vfs_special(file, &special) == 0 && special == VFS_SPECIAL_TTY &&
+            posix_tty_foreground_get(0) != posix_pgroup_get(task)) {
+            object_release(file);
+            return POSIX_VFS_ENXIO;
+        }
+    }
     if (truncate && vfs_truncate(file, 0)) {
         object_release(file);
         return POSIX_VFS_EIO;

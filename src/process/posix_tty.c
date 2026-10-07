@@ -209,6 +209,30 @@ u32 posix_tty_input_byte(u32 index, u8 byte) {
     return POSIX_TTY_EVENT_NONE;
 }
 
+// The event byte names a signal and the line's owner is the group it goes
+// to. The disposition rules are the ones every other sender uses, so an
+// ignored SIGINT stays ignored, a blocked one stays pending, and a stopped
+// member reports to its parent exactly as a kill from a process would. A
+// default-terminate action is taken here through the runtime hook, because
+// the wire has no syscall frame to return through.
+void posix_tty_deliver(u32 index, u32 event) {
+    struct posix_tty_state *tty = tty_for(index);
+    if (!tty || !tty->foreground) return;
+    if (!(tty->termios.lflag & POSIX_ISIG)) return;
+    u32 signo = 0;
+    if (event & POSIX_TTY_EVENT_INTR) signo = POSIX_SIG_INT;
+    else if (event & POSIX_TTY_EVENT_QUIT) signo = POSIX_SIG_QUIT;
+    else if (event & POSIX_TTY_EVENT_SUSP) signo = POSIX_SIG_TSTP;
+    if (!signo) return;
+    struct task *targets[MAX_TASKS];
+    u32 count = posix_pgroup_members(tty->foreground, targets, MAX_TASKS);
+    for (u32 member = 0; member < count; member++) {
+        struct task *target = targets[member];
+        if (posix_signal_one(target, target, signo) == 1)
+            task64_terminate((u32)(target - task_pool), signo);
+    }
+}
+
 // A zero foreground group means nobody claimed the line, which reads as
 // everyone being foreground: the rules only exist once a group owns it.
 static int tty_background(struct task *task,

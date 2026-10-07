@@ -1,6 +1,8 @@
 #include "types.h"
 #include "object.h"
 #include "posix_abi.h"
+#include "posix_pgroup.h"
+#include "posix_signal.h"
 #include "posix_tty.h"
 #include "posix_pledge.h"
 #include "posix_profile.h"
@@ -224,9 +226,17 @@ int test_posix_tty64(struct task *owner) {
     struct kernel_object *root = vfs_root();
     struct kernel_object *null_node = root ? vfs_create_null(root) : 0;
     struct kernel_object *console_node = root ? vfs_create_console(root) : 0;
+    struct kernel_object *tty_node = root ? vfs_create_tty(root) : 0;
     struct kernel_object *null_file = null_node ? vfs_open(null_node) : 0;
     struct kernel_object *console_file = console_node ?
         vfs_open(console_node) : 0;
+    struct kernel_object *tty_file = tty_node ? vfs_open(tty_node) : 0;
+    // /dev/tty is the controlling terminal: its own special kind, and the
+    // descriptor resolution maps it to the one line the profile carries.
+    u32 tty_special = VFS_SPECIAL_NONE;
+    valid = valid && tty_file &&
+        vfs_special(tty_file, &tty_special) == 0 &&
+        tty_special == VFS_SPECIAL_TTY;
     u8 scratch[16];
     u32 done = 77;
     valid = valid && null_file && console_file &&
@@ -244,12 +254,62 @@ int test_posix_tty64(struct task *owner) {
         done == 2 && scratch[0] == 'v' && scratch[1] == '\n';
 
     if (console_file) object_release(console_file);
+    if (tty_file) object_release(tty_file);
     if (null_file) object_release(null_file);
     if (console_node) object_release(console_node);
+    if (tty_node) object_release(tty_node);
     if (null_node) object_release(null_node);
     if (console_node && vfs_unlink(root, "console")) valid = 0;
+    if (tty_node && vfs_unlink(root, "tty")) valid = 0;
     if (null_node && vfs_unlink(root, "null")) valid = 0;
     if (root) object_release(root);
+
+    // The wire's control characters. A Ctrl-Z byte that reached the drain
+    // stops the group that owns the line, and the disposition rules are
+    // the ones every other sender uses: an ignored SIGINT stays ignored
+    // instead of touching anybody. The probe is not a running task, so the
+    // test drives the delivery itself rather than waiting for an IRQ.
+    struct task *probe = task_alloc_slot();
+    valid = valid && probe != 0;
+    if (valid) {
+        probe->uid = 0;
+        probe->state = TASK_RUNNING;
+        probe->stop_report = 0;
+        probe->continued_report = 0;
+        posix_signal_reset(probe);
+        valid = posix_pgroup_set(probe, (u32)probe->id) == 0 &&
+            posix_tty_foreground_set(0, (u32)probe->id) == 0;
+        struct posix_sigaction_request ignore;
+        for (u32 index = 0; index < sizeof(ignore); index++)
+            ((u8 *)&ignore)[index] = 0;
+        ignore.signo = (i32)POSIX_SIG_INT;
+        ignore.flags = POSIX_SA_APPLY;
+        ignore.handler = POSIX_SIG_IGN;
+        valid = valid && posix_signal_action(probe, POSIX_SIG_INT,
+                                             &ignore) == 0;
+        // The line carries ISIG, which is the switch the drain checks
+        // before it reads an event byte as a signal.
+        struct posix_termios armed;
+        valid = valid && posix_tty_termios_get(0, &armed) == 0;
+        armed.lflag |= (u32)POSIX_ISIG;
+        valid = valid && posix_tty_termios_set(0, &armed) == 0;
+        posix_tty_deliver(0, POSIX_TTY_EVENT_INTR);
+        valid = valid && probe->state == TASK_RUNNING &&
+            posix_signal_pick(probe) == 0;
+        posix_tty_deliver(0, POSIX_TTY_EVENT_SUSP);
+        valid = valid && probe->state == TASK_STOPPED &&
+            probe->stop_report == POSIX_SIG_TSTP;
+        posix_signal_continue_task(probe);
+        valid = valid && probe->state == TASK_RUNNING &&
+            probe->stop_report == 0;
+        // With no group owning the line there is nobody to signal, and the
+        // byte is dropped rather than parked anywhere.
+        valid = valid && posix_tty_foreground_set(0, 0) == 0;
+        posix_tty_deliver(0, POSIX_TTY_EVENT_QUIT);
+        valid = valid && probe->state == TASK_RUNNING &&
+            posix_signal_pick(probe) == 0;
+        task_free_slot(probe);
+    }
 
     posix_tty_set_output(0, saved, 0);
     valid = valid && posix_tty_output_get(0, 0) == saved;

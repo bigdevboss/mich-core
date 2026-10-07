@@ -21,6 +21,9 @@
 #define POSIX_OPEN_CLOEXEC 0x80000u
 
 #define POSIX_VFS_EPERM (-1)
+// No controlling terminal to name, which is what a shell reports for a
+// process that has no line.
+#define POSIX_VFS_ENXIO (-6)
 #define POSIX_VFS_EIO (-5)
 #define POSIX_VFS_EBADF (-9)
 #define POSIX_VFS_EACCES (-13)

@@ -851,6 +851,17 @@ struct kernel_object *vfs_create_console(struct kernel_object *directory) {
     return object;
 }
 
+struct kernel_object *vfs_create_tty(struct kernel_object *directory) {
+    struct kernel_object *object = vfs_create_mode(
+        directory, "tty", VFS_NODE_REGULAR, VFS_MODE_REGULAR_DEFAULT);
+    if (!object) return 0;
+    struct vfs_node_state *node = node_for(object);
+    node->special = VFS_SPECIAL_TTY;
+    node->readonly = 0;
+    node->size = 0;
+    return object;
+}
+
 struct kernel_object *vfs_symlink(struct kernel_object *directory,
                                   const char *name, const char *target) {
     // The target lives inline in the node, so it is bounded by the path
@@ -1444,7 +1455,8 @@ int vfs_read(struct kernel_object *object, u32 offset,
         *transferred = 0;
         return 0;
     }
-    if (node->special == VFS_SPECIAL_CONSOLE) {
+    if (node->special == VFS_SPECIAL_CONSOLE ||
+        node->special == VFS_SPECIAL_TTY) {
         int result = posix_tty_read(0, (u8 *)buffer, length, transferred);
         if (result == POSIX_TTY_EAGAIN) {
             *transferred = 0;
@@ -1504,7 +1516,8 @@ static int write_node(struct vfs_node_state *node, u32 offset,
         *transferred = length;
         return 0;
     }
-    if (node->special == VFS_SPECIAL_CONSOLE)
+    if (node->special == VFS_SPECIAL_CONSOLE ||
+        node->special == VFS_SPECIAL_TTY)
         return posix_tty_write(0, (const u8 *)buffer, length, transferred);
     if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) {
         if (offset > ADYTUMFS_FILE_SIZE_MAX ||

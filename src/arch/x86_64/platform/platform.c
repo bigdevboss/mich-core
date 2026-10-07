@@ -62,6 +62,19 @@ int platform64_interrupts_init(const struct acpi_madt_info *madt) {
     return 0;
 }
 
+int platform64_irq_enable(u32 irq) {
+    const struct acpi_madt_info *madt = acpi64_madt();
+    if (irq >= 16 || !madt) return -1;
+    u32 gsi = irq;
+    for (u32 index = 0; index < madt->iso_count; index++) {
+        const struct acpi_iso_info *override = &madt->overrides[index];
+        if (override->bus != 0 || override->source != irq) continue;
+        gsi = override->gsi;
+        break;
+    }
+    return ioapic64_mask(gsi, 0);
+}
+
 void platform64_eoi(void) {
     apic64_eoi();
 }

@@ -7,6 +7,10 @@
 #define BD_VERSION 2u
 #define BD_VERSION_UEFI 3u
 #define BD_MODULE_POSIX_PROFILE (1u << 25)
+// The console wire profile: the host types into the serial port, so the
+// demo may run its input stage. A plain boot has nobody typing and that
+// stage would park a read nobody completes.
+#define BD_MODULE_TTY_WIRE (1u << 21)
 
 struct bd_module {
     u32 start;

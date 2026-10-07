@@ -29,6 +29,10 @@
 #define VFS_SPECIAL_URANDOM 1u
 #define VFS_SPECIAL_NULL 2u
 #define VFS_SPECIAL_CONSOLE 3u
+// The controlling terminal of the calling process. One line exists in the
+// profile, so the node resolves to it and the open refuses when the
+// caller's group does not hold the line.
+#define VFS_SPECIAL_TTY 4u
 
 #define VFS_FILESYSTEM_RAMFS 1
 #define VFS_FILESYSTEM_BOOTFS 2
@@ -87,6 +91,7 @@ struct kernel_object *vfs_create(struct kernel_object *directory,
 struct kernel_object *vfs_create_urandom(struct kernel_object *directory);
 struct kernel_object *vfs_create_null(struct kernel_object *directory);
 struct kernel_object *vfs_create_console(struct kernel_object *directory);
+struct kernel_object *vfs_create_tty(struct kernel_object *directory);
 struct kernel_object *vfs_create_mode(struct kernel_object *directory,
                                       const char *name, u32 type, u32 mode);
 struct kernel_object *vfs_lookup(struct kernel_object *directory,

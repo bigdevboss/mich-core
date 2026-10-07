@@ -12,6 +12,7 @@ if [ "$profile" = "dns" ]; then qemu_timeout=150; fi
 if [ "$profile" = "netbench" ]; then qemu_timeout=300; fi
 if [ "$profile" = "tcpwire" ]; then qemu_timeout=300; fi
 if [ "$profile" = "virtio-blk" ]; then qemu_timeout=120; fi
+if [ "$profile" = "tty" ]; then qemu_timeout=60; fi
 if [ "$profile" = "nvme" ]; then qemu_timeout=300; fi
 if [ "$profile" = "msi-restart" ] || [ "$profile" = "msi-circuit" ] ||
    [ "$profile" = "msi-recovery" ]; then
@@ -35,6 +36,9 @@ keep_log="${MICH_KEEP_LOG:-}"
 passive_result=""
 passive_pid=""
 passive_expected=0
+tty_socket=""
+tty_result=""
+tty_peer_pid=""
 active_result=""
 recovery_guestfwd=""
 dns_guestfwd=""
@@ -95,6 +99,17 @@ case "$profile" in
         ;;
     pcie)
         set --
+        ;;
+    tty)
+        # The console wire profile: the guest's second serial port is a
+        # socket the host peer owns, which is where the typed line enters
+        # the machine. The console itself keeps the file log every profile
+        # uses, because a QEMU socket chardev drops guest output when its
+        # buffer fills and a log with holes cannot gate a run.
+        tty_socket="$(mktemp -u /tmp/mich-tty-XXXXXX.sock)"
+        tty_result="$(mktemp)"
+        set -- -chardev socket,id=michwire,path="$tty_socket",server=on,wait=on \
+            -serial chardev:michwire
         ;;
     iommu)
         set -- -device intel-iommu,intremap=off -device edu
@@ -203,6 +218,12 @@ while time.monotonic() < deadline:
 trace(f"passive peer deadline completed={completed}")
 PY
     passive_pid=$!
+fi
+if [ "$profile" = "tty" ]; then
+    # The peer is the keyboard: it watches the log for the guest's ready
+    # marker and types the line the parked read waits for.
+    python3 ./scripts/tty-wire-peer.py "$tty_socket" "$log" "$tty_result" &
+    tty_peer_pid=$!
 fi
 if [ "$profile" = "msi-recovery" ]; then
     cat >"$recovery_guestfwd" <<'PYHELPER'
@@ -321,7 +342,7 @@ mich_uefi_firmware
 if [ "$want_nic_none" -eq 1 ]; then
     set -- "$@" -nic none
 fi
-trap 'if [ -n "$keep_log" ] && [ -f "$log" ]; then cp "$log" "$keep_log" 2>/dev/null || true; fi; if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; if [ -n "$netbench_peer_pid" ]; then kill "$netbench_peer_pid" 2>/dev/null || true; fi; rm -f "$netbench_peer_bin" "$netbench_peer_log" "$log" "$qemu_diag" "$passive_result" "$active_result" "$recovery_guestfwd" "$dns_guestfwd" "$blk_img" "$nvme_img" "$uefi_vars"' EXIT
+trap 'if [ -n "$keep_log" ] && [ -f "$log" ]; then cp "$log" "$keep_log" 2>/dev/null || true; fi; if [ -n "$passive_pid" ]; then kill "$passive_pid" 2>/dev/null || true; fi; if [ -n "$netbench_peer_pid" ]; then kill "$netbench_peer_pid" 2>/dev/null || true; fi; if [ -n "$tty_peer_pid" ]; then kill "$tty_peer_pid" 2>/dev/null || true; fi; rm -f "$netbench_peer_bin" "$netbench_peer_log" "$log" "$qemu_diag" "$passive_result" "$active_result" "$recovery_guestfwd" "$dns_guestfwd" "$blk_img" "$tty_socket" "$tty_result" "$nvme_img" "$uefi_vars"' EXIT
 set +e
 timeout "${qemu_timeout}s" qemu-system-x86_64 \
     -machine q35 \
@@ -1287,6 +1308,39 @@ if [ "$profile" = "msi-recovery" ]; then
         cat "$log"
         exit 1
     }
+fi
+if [ "$profile" = "tty" ]; then
+    # The peer leaves right after typing, so wait for it to put its result
+    # file on disk before the check reads it.
+    wait_rounds=0
+    while kill -0 "$tty_peer_pid" 2>/dev/null && [ "$wait_rounds" -lt 30 ]; do
+        sleep 0.1
+        wait_rounds=$((wait_rounds + 1))
+    done
+    wire_ready="Mich x86_64: POSIX tty wire ready"
+    wire_pass="Mich x86_64: POSIX tty wire pass"
+    require_marker "$wire_ready"
+    require_marker "$wire_pass"
+    # The order is the proof: the host typed after the ready marker and its
+    # echo came back before the guest could print its pass marker.
+    ready_line=$(grep -Fn "$wire_ready" "$log" | head -1 | cut -d: -f1)
+    echo_line=$(grep -Fn "wire1" "$log" | head -1 | cut -d: -f1)
+    pass_line=$(grep -Fn "$wire_pass" "$log" | head -1 | cut -d: -f1)
+    if [ -z "$ready_line" ] || [ -z "$echo_line" ] || [ -z "$pass_line" ] ||
+        [ "$ready_line" -ge "$echo_line" ] || [ "$echo_line" -ge "$pass_line" ]
+    then
+        echo "SMOKE FAIL: the typed line was not echoed between the markers:" >&2
+        echo "  ready=$ready_line echo=$echo_line pass=$pass_line" >&2
+        cat "$log" >&2
+        exit 1
+    fi
+    if [ ! -f "$tty_result" ] || [ "$(cat "$tty_result")" != "TYPED" ]; then
+        echo "SMOKE FAIL: the console peer never typed into the port" >&2
+        echo "  after the ready marker, so the guest's read was completed" >&2
+        echo "  by something else" >&2
+        cat "$log" >&2
+        exit 1
+    fi
 fi
 if [ "$profile" = "pcie" ] || [ "$profile" = "iommu" ] ||
    [ "$profile" = "amd-iommu" ]; then

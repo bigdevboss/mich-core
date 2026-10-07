@@ -124,6 +124,14 @@ int posix_tty_check_read(struct task *task, u32 index);
 int posix_tty_check_write(struct task *task, u32 index);
 int posix_tty_check_foreground(struct task *task, u32 index);
 
+// Hand one line-discipline event to the group that owns the line. The
+// ISIG control characters are the line's own signal source, so the serial
+// receive path calls this for every event byte it drains instead of
+// queueing the byte. A line nobody owns posts nowhere, which is what a
+// terminal without a foreground job does, and an ignored or blocked
+// signal keeps the disposition rules every other sender uses.
+void posix_tty_deliver(u32 index, u32 event);
+
 // How many readers are parked on one tty, and the readiness a poll row
 // reports for it: always writable, readable once a line is waiting.
 u32 posix_tty_blocked_count(u32 index);

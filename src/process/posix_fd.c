@@ -372,9 +372,15 @@ int posix_fd_tty_of(struct task *task, int descriptor, u32 *index) {
     u32 special = VFS_SPECIAL_NONE;
     int result = vfs_special(ofd->file, &special);
     release_ofd(ofd);
-    if (result || special != VFS_SPECIAL_CONSOLE) return -1;
-    *index = 0;
-    return 0;
+    if (result) return -1;
+    // The console and the controlling terminal are the same line in this
+    // profile: /dev/tty resolves to it for a caller its open already let
+    // through, which is the group that holds the line.
+    if (special == VFS_SPECIAL_CONSOLE || special == VFS_SPECIAL_TTY) {
+        *index = 0;
+        return 0;
+    }
+    return -1;
 }
 
 int posix_fd_pipe_of(struct task *task, int descriptor, u32 *pipe,
@@ -429,9 +435,9 @@ u16 posix_fd_poll_events(struct task *task, int descriptor) {
         ready = posix_pipe_poll(pipe - 1u, pipe_end);
     } else if (socket && socket->type == KOBJECT_SOCKET) {
         ready = posix_socket_poll(socket, socket_type);
-    } else if (special == VFS_SPECIAL_CONSOLE) {
-        // The console is the only tty a descriptor can name until /dev/tty
-        // exists, and it is tty zero.
+    } else if (special == VFS_SPECIAL_CONSOLE || special == VFS_SPECIAL_TTY) {
+        // Both console nodes name tty zero, the only line the profile
+        // carries.
         ready = posix_tty_poll(0);
     } else {
         // Everything else answers without parking, so it is always ready

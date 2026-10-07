@@ -47,6 +47,11 @@ void irq64_dispatch(struct exception_frame64 *frame);
 // for the report is woken with the status word, the way the exit path
 // wakes it. The report stays on the child until a waitpid collects it.
 void task64_report_child(u32 child_slot);
+// The death a default-terminate signal owes its target, for a sender with
+// no syscall frame of its own to return through (the serial receive path).
+// The exit signal rides the task so a waiting parent reports it the way a
+// kill from a process would.
+void task64_terminate(u32 slot, u32 signo);
 u64 syscall64_validate_return(u64 result);
 u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2);
 void kernel64_main(u32 magic, struct bd_info *info);

@@ -4,8 +4,9 @@ name: build
 # a developer runs locally, on a clean machine, so a dropped recipe or a flaky
 # smoke cannot reach main unnoticed. Profile coverage beyond the default smoke
 # stays in release-check because those profiles need tap, MSI hardware
-# programming or the netbench peer; the tcp wire and dns profiles are the
-# exceptions, because they need nothing but the guest and QEMU's user network.
+# programming or the netbench peer; the tcp wire, dns and console wire
+# profiles are the exceptions, because they need nothing but the guest, QEMU's
+# user network and a host process on the serial socket.
 #
 # The build jobs run inside Debian 13 on purpose: that is the toolchain the
 # notes and the release runs use (QEMU 10.0.13). The unit battery also runs on
@@ -111,6 +112,27 @@ jobs:
 
       - name: DNS smoke
         run: make test64-dns
+
+  tty-smoke:
+    # The console wire profile: the host peer types into the serial port, so
+    # the read that parks on it is completed by real input. No other profile
+    # can prove the receive path, because none of them has anybody typing.
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    timeout-minutes: 20
+    steps:
+      - name: Install the toolchain and the UEFI firmware
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git ca-certificates nodejs make gcc python3 nasm qemu-system-x86 ovmf
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Console wire smoke
+        run: make test64-tty
 
   unit-ubuntu:
     # The same battery on the runner's own Ubuntu 24.04 image: gcc 13 with the
