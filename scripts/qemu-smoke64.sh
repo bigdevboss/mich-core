@@ -980,10 +980,16 @@ if [ "$profile" = "smp" ]; then
         "Mich x86_64: SMP AP preempt pass" \
         "Mich x86_64: SMP AP live syscall pass" \
         "Mich x86_64: SMP AP scheduler pass" \
+        "Mich x86_64: SMP AP pinned task pass" \
         "Mich x86_64: SMP dual-core userspace pass"
     do
         require_marker "$marker"
     done
+    # Two concurrent tasks need two APs, so the marker only exists when the
+    # run was given three CPUs or more.
+    if [ "${MICH_SMP_CPUS:-2}" -ge 3 ]; then
+        require_marker "Mich x86_64: SMP two-task parallel pass"
+    fi
 fi
 if [ "$profile" = "dns" ]; then
     for marker in \

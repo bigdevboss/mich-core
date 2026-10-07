@@ -26,6 +26,14 @@ static const u8 smp64_user_spin[] = {
     0xEB, 0xFE
 };
 
+// inc qword [VM64_STACK_TOP - 8]; jmp back - counts this task's turns in
+// the stack page, the writable one, where the kernel can read the count.
+// The pin does not zero that page, so the tests clear the count through
+// the kernel pointer before the task is allowed to start.
+static const u8 smp64_spin_stub[] = {
+    0x48, 0xFF, 0x05, 0xF1, 0xFF, 0x1F, 0x00, 0xEB, 0xF7
+};
+
 static int wait_flag(u32 (*load)(u32), u32 index) {
     u32 deadline = SMP64_BOOT_TIMEOUT_MS / 10;
     while (deadline--) {
@@ -305,6 +313,145 @@ static int test_smp64_schedule(void) {
     return 0;
 }
 
+// Park the CPU before the slot goes: freeing a task another CPU is still
+// running would leave that CPU on a recycled slot.
+static int drop_pinned(u32 slot, u32 index) {
+    smp64_ipi_cpu(index, SMP64_IPI_PARK);
+    if (wait_flag(smp64_user_done, index)) return -1;
+    smp64_ipi_cpu(index, SMP64_IPI_TIMER_OFF);
+    smp64_disarm_user(index);
+    if (slot < MAX_TASKS && task_pool[slot].state != TASK_FREE)
+        task_free_slot(&task_pool[slot]);
+    return 0;
+}
+
+// The kick is asynchronous: the counter may already sit past the sample,
+// so the wait has to be for the IPI being handled, which is the preempt
+// this CPU records when it takes the frame path.
+static int wait_preempts(u64 above) {
+    u32 deadline = SMP64_BOOT_TIMEOUT_MS / 10 * 4;
+    while (deadline--) {
+        if (smp64_preempts(SMP64_AP) > above) return 0;
+        apic64_delay_ms(10);
+    }
+    return -1;
+}
+
+static int wait_counter(volatile u64 *counter, u64 above) {
+    u32 deadline = SMP64_BOOT_TIMEOUT_MS / 10 * 4;
+    while (deadline--) {
+        if (__atomic_load_n(counter, __ATOMIC_ACQUIRE) > above) return 0;
+        apic64_delay_ms(10);
+    }
+    return -1;
+}
+
+// An ordinary task pinned to an AP: with the AP parked in ring 0 and its
+// tick masked, only the reschedule IPI can start it, and the AP picks it
+// out of the pool on its own.
+static int test_smp64_pinned(void) {
+    volatile u64 *counter = 0;
+    u64 turns;
+    u64 preempts;
+    u32 slot;
+    if (smp64_pin_task(SMP64_AP, smp64_spin_stub, sizeof(smp64_spin_stub),
+                       &slot, (u64 **)&counter))
+        return -1;
+    counter[0] = 0;
+    apic64_delay_ms(20);
+    if (counter[0] || smp64_cpu_current(SMP64_AP) != SMP64_CURRENT_NONE) {
+        drop_pinned(slot, SMP64_AP);
+        return -1;
+    }
+    if (smp64_resched_cpu(SMP64_AP) ||
+        wait_counter(counter, 0) ||
+        smp64_cpu_current(SMP64_AP) != slot ||
+        task_pool[slot].state != TASK_RUNNING) {
+        drop_pinned(slot, SMP64_AP);
+        return -1;
+    }
+    // A second kick lands in ring 3: the frame is rewritten the way the
+    // tick rewrites it and the same task keeps the CPU.
+    turns = counter[0];
+    preempts = (u64)smp64_preempts(SMP64_AP);
+    if (smp64_resched_cpu(SMP64_AP) ||
+        wait_preempts(preempts) ||
+        counter[0] <= turns ||
+        smp64_cpu_current(SMP64_AP) != slot) {
+        drop_pinned(slot, SMP64_AP);
+        return -1;
+    }
+    if (drop_pinned(slot, SMP64_AP)) return -1;
+    if (smp64_cpu_current(SMP64_AP) != SMP64_CURRENT_NONE) return -1;
+    return 0;
+}
+
+// Two ordinary pinned tasks on two CPUs at once. Both counts have to move
+// inside one sampling window: that is what concurrent means here, and two
+// sequential runs would not move both counts in the same window.
+static int test_smp64_parallel(void) {
+    const u32 index_a = SMP64_AP;
+    const u32 index_b = SMP64_AP + 1;
+    volatile u64 *ca = 0;
+    volatile u64 *cb = 0;
+    u64 a0;
+    u64 b0;
+    u64 a1;
+    u64 b1;
+    u32 slot_a;
+    u32 slot_b;
+    if (smp64_cpu_count() < 3) {
+        serial64_write("Mich x86_64: SMP two-task parallel skipped (");
+        serial64_hex(smp64_cpu_count());
+        serial64_write(" cpus)\n");
+        return 0;
+    }
+    if (smp64_pin_task(index_a, smp64_spin_stub, sizeof(smp64_spin_stub),
+                       &slot_a, (u64 **)&ca))
+        return -1;
+    if (smp64_pin_task(index_b, smp64_spin_stub, sizeof(smp64_spin_stub),
+                       &slot_b, (u64 **)&cb)) {
+        drop_pinned(slot_a, index_a);
+        return -1;
+    }
+    ca[0] = 0;
+    cb[0] = 0;
+    apic64_delay_ms(20);
+    if (ca[0] || cb[0] ||
+        smp64_cpu_current(index_a) != SMP64_CURRENT_NONE ||
+        smp64_cpu_current(index_b) != SMP64_CURRENT_NONE) {
+        drop_pinned(slot_a, index_a);
+        drop_pinned(slot_b, index_b);
+        return -1;
+    }
+    if (smp64_resched_cpu(index_a) || smp64_resched_cpu(index_b) ||
+        wait_counter(ca, 0) || wait_counter(cb, 0) ||
+        smp64_cpu_current(index_a) != slot_a ||
+        smp64_cpu_current(index_b) != slot_b) {
+        drop_pinned(slot_a, index_a);
+        drop_pinned(slot_b, index_b);
+        return -1;
+    }
+    a0 = ca[0];
+    b0 = cb[0];
+    apic64_delay_ms(20);
+    a1 = ca[0];
+    b1 = cb[0];
+    if (a1 <= a0 || b1 <= b0) {
+        drop_pinned(slot_a, index_a);
+        drop_pinned(slot_b, index_b);
+        return -1;
+    }
+    serial64_write("Mich x86_64: SMP two-task parallel pass (d1=");
+    serial64_hex(a1 - a0);
+    serial64_write(" d2=");
+    serial64_hex(b1 - b0);
+    serial64_write(")\n");
+    if (drop_pinned(slot_a, index_a)) return -1;
+    if (drop_pinned(slot_b, index_b)) return -1;
+    return 0;
+}
+
 int tests64_run_smp(void) {
     irq_state_t irq_state = irq_save();
     if (smp64_cpu_count() < 2) {
@@ -362,6 +509,17 @@ int tests64_run_smp(void) {
         return -1;
     }
     serial64_write("Mich x86_64: SMP AP scheduler pass\n");
+    if (test_report_record(TEST_ID_SMP_PINNED, test_smp64_pinned())) {
+        irq_restore(irq_state);
+        return -1;
+    }
+    serial64_write("Mich x86_64: SMP AP pinned task pass\n");
+    // This one reports its own pass line: the counts it measured are part
+    // of the claim, and at two CPUs it says it was skipped instead.
+    if (test_report_record(TEST_ID_SMP_PARALLEL, test_smp64_parallel())) {
+        irq_restore(irq_state);
+        return -1;
+    }
     irq_restore(irq_state);
     return 0;
 }

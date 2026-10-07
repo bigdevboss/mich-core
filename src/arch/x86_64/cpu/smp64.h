@@ -26,6 +26,9 @@
 #define SMP64_IPI_USER 0x45
 #define SMP64_IPI_TSS 0x46
 #define SMP64_IPI_PARK 0x47
+// A CPU told to look at its runnable set now: a parked AP takes a task
+// pinned to it, and one already in ring 3 switches the way its tick would.
+#define SMP64_IPI_RESCHED 0x48
 #define SMP64_IPI_FIRST 0x41
 #define SMP64_IPI_LAST 0x4F
 #define SMP64_CURRENT_NONE 0xFFFFFFFFu
@@ -109,6 +112,11 @@ int smp64_arm_user(u32 index, const u8 *stub, u32 size);
 int smp64_pin_user(u32 index, const u8 *stub, u32 size, u32 *slot_out);
 void smp64_disarm_user(u32 index);
 int smp64_pick_next(u32 current);
+int smp64_resched_cpu(u32 index);
+u32 smp64_take_resched(void);
+void smp64_enter_pinned(u32 index);
+int smp64_pin_task(u32 index, const u8 *stub, u32 size, u32 *slot_out,
+                   u64 **counter_out);
 int smp64_host_start(void);
 int smp64_host_note(u64 cs);
 

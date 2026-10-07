@@ -269,6 +269,8 @@ struct kernel_object *platform64_irq_object(u32 irq) {
 // Copy interrupted ring-3 state from a device-IRQ/exception frame into a task
 // context. Separate from interrupt_save/interrupt_load because exception_frame64
 // carries a vector+error pair the general interrupt_frame64 helpers do not.
+static void ap64_timer_preempt(struct interrupt_frame64 *frame);
+static void ap64_resched(struct exception_frame64 *frame);
 static void frame64_save_user(struct task_context64 *context,
                               const struct exception_frame64 *frame) {
     context->rax = frame->rax;
@@ -453,6 +455,15 @@ void irq64_dispatch(struct exception_frame64 *frame) {
     if (vector == 0x30u + console64_rx_irq) console64_rx_drain();
     // A device IRQ that unblocked a task hands the CPU over on iret instead
     // of resuming the interrupted ring-3 task until the next timer tick.
+    // An AP answers to its own record only: resched_pending and
+    // current_task_slot are the BSP's state, and a reschedule IPI to an AP
+    // is that CPU's own call.
+    if (smp64_cpu_index() != 0) {
+        if (smp64_take_resched())
+            ap64_resched(frame);
+        return;
+    }
+    if (smp64_take_resched()) resched_pending = 1;
     if (resched_pending)
         irq64_preempt(frame);
 }
@@ -1560,7 +1571,12 @@ void task64_set_result(u32 slot, i64 result) {
         task_contexts[slot].rax = (u64)result;
         // Record that a task became runnable so the device-IRQ return path
         // can preempt into it instead of waiting for the next timer tick.
-        resched_pending = 1;
+        // A task pinned to an AP is that CPU's to start, and its tick can
+        // be masked, so the wake has to reach it as a reschedule IPI.
+        if (task_pool[slot].on_cpu > 0)
+            smp64_resched_cpu((u32)task_pool[slot].on_cpu);
+        else
+            resched_pending = 1;
     }
 }
 
@@ -1911,21 +1927,51 @@ static void iommu64_fault_tick(void) {
     }
 }
 
+// AP user tick: save and rotate this CPU's tasks, never
+// current_task_slot. Same-privilege hlt frames have no SS/RSP.
+static void ap64_timer_preempt(struct interrupt_frame64 *frame) {
+    u32 slot = smp64_running_slot();
+    int next;
+    if ((frame->cs & 3) != 3 || slot >= MAX_TASKS ||
+        slot == current_task_slot)
+        return;
+    interrupt_save(&task_contexts[slot], frame);
+    fpu64_save(&task_contexts[slot]);
+    smp64_note_preempt();
+    next = smp64_pick_next(slot);
+    if (next < 0 || (u32)next == slot) return;
+    smp64_set_current((u32)next);
+    fpu64_load(&task_contexts[next]);
+    interrupt_load(frame, &task_contexts[next]);
+    vm64_activate(task_pool[next].page_dir);
+}
+
+// The same rotation, driven by the reschedule IPI through an exception
+// frame; that frame carries a vector and an error word, so it pairs with
+// the frame64_* helpers. An AP parked in ring 0 has no user frame to
+// rewrite and enters a pinned task instead.
+static void ap64_resched(struct exception_frame64 *frame) {
+    u32 slot = smp64_running_slot();
+    int next;
+    if ((frame->cs & 3) != 3) {
+        smp64_enter_pinned(smp64_cpu_index());
+        return;
+    }
+    if (slot >= MAX_TASKS || slot == current_task_slot) return;
+    frame64_save_user(&task_contexts[slot], frame);
+    fpu64_save(&task_contexts[slot]);
+    smp64_note_preempt();
+    next = smp64_pick_next(slot);
+    if (next < 0 || (u32)next == slot) return;
+    smp64_set_current((u32)next);
+    fpu64_load(&task_contexts[next]);
+    frame64_load_user(frame, &task_contexts[next]);
+    vm64_activate(task_pool[next].page_dir);
+}
+
 void timer64_dispatch(struct interrupt_frame64 *frame) {
     if (smp64_timer_tick(frame->cs, (u64)(uptr_t)frame)) {
-        u32 slot = smp64_running_slot();
-        int next;
-        // AP user tick: save and rotate this CPU's tasks, never
-        // current_task_slot. Same-privilege hlt frames have no SS/RSP.
-        if ((frame->cs & 3) != 3 || slot >= MAX_TASKS ||
-            slot == current_task_slot)
-            return;
-        interrupt_save(&task_contexts[slot], frame);
-        smp64_note_preempt();
-        next = smp64_pick_next(slot);
-        if (next < 0 || (u32)next == slot) return;
-        smp64_set_current((u32)next);
-        interrupt_load(frame, &task_contexts[next]);
+        ap64_timer_preempt(frame);
         return;
     }
     if (!gdt64_stack_ok() || !smp64_syscall_ok()) {

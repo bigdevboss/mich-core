@@ -56,6 +56,8 @@ struct smp64_cpu {
     volatile u32 tr;
     // When set, AP syscalls reach dispatch instead of the test catch.
     volatile u32 syscall_live;
+    // Set by the reschedule IPI, consumed by the interrupt tail.
+    volatile u32 resched;
 };
 
 struct smp64_stack {
@@ -87,7 +89,7 @@ static u64 smp64_user_rip;
 static u64 smp64_user_rsp;
 static u64 smp64_user_cr3;
 
-extern void user64_enter(u64 rip, u64 rsp, u64 argument);
+extern void user64_enter(u64 rip, u64 rsp, u64 argument, u64 module_flags);
 
 _Static_assert(__builtin_offsetof(struct smp64_syscall, rsp) == 8,
                "syscall.asm SC_RSP");
@@ -202,6 +204,9 @@ int smp64_catch_ap_user(u64 number) {
     return 1;
 }
 
+static struct smp64_cpu *smp64_cpu(u32 index);
+static int smp64_pick_pinned(u32 index);
+
 // IPI from hlt is same-privilege: the frame has no SS/RSP, so it cannot be
 // rewritten into a user iret. EOI here because this path never returns through
 // irq64_common.
@@ -210,7 +215,30 @@ static void smp64_ap_enter_user(struct smp64_cpu *cpu) {
     apic64_eoi();
     smp64_gs_user();
     vm64_activate(smp64_user_cr3);
-    user64_enter(smp64_user_rip, smp64_user_rsp, 0);
+    user64_enter(smp64_user_rip, smp64_user_rsp, 0, 0);
+    for (;;)
+        __asm__ volatile("cli; hlt" ::: "memory");
+}
+
+// The reschedule IPI from hlt is same-privilege: there is no user frame to
+// rewrite, so this CPU enters a task pinned to it the way the host entry
+// does. The pool is the authority; nothing here waits for an arm.
+void smp64_enter_pinned(u32 index) {
+    struct smp64_cpu *cpu = smp64_cpu(index);
+    int slot;
+    if (!cpu) return;
+    slot = smp64_pick_pinned(index);
+    if (slot < 0) return;
+    apic64_eoi();
+    cpu->current = (u32)slot;
+    cpu->user_done = 0;
+    cpu->user_irq = 0;
+    cpu->preempts = 0;
+    cpu->syscall_live = 0;
+    smp64_gs_user();
+    vm64_activate(task_pool[slot].page_dir);
+    user64_enter(task_contexts[slot].rip, task_contexts[slot].rsp,
+                 task_contexts[slot].rdi, task_contexts[slot].rsi);
     for (;;)
         __asm__ volatile("cli; hlt" ::: "memory");
 }
@@ -399,6 +427,21 @@ int smp64_ipi_cpu(u32 index, u32 vector) {
     return apic64_ipi((u8)cpu->apic_id, (u8)vector);
 }
 
+// Wake a CPU up to a task it owns. A CPU kicking itself has nothing to do.
+int smp64_resched_cpu(u32 index) {
+    struct smp64_cpu *cpu = smp64_cpu(index);
+    if (!cpu) return -1;
+    if (cpu->index == smp64_this()->index) return 0;
+    return smp64_ipi_cpu(index, SMP64_IPI_RESCHED);
+}
+
+u32 smp64_take_resched(void) {
+    struct smp64_cpu *cpu = smp64_this();
+    u32 pending = cpu->resched;
+    cpu->resched = 0;
+    return pending;
+}
+
 u32 smp64_ipi_ack(u32 index) {
     struct smp64_cpu *cpu = smp64_cpu(index);
     return cpu ? __atomic_load_n(&cpu->ipi_ack, __ATOMIC_ACQUIRE) : 0;
@@ -508,7 +551,8 @@ u64 smp64_spin_count(void) {
 // Dedicated AP user slot, never init64-two. Stub bytes come from the caller (tests
 // pass fixtures, host_start passes the idle spin). pin maps the task; arm also makes
 // it this CPU's current for IPI_USER.
-int smp64_pin_user(u32 index, const u8 *stub, u32 size, u32 *slot_out) {
+static int smp64_pin_stub(u32 index, const u8 *stub, u32 size, u32 *slot_out,
+                          paddr_t *stack_out) {
     struct smp64_cpu *cpu = smp64_cpu(index);
     struct task *task;
     struct task_context64 *context;
@@ -558,7 +602,24 @@ int smp64_pin_user(u32 index, const u8 *stub, u32 size, u32 *slot_out) {
     context->rflags = USER_EFLAGS;
     context->rip = VM64_PROGRAM_BASE;
     context->rsp = VM64_STACK_TOP;
+    if (stack_out) *stack_out = stack;
     *slot_out = slot;
+    return 0;
+}
+
+int smp64_pin_user(u32 index, const u8 *stub, u32 size, u32 *slot_out) {
+    return smp64_pin_stub(index, stub, size, slot_out, 0);
+}
+
+// A task the CPU picks up on its own, with no arm and no handshake. The
+// stub counts its turns in the stack page, the writable one, and the
+// kernel reads that count through the physical address handed back here.
+int smp64_pin_task(u32 index, const u8 *stub, u32 size, u32 *slot_out,
+                   u64 **counter_out) {
+    paddr_t stack;
+    if (!counter_out) return -1;
+    if (smp64_pin_stub(index, stub, size, slot_out, &stack)) return -1;
+    *counter_out = (u64 *)(uptr_t)(stack + 4096u - 8u);
     return 0;
 }
 
@@ -583,17 +644,33 @@ int smp64_arm_user(u32 index, const u8 *stub, u32 size) {
     return 0;
 }
 
-// Only tasks already on this CPU. Does not steal TASK_CPU_NONE (init64-two).
-int smp64_pick_next(u32 current) {
-    int cpu = (int)smp64_this()->index;
-    if (current >= MAX_TASKS) return -1;
+// A task this CPU may run: pinned to it and runnable. An idle task is the
+// fallback, so a real task pinned to the same CPU still gets it.
+static int smp64_pick_owned(u32 index, int current) {
+    int idle = -1;
     for (int offset = 1; offset <= task_pool_count; offset++) {
         int candidate = ((int)current + offset) % task_pool_count;
         if (task_pool[candidate].state != TASK_RUNNING) continue;
-        if (task_pool[candidate].on_cpu != cpu) continue;
+        if (task_pool[candidate].on_cpu != (int)index) continue;
+        if (task_pool[candidate].is_idle) {
+            if (idle < 0) idle = candidate;
+            continue;
+        }
         return candidate;
     }
-    return (int)current;
+    return idle;
+}
+
+// Only tasks already on this CPU. Does not steal TASK_CPU_NONE (init64-two).
+int smp64_pick_next(u32 current) {
+    int next;
+    if (current >= MAX_TASKS) return -1;
+    next = smp64_pick_owned(smp64_this()->index, (int)current);
+    return next < 0 ? (int)current : next;
+}
+
+static int smp64_pick_pinned(u32 index) {
+    return smp64_pick_owned(index, 0);
 }
 
 void smp64_disarm_user(u32 index) {
@@ -683,6 +760,8 @@ void smp64_ipi_dispatch(u32 vector) {
         // sti: a later IPI_USER must be able to land (cli;hlt blocked it).
         for (;;)
             __asm__ volatile("sti; hlt" ::: "memory");
+    } else if (vector == SMP64_IPI_RESCHED) {
+        __atomic_store_n(&cpu->resched, 1, __ATOMIC_RELEASE);
     } else if (vector == SMP64_IPI_TSS) {
         u16 tr;
         __asm__ volatile("str %0" : "=m"(tr));
