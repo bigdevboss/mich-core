@@ -350,9 +350,9 @@ admitted to a POSIX profile. They are defined in `src/process/posix_abi.h`.
 
 | Num | Name | Description |
 |----|------|-------------|
-| 186 | open | Open a file. Shared with `block_interface_create` (186), disambiguated by caller; see the numbering note. |
+| 186 | open | Open a file. Shared with `block_interface_create` (186), disambiguated by caller; see the numbering note. `/dev/tty` names the line the calling group holds, and a caller without one answers ENXIO; `/dev/console` is the same line without that rule. |
 | 187 | close | Close a file descriptor. |
-| 188 | read | Read from a file descriptor. A background group reading a tty stops with SIGTTIN, and the read answers EIO when SIGTTIN is ignored rather than parking on a line it may never be given. |
+| 188 | read | Read from a file descriptor. A background group reading a tty stops with SIGTTIN, and the read answers EIO when SIGTTIN is ignored rather than parking on a line it may never be given. A canonical read of an empty line parks, and the console's receive interrupt completes it, with the line discipline echoing what arrives. |
 | 189 | write | Write to a file descriptor. |
 | 190 | lseek | Reposition a file offset. |
 | 191 | dup | Duplicate a file descriptor. |
