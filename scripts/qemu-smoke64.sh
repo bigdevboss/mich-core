@@ -1390,6 +1390,17 @@ if [ "$profile" = "nvme" ]; then
         require_marker "$marker"
     done
 fi
+# A tripped battery guard prints its line before it parks, so a boot that
+# trips one is a failed boot even when every marker happens to be present.
+# Refusing the log here keeps a stall from ever being reported as a missing
+# marker with no clue which check died.
+for guard in "battery guard at line" "battery check at line"; do
+    if grep -Fq "$guard" "$log"; then
+        echo "SMOKE FAIL: the battery tripped a guard:" >&2
+        grep -F "$guard" "$log" >&2
+        exit 1
+    fi
+done
 bad="$(grep -Ei "FAIL|failure|bad boot protocol|exception vector" "$log" || true)"
 if [ "$profile" = "iommu" ]; then
     # The forbidden-DMA test must produce this QEMU translation failure.

@@ -6,7 +6,7 @@ name: build
 # stays in release-check because those profiles need tap, MSI hardware
 # programming or the netbench peer; the tcp wire, dns and console wire
 # profiles are the exceptions, because they need nothing but the guest, QEMU's
-# user network and a host process on the serial socket.
+# user network, a second CPU or a host process on the serial socket.
 #
 # The build jobs run inside Debian 13 on purpose: that is the toolchain the
 # notes and the release runs use (QEMU 10.0.13). The unit battery also runs on
@@ -133,6 +133,28 @@ jobs:
 
       - name: Console wire smoke
         run: make test64-tty
+
+  smp-smoke:
+    # The battery on two CPUs. The second CPU is where the parallel kernel
+    # paths first interleave, and the smoke harness boots that profile with
+    # -smp 2, so this job is the only gate that ever runs those paths under a
+    # scheduler that has somewhere else to put a task.
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    timeout-minutes: 20
+    steps:
+      - name: Install the toolchain and the UEFI firmware
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git ca-certificates nodejs make gcc python3 nasm qemu-system-x86 ovmf
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: SMP smoke
+        run: make test64-smp
 
   unit-ubuntu:
     # The same battery on the runner's own Ubuntu 24.04 image: gcc 13 with the
