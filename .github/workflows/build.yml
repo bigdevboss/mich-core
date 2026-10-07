@@ -171,9 +171,31 @@ jobs:
 
       - name: Install the toolchain and the UEFI firmware
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            nasm qemu-system-x86 ovmf
+          # The runner's default azure mirror has stalled through this step
+          # for twenty minutes and had the job cancelled; the archive mirror
+          # plus bounded fetches and a retry keeps a bad mirror from eating
+          # the whole budget.
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i \
+              's@//azure\.archive\.ubuntu\.com@//archive.ubuntu.com@g' \
+              /etc/apt/sources.list.d/ubuntu.sources
+          fi
+          apt_opts="-o Acquire::Retries=3 -o Acquire::http::Timeout=30"
+          apt_opts="$apt_opts -o Acquire::https::Timeout=30"
+          sudo apt-get $apt_opts update
+          attempt=1
+          while :; do
+            if sudo timeout 300 apt-get $apt_opts install -y \
+              --no-install-recommends nasm qemu-system-x86 ovmf; then
+              break
+            fi
+            if [ "$attempt" -ge 3 ]; then
+              echo "toolchain install failed after $attempt attempts" >&2
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            sleep 15
+          done
 
       - name: Build
         run: make -j2
