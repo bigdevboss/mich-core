@@ -205,7 +205,7 @@ int smp64_catch_ap_user(u64 number) {
 }
 
 static struct smp64_cpu *smp64_cpu(u32 index);
-static int smp64_pick_pinned(u32 index);
+int smp64_pick_pinned(u32 index);
 
 // IPI from hlt is same-privilege: the frame has no SS/RSP, so it cannot be
 // rewritten into a user iret. EOI here because this path never returns through
@@ -223,14 +223,13 @@ static void smp64_ap_enter_user(struct smp64_cpu *cpu) {
 // The reschedule IPI from hlt is same-privilege: there is no user frame to
 // rewrite, so this CPU enters a task pinned to it the way the host entry
 // does. The pool is the authority; nothing here waits for an arm.
-void smp64_enter_pinned(u32 index) {
+// The entry itself, for a slot this CPU has already decided to run. It
+// never returns: the caller's context is the task's from here on, and the
+// per-CPU user counters belong to the task that just took over.
+void smp64_enter_task(u32 index, u32 slot) {
     struct smp64_cpu *cpu = smp64_cpu(index);
-    int slot;
-    if (!cpu) return;
-    slot = smp64_pick_pinned(index);
-    if (slot < 0) return;
-    apic64_eoi();
-    cpu->current = (u32)slot;
+    if (!cpu || slot >= MAX_TASKS) return;
+    cpu->current = slot;
     cpu->user_done = 0;
     cpu->user_irq = 0;
     cpu->preempts = 0;
@@ -241,6 +240,16 @@ void smp64_enter_pinned(u32 index) {
                  task_contexts[slot].rdi, task_contexts[slot].rsi);
     for (;;)
         __asm__ volatile("cli; hlt" ::: "memory");
+}
+
+// Enter whatever this CPU has pinned and runnable. An interrupt that lands
+// in ring 0 has no frame to rewrite, so this is how a parked AP starts a
+// task; EOI here because the entry never returns through irq64_common.
+void smp64_enter_pinned(u32 index) {
+    int slot = smp64_pick_pinned(index);
+    if (slot < 0) return;
+    apic64_eoi();
+    smp64_enter_task(index, (u32)slot);
 }
 
 // Runs on the secondary CPU in long mode after the trampoline, which still uses the
@@ -669,7 +678,7 @@ int smp64_pick_next(u32 current) {
     return next < 0 ? (int)current : next;
 }
 
-static int smp64_pick_pinned(u32 index) {
+int smp64_pick_pinned(u32 index) {
     return smp64_pick_owned(index, 0);
 }
 

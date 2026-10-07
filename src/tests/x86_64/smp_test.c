@@ -34,6 +34,26 @@ static const u8 smp64_spin_stub[] = {
     0x48, 0xFF, 0x05, 0xF1, 0xFF, 0x1F, 0x00, 0xEB, 0xF7
 };
 
+// Waits for the word at VM64_STACK_TOP - 8 to go nonzero, then returns from
+// a syscall with a stack pointer that maps nowhere: that is the bad return
+// the containment has to answer. The stack pointer is the register to
+// plant, not rcx, because syscall overwrites rcx with its return address;
+// the entry saves rsp before it switches to the kernel stack. The gate is
+// there because the entry path clears the per-CPU syscall flag: the test
+// has to arm the real dispatch after this task is already in ring 3, and
+// only then open the gate.
+//   movabs rax, [VM64_STACK_TOP - 8]; test rax, rax; jz -15
+//   mov rsp, 1; mov eax, 16; syscall; jmp $
+static const u8 smp64_bad_return_stub[] = {
+    0x48, 0xA1, 0xF8, 0xFF, 0x1F, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x48, 0x85, 0xC0,
+    0x74, 0xF1,
+    0x48, 0xC7, 0xC4, 0x01, 0x00, 0x00, 0x00,
+    0xB8, SMP64_USER_GETPID, 0x00, 0x00, 0x00,
+    0x0F, 0x05,
+    0xEB, 0xFE
+};
+
 static int wait_flag(u32 (*load)(u32), u32 index) {
     u32 deadline = SMP64_BOOT_TIMEOUT_MS / 10;
     while (deadline--) {
@@ -386,6 +406,75 @@ static int test_smp64_pinned(void) {
     return 0;
 }
 
+// A pinned task that returns from a syscall to an unmapped address is
+// contained: the task goes, the CPU stays, and the next task pinned to it
+// takes over. Without the handover the AP would sit in cli; hlt for the
+// rest of the boot and every later test on it would hang.
+static int test_smp64_contain(void) {
+    volatile u64 *gate = 0;
+    volatile u64 *counter = 0;
+    u32 bad;
+    u32 next;
+    u32 deadline;
+    if (smp64_pin_task(SMP64_AP, smp64_bad_return_stub,
+                       sizeof(smp64_bad_return_stub), &bad,
+                       (u64 **)&gate)) {
+        smp64_disarm_user(SMP64_AP);
+        return -1;
+    }
+    if (smp64_pin_task(SMP64_AP, smp64_spin_stub, sizeof(smp64_spin_stub),
+                       &next, (u64 **)&counter)) {
+        smp64_disarm_user(SMP64_AP);
+        return -1;
+    }
+    gate[0] = 0;
+    counter[0] = 0;
+    // The bad task has to be the one this CPU picks, or the test would prove
+    // nothing; the pool hands out the lowest free slot, and this checks that
+    // instead of trusting it.
+    if (smp64_pick_pinned(SMP64_AP) != (int)bad) {
+        drop_pinned(next, SMP64_AP);
+        drop_pinned(bad, SMP64_AP);
+        return -1;
+    }
+    if (smp64_resched_cpu(SMP64_AP)) {
+        drop_pinned(next, SMP64_AP);
+        drop_pinned(bad, SMP64_AP);
+        return -1;
+    }
+    // The pickup records the slot before it enters ring 3, so the record is
+    // the fact to wait for. The gate holds the syscall back, which is what
+    // lets the test arm the real dispatch after the entry cleared it.
+    deadline = SMP64_BOOT_TIMEOUT_MS / 10;
+    while (deadline-- && smp64_cpu_current(SMP64_AP) != bad)
+        apic64_delay_ms(10);
+    if (smp64_cpu_current(SMP64_AP) != bad) {
+        drop_pinned(next, SMP64_AP);
+        drop_pinned(bad, SMP64_AP);
+        return -1;
+    }
+    smp64_set_syscall_live(SMP64_AP, 1);
+    gate[0] = 1;
+    if (wait_counter(counter, 0)) {
+        smp64_set_syscall_live(SMP64_AP, 0);
+        drop_pinned(next, SMP64_AP);
+        drop_pinned(bad, SMP64_AP);
+        return -1;
+    }
+    if (smp64_cpu_current(SMP64_AP) != next ||
+        task_pool[bad].state == TASK_RUNNING) {
+        smp64_set_syscall_live(SMP64_AP, 0);
+        drop_pinned(next, SMP64_AP);
+        drop_pinned(bad, SMP64_AP);
+        return -1;
+    }
+    smp64_set_syscall_live(SMP64_AP, 0);
+    smp64_ipi_cpu(SMP64_AP, SMP64_IPI_TIMER_OFF);
+    if (drop_pinned(next, SMP64_AP)) return -1;
+    if (drop_pinned(bad, SMP64_AP)) return -1;
+    return 0;
+}
+
 // Two ordinary pinned tasks on two CPUs at once. Both counts have to move
 // inside one sampling window: that is what concurrent means here, and two
 // sequential runs would not move both counts in the same window.
@@ -622,6 +711,11 @@ int tests64_run_smp(void) {
         return -1;
     }
     serial64_write("Mich x86_64: SMP AP pinned task pass\n");
+    if (test_report_record(TEST_ID_SMP_CONTAIN, test_smp64_contain())) {
+        irq_restore(irq_state);
+        return -1;
+    }
+    serial64_write("Mich x86_64: SMP AP syscall containment pass\n");
     // This one reports its own pass line: the counts it measured are part
     // of the claim, and at two CPUs it says it was skipped instead.
     if (test_report_record(TEST_ID_SMP_PARALLEL, test_smp64_parallel())) {

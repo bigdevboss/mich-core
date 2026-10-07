@@ -106,11 +106,18 @@ u64 syscall64_validate_return(u64 result) {
         (VM64_PAGE_PRESENT | VM64_PAGE_USER) ||
         !stack_writable) {
         serial64_write("Mich x86_64: invalid syscall return contained\n");
-        // AP must not schedule through the BSP current_task_slot.
+        // AP must not schedule through the BSP current_task_slot. The CPU
+        // keeps its own tasks either way: a contained task loses the CPU,
+        // not the other way round, and only an empty CPU parks.
         if (smp64_cpu_index() != 0) {
+            u32 index = smp64_cpu_index();
+            int next;
             if (slot < MAX_TASKS)
                 terminate64(slot, 141);
             smp64_set_current(SMP64_CURRENT_NONE);
+            next = smp64_pick_pinned(index);
+            if (next >= 0)
+                smp64_enter_task(index, (u32)next);
             for (;;)
                 __asm__ volatile("cli; hlt" ::: "memory");
         }

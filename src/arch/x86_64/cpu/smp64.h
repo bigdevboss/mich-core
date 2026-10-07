@@ -111,6 +111,8 @@ u64 smp64_spin_count(void);
 int smp64_arm_user(u32 index, const u8 *stub, u32 size);
 int smp64_pin_user(u32 index, const u8 *stub, u32 size, u32 *slot_out);
 void smp64_disarm_user(u32 index);
+void smp64_enter_task(u32 index, u32 slot);
+int smp64_pick_pinned(u32 index);
 int smp64_pick_next(u32 current);
 int smp64_resched_cpu(u32 index);
 u32 smp64_take_resched(void);

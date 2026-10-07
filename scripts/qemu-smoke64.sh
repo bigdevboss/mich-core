@@ -965,10 +965,13 @@ if [ "$profile" = "highmem" ]; then
     }
 fi
 if [ "$profile" = "smp" ]; then
+    # The bring-up marker spells the CPU count it brought up, so the check
+    # cannot pass on a log from a different -smp.
+    expected_cpus=$(printf '%016X' "${MICH_SMP_CPUS:-2}")
     for marker in \
         "Mich x86_64: SMP MADT enumeration pass" \
         "Mich x86_64: SMP per-CPU storage pass" \
-        "Mich x86_64: SMP AP bring-up pass" \
+        "Mich x86_64: SMP AP bring-up pass ($expected_cpus cpus online)" \
         "Mich x86_64: SMP IPI round-trip pass" \
         "Mich x86_64: SMP spinlock stress pass" \
         "Mich x86_64: SMP AP timer pass" \
@@ -981,6 +984,7 @@ if [ "$profile" = "smp" ]; then
         "Mich x86_64: SMP AP live syscall pass" \
         "Mich x86_64: SMP AP scheduler pass" \
         "Mich x86_64: SMP AP pinned task pass" \
+        "Mich x86_64: SMP AP syscall containment pass" \
         "Mich x86_64: SMP dual-core userspace pass"
     do
         require_marker "$marker"
