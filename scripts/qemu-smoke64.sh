@@ -985,10 +985,12 @@ if [ "$profile" = "smp" ]; then
     do
         require_marker "$marker"
     done
-    # Two concurrent tasks need two APs, so the marker only exists when the
+    require_marker "Mich x86_64: SMP speedup two-tasks one-cpu"
+    # Two concurrent tasks need two APs, so these markers only exist when the
     # run was given three CPUs or more.
     if [ "${MICH_SMP_CPUS:-2}" -ge 3 ]; then
         require_marker "Mich x86_64: SMP two-task parallel pass"
+        require_marker "Mich x86_64: SMP speedup two-tasks two-cpu"
     fi
 fi
 if [ "$profile" = "dns" ]; then

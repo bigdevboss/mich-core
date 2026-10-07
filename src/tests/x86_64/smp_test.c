@@ -452,6 +452,114 @@ static int test_smp64_parallel(void) {
     return 0;
 }
 
+// Two CPU-bound tasks with a fixed amount of work each: the same turn
+// count has to be reached once with the pair sharing a CPU and once with a
+// CPU each, so the ratio of the two wall times is the speedup. The wall
+// time is guest TSC ticks, and the turns are the stub's own increments.
+#define SPEEDUP_TURNS 20000000ull
+#define SPEEDUP_DEADLINE_MS 8000
+#define SPEEDUP_QUANTUM_MS 10
+
+// The measured pair should have the host to itself, and a spinning BSP
+// takes a core from it. A ring-0 tick is accounted and returns without
+// touching a task context, so this waits in hlt between ticks and leaves
+// the caller's interrupt state alone.
+static void speedup_wait_ms(u64 milliseconds) {
+    u64 deadline = apic64_tsc_now() + milliseconds * 1000000u;
+    while (apic64_tsc_now() < deadline)
+        __asm__ volatile("sti; hlt; cli" ::: "memory");
+}
+
+static void speedup_line(const char *label, u64 us) {
+    serial64_write("Mich x86_64: SMP speedup ");
+    serial64_write(label);
+    serial64_write(" us=");
+    serial64_hex(us);
+    serial64_write("\n");
+}
+
+// Polls the pair until both reach the turn count, kicking a shared pair so
+// it alternates the way a tick would. Pinning is the caller's CPU choice.
+static int speedup_work(u32 index_a, u32 index_b, u64 *us_out) {
+    volatile u64 *ca = 0;
+    volatile u64 *cb = 0;
+    u64 start;
+    u64 stop;
+    u64 done = 0;
+    u32 slot_a;
+    u32 slot_b;
+    u32 elapsed;
+    if (smp64_pin_task(index_a, smp64_spin_stub, sizeof(smp64_spin_stub),
+                       &slot_a, (u64 **)&ca))
+        return -1;
+    if (smp64_pin_task(index_b, smp64_spin_stub, sizeof(smp64_spin_stub),
+                       &slot_b, (u64 **)&cb)) {
+        drop_pinned(slot_a, index_a);
+        return -1;
+    }
+    ca[0] = 0;
+    cb[0] = 0;
+    if (smp64_resched_cpu(index_a) || wait_counter(ca, 0)) {
+        drop_pinned(slot_a, index_a);
+        drop_pinned(slot_b, index_b);
+        return -1;
+    }
+    if (index_b != index_a &&
+        (smp64_resched_cpu(index_b) || wait_counter(cb, 0))) {
+        drop_pinned(slot_a, index_a);
+        drop_pinned(slot_b, index_b);
+        return -1;
+    }
+    start = apic64_tsc_now();
+    for (elapsed = 0; elapsed < SPEEDUP_DEADLINE_MS;
+         elapsed += SPEEDUP_QUANTUM_MS) {
+        if (ca[0] >= SPEEDUP_TURNS && cb[0] >= SPEEDUP_TURNS) {
+            done = 1;
+            break;
+        }
+        speedup_wait_ms(SPEEDUP_QUANTUM_MS);
+        if (index_b == index_a && smp64_resched_cpu(index_a)) break;
+    }
+    stop = apic64_tsc_now();
+    if (drop_pinned(slot_a, index_a)) return -1;
+    if (drop_pinned(slot_b, index_b)) return -1;
+    if (!done) return -1;
+    // The TSC runs at a fixed 1 GHz for the emulated CPU, the same rate
+    // apic64_delay_ms is built on.
+    *us_out = (stop - start) / 1000u;
+    return 0;
+}
+
+// The claim as a number: two tasks doing the same fixed work take less wall
+// time on two CPUs than while sharing one. The table this feeds is a QEMU
+// measurement, so it is labelled as one.
+static int test_smp64_speedup(void) {
+    u64 shared_us = 0;
+    u64 split_us = 0;
+    if (speedup_work(SMP64_AP, SMP64_AP, &shared_us)) {
+        serial64_write("Mich x86_64: SMP speedup shared pair failed\n");
+        return -1;
+    }
+    speedup_line("two-tasks one-cpu", shared_us);
+    if (smp64_cpu_count() < 3) {
+        serial64_write("Mich x86_64: SMP speedup two-tasks two-cpu skipped\n");
+        return 0;
+    }
+    if (speedup_work(SMP64_AP, SMP64_AP + 1, &split_us)) {
+        serial64_write("Mich x86_64: SMP speedup split pair failed\n");
+        return -1;
+    }
+    serial64_write("Mich x86_64: SMP speedup two-tasks two-cpu us=");
+    serial64_hex(split_us);
+    serial64_write(" x100=");
+    serial64_hex(split_us ? (shared_us * 100u) / split_us : 0);
+    serial64_write("\n");
+    // The ratio is printed, not asserted: the host this runs on has fewer
+    // cores than the guest has CPUs, so what the split pair saves is the
+    // host's to give. Both pairs still had to reach the turn count.
+    return 0;
+}
+
 int tests64_run_smp(void) {
     irq_state_t irq_state = irq_save();
     if (smp64_cpu_count() < 2) {
@@ -517,6 +625,10 @@ int tests64_run_smp(void) {
     // This one reports its own pass line: the counts it measured are part
     // of the claim, and at two CPUs it says it was skipped instead.
     if (test_report_record(TEST_ID_SMP_PARALLEL, test_smp64_parallel())) {
+        irq_restore(irq_state);
+        return -1;
+    }
+    if (test_report_record(TEST_ID_SMP_SPEEDUP, test_smp64_speedup())) {
         irq_restore(irq_state);
         return -1;
     }
