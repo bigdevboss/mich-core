@@ -53,10 +53,11 @@ task administration, driver/resource access, or hardware privilege. Only an
 executable image carrying the POSIX-profile boot metadata is admitted. Native
 fork preserves the profile and descriptor state; task teardown releases both.
 
-The public headers are `<errno.h>`, `<fcntl.h>`, `<limits.h>`, `<stdio.h>`,
-`<stdlib.h>`, `<string.h>`, `<time.h>`, `<unistd.h>`, `<dirent.h>`,
-`<sys/random.h>`, `<sys/stat.h>`, `<sys/types.h>`, and `<sys/wait.h>`. The
-interface provides:
+The public headers are `<dirent.h>`, `<errno.h>`, `<fcntl.h>`, `<limits.h>`,
+`<poll.h>`, `<signal.h>`, `<stdio.h>`, `<stdlib.h>`, `<string.h>`,
+`<termios.h>`, `<time.h>`, `<unistd.h>`, `<netinet/in.h>`, `<sys/ioctl.h>`,
+`<sys/random.h>`, `<sys/select.h>`, `<sys/socket.h>`, `<sys/stat.h>`,
+`<sys/types.h>`, and `<sys/wait.h>`. The interface provides:
 
 ```text
 open, close, read, write, lseek, pread, pwrite
@@ -70,6 +71,15 @@ clock_gettime, clock_getres, nanosleep, time, gettimeofday, sleep
 fork, execve, _exit
 getpid, getppid, waitpid(WNOHANG/blocking)
 getrandom, realpath
+poll, select
+pipe
+socket, bind, listen, accept, connect
+send, recv, sendto, recvfrom, sendmsg, recvmsg
+shutdown, getsockopt, setsockopt, getsockname, getpeername
+kill, raise, sigaction, sigprocmask, sigpending
+pledge, unveil
+ioctl(TCGETS, TCSETS, TIOCGWINSZ, TIOCSWINSZ, TIOCGPGRP, TIOCSPGRP)
+getpgrp, setpgid, tcgetpgrp, tcsetpgrp, tcgetattr, tcsetattr
 ```
 
 `O_CREAT`, `O_TRUNC`, `O_APPEND`, and `O_CLOEXEC` are supported. File
@@ -82,9 +92,11 @@ holding the root override for `chown`; permission edits have no root override.
 
 The ABI uses bounded request records internally; public `read` and `write`
 wrappers chunk larger transfers. Mich does not claim POSIX certification or
-complete POSIX conformance. Pipes, `mmap`, polling, sockets, signals,
-threads, terminal semantics, ACLs, and Linux ABI compatibility remain outside
-this application profile.
+complete POSIX conformance. `mmap`, threads, ACLs, and Linux ABI
+compatibility remain outside this application profile. The terminal surface
+is one controlling line with the canonical line discipline and the job
+control rules (foreground group, stop and continue, the background read and
+write rules), not a session or multiplexing model.
 
 ## Features
 
