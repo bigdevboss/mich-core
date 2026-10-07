@@ -352,7 +352,7 @@ admitted to a POSIX profile. They are defined in `src/process/posix_abi.h`.
 |----|------|-------------|
 | 186 | open | Open a file. Shared with `block_interface_create` (186), disambiguated by caller; see the numbering note. |
 | 187 | close | Close a file descriptor. |
-| 188 | read | Read from a file descriptor. |
+| 188 | read | Read from a file descriptor. A background group reading a tty stops with SIGTTIN, and the read answers EIO when SIGTTIN is ignored rather than parking on a line it may never be given. |
 | 189 | write | Write to a file descriptor. |
 | 190 | lseek | Reposition a file offset. |
 | 191 | dup | Duplicate a file descriptor. |
@@ -420,8 +420,8 @@ admitted to a POSIX profile. They are defined in `src/process/posix_abi.h`.
 | 260 | getsockname | Report the local address a socket is bound to. |
 | 261 | getpeername | Report the peer address a connected socket reached. |
 | 262 | poll | Wait for readiness on up to 16 descriptors, with a millisecond timeout and -1 for an endless wait. Descriptors report read and write readiness plus the error bits; a descriptor that names no open file is POLLNVAL. |
-| 263 | ioctl | Tty control: TCGETS and TCSETS carry the termios, TIOCGWINSZ and TIOCSWINSZ the window size. A descriptor that is not a tty, or a request the tty does not carry, answers ENOTTY. |
+| 263 | ioctl | Tty control: TCGETS and TCSETS carry the termios (TOSTOP among the flags, which makes a background write stop with SIGTTOU), TIOCGWINSZ and TIOCSWINSZ the window size, and TIOCGPGRP and TIOCSPGRP the foreground group. A descriptor that is not a tty, or a request the tty does not carry, answers ENOTTY. |
 | 264 | getpgrp | Report the calling process's group. A process that never named one leads its own. |
 | 265 | setpgid | Put a process into a group: naming its own pid creates the group it then leads, any other id must name a group somebody is live in. |
 | 266 | tcgetpgrp | Report the foreground group of a tty descriptor, zero when nobody owns the line. |
-| 267 | tcsetpgrp | Hand a tty descriptor to a live group; a dead group and a non-tty descriptor are refused. |
+| 267 | tcsetpgrp | Hand a tty descriptor to a live group; a dead group and a non-tty descriptor are refused, and a background caller taking the line stops with SIGTTOU unless it ignores that signal. |
