@@ -636,7 +636,7 @@ This prevents an MSI-X interrupt from corrupting a queue or causing a lost wakeu
 | TCP and stream sockets | Yes |
 | Panic register dump | Yes |
 | FPU context switching | FXSAVE and FXRSTOR |
-| SMP | Yes, AP bring-up, per-CPU state, IPI and spinlocks |
+| SMP | AP bring-up, per-CPU state, IPI and spinlocks; parallel task scheduling is in progress |
 | IOMMU | Intel VT-d and AMD-Vi coherent DMA |
 | AArch64 | Planned |
 | RISC-V 64 | Planned |
@@ -675,7 +675,7 @@ Important limitations remain:
 - AMD-Vi Event Log fault decoding needs a physical fault integration test
 - VT-d RMRR ownership is not implemented
 - Devices without a supported IOMMU remain trusted for DMA
-- No SMP synchronization model
+- No SMP synchronization model: the task pool runs on one CPU, and secondary CPUs carry pinned work only
 - No SMEP or SMAP
 - No KASLR
 - No complete x86-64 kernel W^X
@@ -704,7 +704,7 @@ Mich Core does not include:
 - POSIX certification, complete POSIX conformance, or Linux binary/syscall ABI
   compatibility
 - Independently written Linux Kernel API compatibility headers
-- SMP
+- Parallel task scheduling across CPUs (secondary CPUs run pinned work)
 - IOMMU-backed DMA isolation
 - Power management
 - A higher-half kernel
