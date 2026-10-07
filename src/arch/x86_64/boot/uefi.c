@@ -24,11 +24,18 @@
 // the bss, the loader image and the blob.
 #define STUB_BASE 0x90000ULL
 // The kernel bss spans tens of megabytes from 0x100000 and the modules are
-// laid out directly above it, up to the 0x4000000 limit enforced below. The
+// laid out directly above it, up to the MODULE_LIMIT checked below. That
+// limit bounds the low window the kernel and its modules claim; RAM from
+// the kernel's bss end up to the limit stays free for the allocator. The
 // staging blob must therefore sit above that whole region: at 0x2800000 it
 // was inside the bss and was erased before the kernel and modules had been
 // copied out of it.
 #define BLOB_BASE 0x6000000ULL
+// Kernel plus modules must fit below this. The task pool and the network test
+// arenas live in the kernel bss, so the ceiling has to leave room for both
+// while RAM above the bss stays allocatable; the same number sits in
+// mkuefi64.py, which refuses an oversized layout at build time.
+#define MODULE_LIMIT 0x4800000ULL
 
 typedef u64 efi_status;
 typedef void *efi_handle;
@@ -479,10 +486,14 @@ efi_status __attribute__((ms_abi)) efi_main(efi_handle image,
     kernel_span = kernel_len;
     if (bss_len && bss_off + bss_len > kernel_span)
         kernel_span = bss_off + bss_len;
+    // The kernel and the modules laid out above it share the window below
+    // MODULE_LIMIT, and the module copy below enforces its half of that
+    // limit. A kernel image that alone overflows the window has nowhere to
+    // go, so this check holds the same ceiling.
     if (!blob_bytes || blob_bytes > 0x200000 || kernel_off < 512 ||
-        !kernel_len || kernel_span > 0x03F00000 ||
+        !kernel_len || kernel_span > MODULE_LIMIT ||
         kernel_off + kernel_len > blob_bytes || mod_count > MAX_MODS ||
-        module_base < 0x100000 || module_base >= 0x4000000)
+        module_base < 0x100000 || module_base >= MODULE_LIMIT)
         fail("uefi: blob bounds FAIL\r\n");
 
     status = bs->allocate_pool(EFI_LOADER_DATA, blob_bytes, &blob);
@@ -581,7 +592,7 @@ efi_status __attribute__((ms_abi)) efi_main(efi_handle image,
             aligned = (size + 0xFFF) & ~0xFFFu;
             copy_bytes((void *)(uptr_t)cursor, (u8 *)blob + off, size);
             cursor += aligned;
-            if (cursor > 0x4000000) fail("uefi: mod overflow FAIL\r\n");
+            if (cursor > MODULE_LIMIT) fail("uefi: mod overflow FAIL\r\n");
         }
     }
     // The kernel bss spans tens of megabytes and this loader is linked at

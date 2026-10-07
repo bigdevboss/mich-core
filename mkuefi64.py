@@ -6,6 +6,9 @@ import zlib
 BLOCK = 512
 BLOB_MAGIC = 0x424F4C42
 BASE = 0x100000
+# The loader lays the kernel and then the modules into low RAM; the ceiling
+# below is the loader's own (MODULE_LIMIT in src/arch/x86_64/boot/uefi.c).
+MODULE_LIMIT = 0x4800000
 MAX_MODULES = 8
 
 ESP_TYPE = bytes.fromhex("28732ac11ff8d211ba4b00a0c93ec93b")
@@ -309,6 +312,15 @@ def main():
     output = args[0]
     modules = read_modules(args[1:])
     entry, bss_off, bss_len, module_base = kernel_info(kernel_elf)
+    # Refusing an oversized layout here beats a boot that dies inside the
+    # loader with the kernel already past the last free byte.
+    span = module_base
+    for _, data, _ in modules:
+        span += (len(data) + 0xFFF) & ~0xFFF
+    if span > MODULE_LIMIT:
+        raise SystemExit(
+            "kernel and modules do not fit below 0x%x: %d bytes" %
+            (MODULE_LIMIT, span))
     with open(kernel_flat, "rb") as file:
         kernel = file.read()
     with open(efi_path, "rb") as file:
