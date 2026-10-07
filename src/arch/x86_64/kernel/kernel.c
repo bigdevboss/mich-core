@@ -1519,19 +1519,26 @@ int posix_execve64(u64 path_address, u64 argv_address, u64 envp_address) {
     return 0;
 }
 
+int scheduler_cpu_id(void) {
+    return (int)smp64_cpu_index();
+}
+
 u32 scheduler64_next_slot(void) {
-    int next = scheduler_pick_next((int)current_task_slot);
-    return next < 0 ? current_task_slot : (u32)next;
+    u32 here = smp64_running_slot();
+    int next = scheduler_pick_next((int)here);
+    return next < 0 ? here : (u32)next;
 }
 
 void scheduler64_set_running(u32 slot) {
-    u32 old = current_task_slot;
+    // The task to unpark is the one this CPU ran, not the shared slot's: off
+    // this CPU the shared slot belongs to whoever switched last, and
+    // clearing its owner bit would free a task another CPU is running.
+    u32 old = smp64_running_slot();
     int cpu = (int)smp64_cpu_index();
     if (old < MAX_TASKS)
         task_pool[old].on_cpu = TASK_CPU_NONE;
     current_task_slot = slot;
     scheduler_set_current((int)slot);
-    scheduler_set_this_cpu(cpu);
     smp64_set_current(slot);
     if (slot < MAX_TASKS)
         task_pool[slot].on_cpu = cpu;
@@ -1539,11 +1546,13 @@ void scheduler64_set_running(u32 slot) {
 
 void scheduler64_switch(void) {
     switch_count++;
-    context_save(&task_contexts[current_task_slot]);
-    fpu64_save(&task_contexts[current_task_slot]);
+    u32 parked = smp64_running_slot();
+    context_save(&task_contexts[parked]);
+    fpu64_save(&task_contexts[parked]);
     scheduler64_set_running(scheduler64_next_slot());
-    fpu64_load(&task_contexts[current_task_slot]);
-    context_load(&task_contexts[current_task_slot]);
+    u32 next = smp64_running_slot();
+    fpu64_load(&task_contexts[next]);
+    context_load(&task_contexts[next]);
 }
 
 void task64_set_result(u32 slot, i64 result) {

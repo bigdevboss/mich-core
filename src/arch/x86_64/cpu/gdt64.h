@@ -3,7 +3,7 @@
 
 #include "types.h"
 
-#define GDT64_CPU_MAX 8
+#define GDT64_CPU_MAX 16
 #define GDT64_KERNEL_CS 0x08
 #define GDT64_KERNEL_DS 0x10
 #define GDT64_USER_DS 0x1B

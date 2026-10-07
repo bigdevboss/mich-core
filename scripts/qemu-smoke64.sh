@@ -29,6 +29,18 @@ qemu_timeout=$((qemu_timeout + 25))
 accel_cpu="-cpu qemu64,+aes,+pclmulqdq,+ssse3"
 if [ -n "${MICH_KVM:-}" ]; then accel_cpu="-enable-kvm -cpu host"; fi
 if [ -n "${MICH_QEMU_TIMEOUT:-}" ]; then qemu_timeout="$MICH_QEMU_TIMEOUT"; fi
+# The smp profile defaults to two CPUs; the local stress runs ask for more
+# with MICH_SMP_CPUS. Sixteen is the ceiling the xAPIC destination byte and
+# the per-CPU tables allow, so a larger request is refused up front.
+if [ -n "${MICH_SMP_CPUS:-}" ]; then
+    case "$MICH_SMP_CPUS" in
+        *[!0-9]*|'') echo "MICH_SMP_CPUS must be a number" >&2; exit 1 ;;
+    esac
+    if [ "$MICH_SMP_CPUS" -lt 2 ] || [ "$MICH_SMP_CPUS" -gt 16 ]; then
+        echo "MICH_SMP_CPUS must be between 2 and 16" >&2
+        exit 1
+    fi
+fi
 # The serial log is a temp that the exit trap deletes, so a clean run drops the
 # guest report (throughput lines, wire-tx offsets) it never printed. Set
 # MICH_KEEP_LOG to a path to keep a copy for inspection on both pass and fail.
@@ -118,7 +130,7 @@ case "$profile" in
         set -- -device amd-iommu,intremap=off
         ;;
     smp)
-        set -- -smp 2
+        set -- -smp "${MICH_SMP_CPUS:-2}"
         ;;
     *)
         set --

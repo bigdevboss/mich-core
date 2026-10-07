@@ -3,7 +3,9 @@
 
 #include "types.h"
 
-#define SMP64_MAX 8
+// The xAPIC destination id is one byte, so 16 CPUs is the practical ceiling
+// for this path; past it the tree would need x2APIC.
+#define SMP64_MAX 16
 #define SMP64_TRAMP_BASE 0x8000
 // SIPI vector is the 4 KiB page number of the trampoline (Intel SDM).
 #define SMP64_SIPI_VECTOR (SMP64_TRAMP_BASE >> 12)

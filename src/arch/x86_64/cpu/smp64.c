@@ -132,7 +132,10 @@ void smp64_set_current(u32 slot) {
 
 u32 smp64_running_slot(void) {
     struct smp64_cpu *cpu = smp64_this();
-    if (cpu->index != 0 && cpu->current != SMP64_CURRENT_NONE)
+    // Every CPU answers from its own record. The shared global holds
+    // whichever CPU switched last, which is this CPU's own slot only while
+    // no other CPU has switched and this one has not recorded one yet.
+    if (cpu->current != SMP64_CURRENT_NONE)
         return cpu->current;
     return current_task_slot;
 }
@@ -322,6 +325,10 @@ int smp64_init(void) {
     smp64_cpus[0].apic_id = smp64_bsp_id;
     smp64_cpus[0].index = 0;
     smp64_cpus[0].state = SMP64_STATE_ONLINE;
+    // The BSP runs the idle task before its first switch, so its record
+    // starts at that slot; the first switch replaces it. Secondary CPUs
+    // start at NONE and only record a slot once they pick one.
+    smp64_cpus[0].current = 0;
     smp64_cpu_by_apic[smp64_bsp_id] = &smp64_cpus[0];
     smp64_online = 1;
     smp64_gs_kernel(&smp64_cpus[0]);

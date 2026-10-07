@@ -593,4 +593,4 @@ DEPFILES = $(OBJS64:.o=.d) $(OBJS64_TEST:.o=.d) $(PORTABLE64_OBJS:.o=.d) \
 clean:
 	rm -rf $(BIN_DIR)
 
-.PHONY: all user64-virtio-blk test64-virtio-blk user64-nvme test64-nvme run64 test64 test64-prod test64-crash test64-unit test64-highmem test64-dns test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-msi-restart-stability test64-msi-circuit-stability test64-msi-recovery-stability test64-pcie test64-panic check-build release-check clean
+.PHONY: all user64-virtio-blk test64-virtio-blk user64-nvme test64-nvme run64 test64 test64-smp test64-prod test64-crash test64-unit test64-highmem test64-dns test64-hardware test64-msi test64-msi-restart test64-msi-circuit test64-msi-recovery test64-msi-restart-stability test64-msi-circuit-stability test64-msi-recovery-stability test64-pcie test64-panic test64-iommu test64-amd-iommu test64-tcpwire test64-tty test64-netbench check-build release-check clean
