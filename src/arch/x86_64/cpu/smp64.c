@@ -17,6 +17,8 @@
 #include "net_rx.h"
 #include "net_interface.h"
 #include "object.h"
+#include "resource.h"
+#include "vector64.h"
 
 // Trampoline chunks (smp_tramp.asm) placed by the BSP at SMP64_TRAMP_BASE: entry
 // 0x000, overlay 0x500, GDTs 0x100, code 0x200/0x300/0x400. SIPI starts the AP at
@@ -94,6 +96,7 @@ static u32 smp64_stress_turns;
 static u32 smp64_stress_mode;
 static struct kernel_object *smp64_stress_object;
 static volatile u64 smp64_spawn_slot_count;
+static volatile u64 smp64_stress_detail;
 static struct kernel_object *smp64_net_storm_interface;
 static const u8 *smp64_net_storm_frame;
 static u32 smp64_net_storm_length;
@@ -620,11 +623,81 @@ static void smp64_spawn_turn(void) {
     __atomic_fetch_add(&smp64_spawn_slot_count, 1, __ATOMIC_RELAXED);
 }
 
+static void smp64_stress_fail(u64 code, u64 detail) {
+    u64 expected = 0;
+    __atomic_compare_exchange_n(&smp64_stress_failure, &expected, code, 0,
+                                __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+    if (!expected)
+        __atomic_store_n(&smp64_stress_detail, detail, __ATOMIC_RELEASE);
+}
+
+static void smp64_resource_turn(u32 turn) {
+    u32 cpu = (u32)scheduler_cpu_id();
+    paddr_t physical = 0xF0000000u + (paddr_t)cpu * 0x1000;
+    struct kernel_object *mmio =
+        mmio_resource_create(physical, 0x1000, MMIO_CACHE_UC);
+    struct kernel_object *irq = irq_resource_create_kind(
+        IRQ_CONTROLLER_MSI, 1, 40, IRQ_TRIGGER_EDGE, IRQ_POLARITY_HIGH);
+    struct kernel_object *page = page_resource_create();
+    const struct mmio_resource *mmio_info = mmio_resource_get(mmio);
+    const struct irq_resource *irq_info = irq_resource_get(irq);
+    struct page_resource *page_info = page_resource_get(page);
+    // The address is the CPU's own, so a slot handed to two CPUs at once
+    // shows up here as a foreign address rather than as a silent overwrite.
+    if (!mmio || !mmio_info)
+        smp64_stress_fail(0x11, ((u64)turn << 32) |
+                          (u64)resource_active_count(KOBJECT_MMIO));
+    else if (mmio_info->physical != physical)
+        smp64_stress_fail(0x12, mmio_info->physical);
+    if (!irq || !irq_info)
+        smp64_stress_fail(0x13, ((u64)turn << 32) |
+                          (u64)resource_active_count(KOBJECT_IRQ));
+    else if (irq_info->controller != IRQ_CONTROLLER_MSI)
+        smp64_stress_fail(0x14, irq_info->controller);
+    if (!page || !page_info)
+        smp64_stress_fail(0x15, ((u64)turn << 32) |
+                          (u64)resource_active_count(KOBJECT_PAGE));
+    else if (page_info->pages != 1)
+        smp64_stress_fail(0x16, page_info->pages);
+    if (page) object_release(page);
+    if (irq) object_release(irq);
+    if (mmio) object_release(mmio);
+}
+
+static void smp64_vector_turn(void) {
+    u32 cpu = (u32)scheduler_cpu_id();
+    uptr_t token = 0x1000u + (uptr_t)cpu;
+    int vector = vector64_allocate(token);
+    if (vector < 0 || vector64_owner((u8)vector) != token ||
+        vector64_release((u8)vector, token)) {
+        smp64_stress_fail(0x21, (u64)vector64_available());
+        return;
+    }
+    u8 group[4];
+    if (vector64_allocate_group(token, 4, group)) {
+        smp64_stress_fail(0x22, (u64)vector64_available());
+        return;
+    }
+    for (u32 index = 0; index < 4; index++)
+        if (vector64_owner(group[index]) != token)
+            __atomic_store_n(&smp64_stress_failure, 1, __ATOMIC_RELEASE);
+    if (vector64_release_group(group, 4, token))
+        __atomic_store_n(&smp64_stress_failure, 1, __ATOMIC_RELEASE);
+}
+
 void smp64_stress_run(u32 turns) {
     for (u32 turn = 0; turn < turns; turn++) {
         paddr_t held[SMP64_STRESS_HOLD];
         if (smp64_stress_mode == SMP64_STRESS_SPAWN) {
             smp64_spawn_turn();
+            continue;
+        }
+        if (smp64_stress_mode == SMP64_STRESS_RESOURCE) {
+            smp64_resource_turn(turn);
+            continue;
+        }
+        if (smp64_stress_mode == SMP64_STRESS_VECTOR) {
+            smp64_vector_turn();
             continue;
         }
         if (smp64_stress_mode == SMP64_STRESS_NET) {
@@ -669,6 +742,7 @@ void smp64_stress_reset(u32 turns, struct kernel_object *shared, u32 mode) {
     smp64_stress_page_count = 0;
     smp64_stress_object_count = 0;
     smp64_stress_failure = 0;
+    smp64_stress_detail = 0;
     for (u32 index = 0; index < SMP64_MAX; index++)
         smp64_cpus[index].stress_done = 0;
 }
@@ -684,6 +758,10 @@ void smp64_spawn_reset(u32 turns) {
     smp64_stress_reset(turns, 0, SMP64_STRESS_SPAWN);
     smp64_spawn_slot_count = 0;
     for (u32 slot = 0; slot < MAX_TASKS; slot++) smp64_spawn_held[slot] = 0;
+}
+
+u64 smp64_stress_detail_value(void) {
+    return __atomic_load_n(&smp64_stress_detail, __ATOMIC_RELAXED);
 }
 
 u64 smp64_spawn_slots(void) {

@@ -3,6 +3,7 @@
 #include "vector64.h"
 #include "resource.h"
 #include "object.h"
+#include "klock.h"
 
 #define MSI64_MAX 32
 #define MSI64_GROUP_MAX 16
@@ -35,7 +36,7 @@ static struct msi64_state *state_for(u32 source) {
     return state->active ? state : 0;
 }
 
-static int msi_mask(u32 source, int masked) {
+static int msi_mask_locked(u32 source, int masked) {
     struct msi64_state *state = state_for(source);
     if (!state || !state->group || state->member >= 32) return -1;
     struct msi64_group *group = state->group;
@@ -57,6 +58,13 @@ static int msi_mask(u32 source, int masked) {
     return 0;
 }
 
+static int msi_mask(u32 source, int masked) {
+    klock_acquire(&irq_program_klock);
+    int result = msi_mask_locked(source, masked);
+    klock_release(&irq_program_klock);
+    return result;
+}
+
 static void group_clear(struct msi64_group *group) {
     if (!group || !group->active || group->remaining) return;
     if (group->enabled) pci64_msi_disable(group->pci);
@@ -69,7 +77,7 @@ static void group_clear(struct msi64_group *group) {
     group->active = 0;
 }
 
-static void msi_release(u32 source) {
+static void msi_release_locked(u32 source) {
     struct msi64_state *state = state_for(source);
     if (!state) return;
     struct msi64_group *group = state->group;
@@ -79,8 +87,8 @@ static void msi_release(u32 source) {
     }
     if (group && state->member < 32)
         group->unmasked &= ~(1u << state->member);
-    uptr_t owner = vector64_owner(state->vector);
-    if (owner) vector64_release(state->vector, owner);
+    uptr_t owner = vector64_owner_locked(state->vector);
+    if (owner) vector64_release_locked(state->vector, owner);
     state->group = 0;
     state->irq = 0;
     state->member = 0;
@@ -90,7 +98,14 @@ static void msi_release(u32 source) {
     group_clear(group);
 }
 
+static void msi_release(u32 source) {
+    klock_acquire(&irq_program_klock);
+    msi_release_locked(source);
+    klock_release(&irq_program_klock);
+}
+
 int msi64_init(u8 destination_apic_id) {
+    klock_acquire(&irq_program_klock);
     destination_id = destination_apic_id;
     for (u32 index = 0; index < MSI64_GROUP_MAX; index++) {
         groups[index].pci = 0;
@@ -108,12 +123,14 @@ int msi64_init(u8 destination_apic_id) {
         states[index].vector = 0;
         states[index].active = 0;
     }
+    klock_release(&irq_program_klock);
     return irq_resource_set_backend(IRQ_CONTROLLER_MSI,
                                     msi_mask, msi_release);
 }
 
-int msi64_create_group(struct kernel_object *pci, u32 count,
-                       struct kernel_object **irqs, u32 capacity) {
+static int msi_create_group_locked(struct kernel_object *pci, u32 count,
+                                   struct kernel_object **irqs,
+                                   u32 capacity) {
     const struct pci_resource *description = pci_resource_get(pci);
     if (!description || !(description->capability_flags & PCI_CAP_MSI) ||
         !irqs || !count || count > capacity || count > MSI64_MAX ||
@@ -129,7 +146,7 @@ int msi64_create_group(struct kernel_object *pci, u32 count,
         if (!states[index].active) free_states++;
     if (!group || free_states < count || object_retain(pci)) return -1;
     u8 vectors[MSI64_MAX];
-    if (vector64_allocate_group((uptr_t)group, count, vectors)) {
+    if (vector64_allocate_group_locked((uptr_t)group, count, vectors)) {
         object_release(pci);
         return -1;
     }
@@ -161,12 +178,12 @@ int msi64_create_group(struct kernel_object *pci, u32 count,
                                      vectors[member], IRQ_TRIGGER_EDGE,
                                      IRQ_POLARITY_HIGH);
         if (!irq) {
-            msi_release(slot + 1);
+            msi_release_locked(slot + 1);
             break;
         }
         state->irq = irq;
-        if (vector64_transfer(vectors[member], (uptr_t)group,
-                              (uptr_t)irq)) {
+        if (vector64_transfer_locked(vectors[member], (uptr_t)group,
+                                     (uptr_t)irq)) {
             object_release(irq);
             break;
         }
@@ -175,16 +192,27 @@ int msi64_create_group(struct kernel_object *pci, u32 count,
     if (created == count) return 0;
     for (u32 index = 0; index < created; index++) object_release(irqs[index]);
     for (u32 index = created; index < count; index++) {
-        uptr_t owner = vector64_owner(vectors[index]);
+        uptr_t owner = vector64_owner_locked(vectors[index]);
         if (owner == (uptr_t)group)
-            vector64_release(vectors[index], (uptr_t)group);
+            vector64_release_locked(vectors[index], (uptr_t)group);
     }
     group_clear(group);
     for (u32 index = 0; index < capacity; index++) irqs[index] = 0;
     return -1;
 }
 
+int msi64_create_group(struct kernel_object *pci, u32 count,
+                       struct kernel_object **irqs, u32 capacity) {
+    klock_acquire(&irq_program_klock);
+    int result = msi_create_group_locked(pci, count, irqs, capacity);
+    klock_release(&irq_program_klock);
+    return result;
+}
+
 struct kernel_object *msi64_create(struct kernel_object *pci) {
     struct kernel_object *irq = 0;
-    return msi64_create_group(pci, 1, &irq, 1) ? 0 : irq;
+    klock_acquire(&irq_program_klock);
+    int result = msi_create_group_locked(pci, 1, &irq, 1);
+    klock_release(&irq_program_klock);
+    return result ? 0 : irq;
 }

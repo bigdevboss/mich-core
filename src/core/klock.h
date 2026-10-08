@@ -11,10 +11,13 @@
 // hanging the boot. The order itself is written down in the notes.
 #define KLOCK_LEVEL_NET 1u
 #define KLOCK_LEVEL_FD 2u
-#define KLOCK_LEVEL_OBJECT 3u
-#define KLOCK_LEVEL_PIPE 4u
-#define KLOCK_LEVEL_POOL 5u
-#define KLOCK_LEVEL_PMM 6u
+#define KLOCK_LEVEL_MSI 3u
+#define KLOCK_LEVEL_IOMMU 4u
+#define KLOCK_LEVEL_RESOURCE 5u
+#define KLOCK_LEVEL_OBJECT 6u
+#define KLOCK_LEVEL_PIPE 7u
+#define KLOCK_LEVEL_POOL 8u
+#define KLOCK_LEVEL_PMM 9u
 
 // The same ceiling as the CPU target, SMP64_MAX in the arch record.
 #define KLOCK_MAX_CPUS 16

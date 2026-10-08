@@ -17,6 +17,7 @@
 #include "net_buffer.h"
 #include "net_rx.h"
 #include "net_test.h"
+#include "vector64.h"
 #include "route.h"
 #include "socket.h"
 #include "vnic.h"
@@ -777,6 +778,97 @@ static int test_smp64_rx_mailbox(void) {
     return failed ? -1 : 0;
 }
 
+// The device tables take the same treatment the pool got: every CPU creates
+// and destroys one memory, one interrupt and one page resource per turn, and
+// the tail counts have to land exactly on the baselines. The memory address
+// is per-CPU, so two CPUs handed the same slot read back each other's
+// address instead of overwriting in silence.
+static int test_smp64_resource_storm(void) {
+    u32 n = smp64_cpu_count();
+    u32 objects = object_active_count();
+    u32 mmio = resource_active_count(KOBJECT_MMIO);
+    u32 irqs = resource_active_count(KOBJECT_IRQ);
+    u32 pages = resource_active_count(KOBJECT_PAGE);
+    u32 free_pages = pmm_free_pages();
+    int reason = 0;
+    smp64_stress_reset(SMP64_STRESS_TURNS, 0, SMP64_STRESS_RESOURCE);
+    for (u32 index = 1; index < n; index++)
+        if (smp64_ipi_cpu(index, SMP64_IPI_STRESS)) reason = 1;
+    if (!reason) {
+        smp64_stress_run(SMP64_STRESS_TURNS);
+        for (u32 index = 1; index < n; index++)
+            if (wait_rounds(smp64_stress_done, index,
+                            SMP64_BOOT_TIMEOUT_MS / 10 * 4))
+                reason = 2;
+    }
+    if (!reason) {
+        if (smp64_stress_failed()) reason = 3;
+        else if (object_active_count() != objects) reason = 4;
+        else if (resource_active_count(KOBJECT_MMIO) != mmio) reason = 5;
+        else if (resource_active_count(KOBJECT_IRQ) != irqs) reason = 6;
+        else if (resource_active_count(KOBJECT_PAGE) != pages) reason = 7;
+        else if (pmm_free_pages() != free_pages) reason = 8;
+    }
+    if (reason) {
+        serial64_write("Mich x86_64: resource storm check failed: ");
+        serial64_hex(reason);
+        serial64_write(" cpus="); serial64_hex(n);
+        serial64_write(" objects="); serial64_hex(objects);
+        serial64_write(" mmio="); serial64_hex(resource_active_count(KOBJECT_MMIO));
+        serial64_write(" irq="); serial64_hex(resource_active_count(KOBJECT_IRQ));
+        serial64_write(" pages="); serial64_hex(resource_active_count(KOBJECT_PAGE));
+        serial64_write(" free="); serial64_hex(pmm_free_pages());
+        serial64_write(" storm="); serial64_hex(smp64_stress_failed());
+        serial64_write(" detail="); serial64_hex(smp64_stress_detail_value());
+        serial64_write(" turn=");
+        serial64_hex(smp64_stress_detail_value() >> 32);
+        for (u32 index = 1; index < n; index++) {
+            serial64_write(" d"); serial64_hex(index);
+            serial64_write("="); serial64_hex(smp64_stress_done(index));
+        }
+        serial64_write("\n");
+    }
+    return reason ? -1 : 0;
+}
+
+// The vector table is what the MSI and MSI-X paths allocate from, so the same
+// storm: every CPU takes a vector and a group of four, checks the table names
+// it as the owner, and hands both back. One vector handed to two CPUs cannot
+// pass the owner check on both of them, and the available count has to return
+// to its baseline.
+static int test_smp64_vector_storm(void) {
+    u32 n = smp64_cpu_count();
+    u32 available = vector64_available();
+    int reason = 0;
+    smp64_stress_reset(SMP64_STRESS_TURNS, 0, SMP64_STRESS_VECTOR);
+    for (u32 index = 1; index < n; index++)
+        if (smp64_ipi_cpu(index, SMP64_IPI_STRESS)) reason = 1;
+    if (!reason) {
+        smp64_stress_run(SMP64_STRESS_TURNS);
+        for (u32 index = 1; index < n; index++)
+            if (wait_rounds(smp64_stress_done, index,
+                            SMP64_BOOT_TIMEOUT_MS / 10 * 4))
+                reason = 2;
+    }
+    if (!reason) {
+        if (smp64_stress_failed()) reason = 3;
+        else if (vector64_available() != available) reason = 4;
+    }
+    if (reason) {
+        serial64_write("Mich x86_64: vector storm check failed: ");
+        serial64_hex(reason);
+        serial64_write(" cpus="); serial64_hex(n);
+        serial64_write(" available="); serial64_hex(vector64_available());
+        serial64_write(" storm="); serial64_hex(smp64_stress_failed());
+        for (u32 index = 1; index < n; index++) {
+            serial64_write(" d"); serial64_hex(index);
+            serial64_write("="); serial64_hex(smp64_stress_done(index));
+        }
+        serial64_write("\n");
+    }
+    return reason ? -1 : 0;
+}
+
 // The level checker is what turns a would-be deadlock into a named abort, so
 // the battery has to show it rejects the pairs the order forbids and that
 // the record follows real nesting. The locks here are the test's own: the
@@ -786,12 +878,17 @@ static int test_smp64_lockorder(void) {
     static struct klock inner = KLOCK_INIT(KLOCK_LEVEL_PMM);
     if (klock_order_ok(0, KLOCK_LEVEL_NET) != 1) return -1;
     if (klock_order_ok(KLOCK_LEVEL_NET, KLOCK_LEVEL_FD) != 1) return -1;
-    if (klock_order_ok(KLOCK_LEVEL_FD, KLOCK_LEVEL_OBJECT) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_FD, KLOCK_LEVEL_MSI) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_MSI, KLOCK_LEVEL_IOMMU) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_IOMMU, KLOCK_LEVEL_RESOURCE) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_RESOURCE, KLOCK_LEVEL_OBJECT) != 1) return -1;
     if (klock_order_ok(KLOCK_LEVEL_OBJECT, KLOCK_LEVEL_PIPE) != 1) return -1;
     if (klock_order_ok(KLOCK_LEVEL_PIPE, KLOCK_LEVEL_POOL) != 1) return -1;
     if (klock_order_ok(KLOCK_LEVEL_POOL, KLOCK_LEVEL_PMM) != 1) return -1;
     if (klock_order_ok(KLOCK_LEVEL_NET, KLOCK_LEVEL_PMM) != 1) return -1;
     if (klock_order_ok(KLOCK_LEVEL_PIPE, KLOCK_LEVEL_NET) != 0) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_MSI, KLOCK_LEVEL_FD) != 0) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_RESOURCE, KLOCK_LEVEL_MSI) != 0) return -1;
     if (klock_order_ok(KLOCK_LEVEL_PMM, KLOCK_LEVEL_PMM) != 0) return -1;
     if (klock_order_ok(KLOCK_LEVEL_PMM, KLOCK_LEVEL_POOL) != 0) return -1;
     if (klock_held_level() != 0) return -1;
@@ -1091,6 +1188,16 @@ int tests64_run_smp(void) {
         return -1;
     }
     serial64_write("Mich x86_64: SMP receive mailbox pass\n");
+    if (test_report_record(TEST_ID_SMP_RESOURCE, test_smp64_resource_storm())) {
+        irq_restore(irq_state);
+        return -1;
+    }
+    serial64_write("Mich x86_64: SMP resource storm pass\n");
+    if (test_report_record(TEST_ID_SMP_VECTOR, test_smp64_vector_storm())) {
+        irq_restore(irq_state);
+        return -1;
+    }
+    serial64_write("Mich x86_64: SMP vector storm pass\n");
     if (test_report_record(TEST_ID_SMP_LOCKORDER, test_smp64_lockorder())) {
         irq_restore(irq_state);
         return -1;

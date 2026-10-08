@@ -1,4 +1,7 @@
 #include "iommu.h"
+#include "klock.h"
+
+struct klock iommu_klock = KLOCK_INIT(KLOCK_LEVEL_IOMMU);
 
 static const struct iommu_backend *active_backend;
 static int unconfined_dma_allowed;

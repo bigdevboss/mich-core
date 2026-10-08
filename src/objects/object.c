@@ -109,16 +109,18 @@ void object_release(struct kernel_object *object) {
         return;
     }
     object_destroy_fn destroy = object->destroy;
-    object->active = 0;
+    object->destroy = 0;
     klock_release(&object_klock);
-    // The callback still sees the object's type and value: they are how a
-    // vfs file destroy finds its state. Only the table's claim on the slot
-    // is gone while it runs, and the fields are cleared after it returns.
+    // The slot stays claimed while the callback runs: it sees the object's
+    // type and value, which are how a vfs file destroy finds its state, and
+    // object_create cannot hand the slot out and have its fields cleared
+    // underneath by this release. The reference count is already zero, so no
+    // caller can retain it back to life from here.
     if (destroy) destroy(object);
     klock_acquire(&object_klock);
     object->type = KOBJECT_NONE;
     object->value = 0;
-    object->destroy = 0;
+    object->active = 0;
     klock_release(&object_klock);
 }
 

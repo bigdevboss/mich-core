@@ -2,6 +2,13 @@
 #define IOMMU_H
 
 #include "types.h"
+#include "klock.h"
+
+// The domain tables of both backends sit under one lock, taken inside each
+// backend entry rather than at this dispatch: the VT-d interrupt-remapping
+// calls reach the backend directly, and one take per operation keeps the
+// dispatch from nesting on itself.
+extern struct klock iommu_klock;
 
 struct kernel_object;
 

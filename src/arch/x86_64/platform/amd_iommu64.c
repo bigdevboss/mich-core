@@ -4,6 +4,7 @@
 #include "pmm.h"
 #include "resource.h"
 #include "iommu.h"
+#include "klock.h"
 
 #define AMD_IOMMU_UNIT_MAX ACPI_MAX_IVHD_UNITS
 #define AMD_IOMMU_DOMAIN_MAX 8
@@ -330,7 +331,7 @@ static void set_dte(struct amd_iommu64_domain *d, int present) {
     }
 }
 
-static int domain_create(u32 owner, struct kernel_object *pci_object) {
+static int domain_create_locked(u32 owner, struct kernel_object *pci_object) {
     const struct pci_resource *pci = pci_resource_get(pci_object);
     if (!tables_ready || !owner || !pci || find_domain(owner)) return -1;
     u16 device_id = ((u16)pci->bus << 8) |
@@ -365,7 +366,14 @@ static int domain_create(u32 owner, struct kernel_object *pci_object) {
     return -1;
 }
 
-static int domain_map(u32 owner, paddr_t physical, u32 pages, u64 *iova) {
+static int domain_create(u32 owner, struct kernel_object *pci_object) {
+    klock_acquire(&iommu_klock);
+    int result = domain_create_locked(owner, pci_object);
+    klock_release(&iommu_klock);
+    return result;
+}
+
+static int domain_map_locked(u32 owner, paddr_t physical, u32 pages, u64 *iova) {
     struct amd_iommu64_domain *d = find_domain(owner);
     if (!d || d->suspended || !physical || (physical & 0xFFF) || !pages ||
         pages > 256 || !iova)
@@ -397,7 +405,14 @@ static int domain_map(u32 owner, paddr_t physical, u32 pages, u64 *iova) {
     return 0;
 }
 
-static int domain_translate(u32 owner, u64 iova, paddr_t *physical) {
+static int domain_map(u32 owner, paddr_t physical, u32 pages, u64 *iova) {
+    klock_acquire(&iommu_klock);
+    int result = domain_map_locked(owner, physical, pages, iova);
+    klock_release(&iommu_klock);
+    return result;
+}
+
+static int domain_translate_locked(u32 owner, u64 iova, paddr_t *physical) {
     struct amd_iommu64_domain *d = find_domain(owner);
     if (!d || d->suspended || !physical) return -1;
     u64 *pte = domain_pte(d, iova & ~0xFFFULL, 0);
@@ -406,7 +421,7 @@ static int domain_translate(u32 owner, u64 iova, paddr_t *physical) {
     return 0;
 }
 
-static int domain_unmap(u32 owner, u64 iova, u32 pages) {
+static int domain_unmap_locked(u32 owner, u64 iova, u32 pages) {
     struct amd_iommu64_domain *d = find_domain(owner);
     if (!d) return -1;
     for (u32 i = 0; i < AMD_IOMMU_MAPPING_MAX; i++) {
@@ -426,7 +441,14 @@ static int domain_unmap(u32 owner, u64 iova, u32 pages) {
     return -1;
 }
 
-static int domain_destroy(u32 owner) {
+static int domain_unmap(u32 owner, u64 iova, u32 pages) {
+    klock_acquire(&iommu_klock);
+    int result = domain_unmap_locked(owner, iova, pages);
+    klock_release(&iommu_klock);
+    return result;
+}
+
+static int domain_destroy_locked(u32 owner) {
     struct amd_iommu64_domain *d = find_domain(owner);
     if (!d) return -1;
     set_dte(d, 0);
@@ -440,7 +462,14 @@ static int domain_destroy(u32 owner) {
     return 0;
 }
 
-static int domain_suspend(u32 owner) {
+static int domain_destroy(u32 owner) {
+    klock_acquire(&iommu_klock);
+    int result = domain_destroy_locked(owner);
+    klock_release(&iommu_klock);
+    return result;
+}
+
+static int domain_suspend_locked(u32 owner) {
     struct amd_iommu64_domain *d = find_domain(owner);
     if (!d || d->suspended) return d && d->suspended ? 0 : -1;
     for (u32 i = 0; i < AMD_IOMMU_MAPPING_MAX; i++) {
@@ -456,7 +485,14 @@ static int domain_suspend(u32 owner) {
     return flush_domain(d);
 }
 
-static int domain_resume(u32 owner) {
+static int domain_suspend(u32 owner) {
+    klock_acquire(&iommu_klock);
+    int result = domain_suspend_locked(owner);
+    klock_release(&iommu_klock);
+    return result;
+}
+
+static int domain_resume_locked(u32 owner) {
     struct amd_iommu64_domain *d = find_domain(owner);
     if (!d || !d->suspended) return d && !d->suspended ? 0 : -1;
     for (u32 i = 0; i < AMD_IOMMU_MAPPING_MAX; i++) {
@@ -474,7 +510,14 @@ static int domain_resume(u32 owner) {
     return 0;
 }
 
-static int amd_fault_poll(struct iommu_fault *fault) {
+static int domain_resume(u32 owner) {
+    klock_acquire(&iommu_klock);
+    int result = domain_resume_locked(owner);
+    klock_release(&iommu_klock);
+    return result;
+}
+
+static int amd_fault_poll_locked(struct iommu_fault *fault) {
     if (!fault) return -1;
     for (u32 i = 0; i < unit_count; i++) {
         struct amd_iommu64_unit *unit = &units[i];
@@ -502,6 +545,13 @@ static int amd_fault_poll(struct iommu_fault *fault) {
     return 0;
 }
 
+static int amd_fault_poll(struct iommu_fault *fault) {
+    klock_acquire(&iommu_klock);
+    int result = amd_fault_poll_locked(fault);
+    klock_release(&iommu_klock);
+    return result;
+}
+
 static int backend_enable(void) {
     return tables_ready ? 0 : -1;
 }
@@ -510,8 +560,15 @@ static int backend_enabled(void) {
     return tables_ready;
 }
 
-static int backend_exists(u32 owner) {
+static int backend_exists_locked(u32 owner) {
     return find_domain(owner) != 0;
+}
+
+static int backend_exists(u32 owner) {
+    klock_acquire(&iommu_klock);
+    int result = backend_exists_locked(owner);
+    klock_release(&iommu_klock);
+    return result;
 }
 
 int amd_iommu64_register_backend(void) {
@@ -537,17 +594,19 @@ int amd_iommu64_test_domain(struct kernel_object *pci) {
     u32 owner = 0xA00D;
     u64 iova = 0;
     paddr_t translated = 0;
-    int valid = physical && !domain_create(owner, pci) &&
-        !domain_map(owner, physical, 1, &iova) &&
-        !domain_translate(owner, iova + 37, &translated) &&
-        translated == physical + 37 && !domain_suspend(owner) &&
-        domain_translate(owner, iova, &translated) < 0 &&
-        !domain_resume(owner) &&
-        !domain_translate(owner, iova + 37, &translated) &&
-        translated == physical + 37 && !domain_unmap(owner, iova, 1) &&
-        domain_translate(owner, iova, &translated) < 0 &&
-        !domain_destroy(owner);
-    if (find_domain(owner)) domain_destroy(owner);
+    klock_acquire(&iommu_klock);
+    int valid = physical && !domain_create_locked(owner, pci) &&
+        !domain_map_locked(owner, physical, 1, &iova) &&
+        !domain_translate_locked(owner, iova + 37, &translated) &&
+        translated == physical + 37 && !domain_suspend_locked(owner) &&
+        domain_translate_locked(owner, iova, &translated) < 0 &&
+        !domain_resume_locked(owner) &&
+        !domain_translate_locked(owner, iova + 37, &translated) &&
+        translated == physical + 37 && !domain_unmap_locked(owner, iova, 1) &&
+        domain_translate_locked(owner, iova, &translated) < 0 &&
+        !domain_destroy_locked(owner);
+    if (find_domain(owner)) domain_destroy_locked(owner);
+    klock_release(&iommu_klock);
     if (physical) pmm_free_page(physical);
     return valid && pmm_free_pages() == free_pages ? 0 : -1;
 }

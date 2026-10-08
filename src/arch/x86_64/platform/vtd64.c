@@ -4,6 +4,7 @@
 #include "pmm.h"
 #include "resource.h"
 #include "iommu.h"
+#include "klock.h"
 
 #define VTD64_UNIT_MAX ACPI_MAX_DMAR_UNITS
 #define VTD64_DOMAIN_MAX 8
@@ -565,7 +566,7 @@ int vtd64_ir_active(void) {
 // fixed, physically-addressed interrupt validated against source_id. A run lets
 // multi-message MSI share one base handle while the device selects the member
 // through the subhandle, so vectors are assigned base..base+count-1.
-int vtd64_ir_allocate(u16 source_id, u8 vector, u8 destination,
+int vtd64_ir_allocate_locked(u16 source_id, u8 vector, u8 destination,
                       int level, u16 count, u16 *handle) {
     if (!ir_enabled || !handle || !count || count > VTD64_IR_ENTRIES)
         return -1;
@@ -604,7 +605,16 @@ int vtd64_ir_allocate(u16 source_id, u8 vector, u8 destination,
     return -1;
 }
 
-int vtd64_ir_entry(u16 handle, u64 *low, u64 *high) {
+int vtd64_ir_allocate(u16 source_id, u8 vector, u8 destination,
+                      int level, u16 count, u16 *handle) {
+    klock_acquire(&iommu_klock);
+    int result = vtd64_ir_allocate_locked(source_id, vector, destination,
+                                          level, count, handle);
+    klock_release(&iommu_klock);
+    return result;
+}
+
+int vtd64_ir_entry_locked(u16 handle, u64 *low, u64 *high) {
     if (!ir_table || handle >= VTD64_IR_ENTRIES || !low || !high) return -1;
     u64 *irte = &page(ir_table)[(u32)handle * 2];
     *low = irte[0];
@@ -612,7 +622,14 @@ int vtd64_ir_entry(u16 handle, u64 *low, u64 *high) {
     return 0;
 }
 
-int vtd64_ir_release(u16 handle, u16 count) {
+int vtd64_ir_entry(u16 handle, u64 *low, u64 *high) {
+    klock_acquire(&iommu_klock);
+    int result = vtd64_ir_entry_locked(handle, low, high);
+    klock_release(&iommu_klock);
+    return result;
+}
+
+int vtd64_ir_release_locked(u16 handle, u16 count) {
     if (!ir_enabled || !count || (u32)handle + count > VTD64_IR_ENTRIES)
         return -1;
     for (u16 n = 0; n < count; n++)
@@ -628,11 +645,18 @@ int vtd64_ir_release(u16 handle, u16 count) {
     return invalidate_iec();
 }
 
+int vtd64_ir_release(u16 handle, u16 count) {
+    klock_acquire(&iommu_klock);
+    int result = vtd64_ir_release_locked(handle, count);
+    klock_release(&iommu_klock);
+    return result;
+}
+
 // Remappable MSI address carries the entry handle, not an APIC id: the format
 // bit routes the request through the remapping table where destination and
 // vector actually live. A multi-message group sets SHV so the device's message
 // number becomes the subhandle added to this base handle.
-void vtd64_ir_compose_msi(u16 handle, int multi, u32 *address, u32 *data) {
+void vtd64_ir_compose_msi_locked(u16 handle, int multi, u32 *address, u32 *data) {
     u32 value = 0xFEE00000u | (1u << 3) |
                 (((u32)handle & 0x7FFFu) << 5) |
                 ((((u32)handle >> 15) & 1u) << 2);
@@ -641,7 +665,13 @@ void vtd64_ir_compose_msi(u16 handle, int multi, u32 *address, u32 *data) {
     if (data) *data = 0;
 }
 
-void vtd64_ir_compose_ioapic(u16 handle, u8 vector, int level, int active_low,
+void vtd64_ir_compose_msi(u16 handle, int multi, u32 *address, u32 *data) {
+    klock_acquire(&iommu_klock);
+    vtd64_ir_compose_msi_locked(handle, multi, address, data);
+    klock_release(&iommu_klock);
+}
+
+void vtd64_ir_compose_ioapic_locked(u16 handle, u8 vector, int level, int active_low,
                              int masked, u32 *low, u32 *high) {
     u32 value = vector | ((((u32)handle >> 15) & 1u) << 11);
     if (active_low) value |= 1u << 13;
@@ -651,9 +681,17 @@ void vtd64_ir_compose_ioapic(u16 handle, u8 vector, int level, int active_low,
     if (high) *high = (1u << 16) | (((u32)handle & 0x7FFFu) << 17);
 }
 
+void vtd64_ir_compose_ioapic(u16 handle, u8 vector, int level, int active_low,
+                             int masked, u32 *low, u32 *high) {
+    klock_acquire(&iommu_klock);
+    vtd64_ir_compose_ioapic_locked(handle, vector, level, active_low, masked,
+                                   low, high);
+    klock_release(&iommu_klock);
+}
+
 // The IOAPIC has no config space to read a source-id from, so its remapping
 // entries take the source reported by its DMAR device scope (type 3).
-int vtd64_ir_ioapic_source_id(u16 *source_id) {
+int vtd64_ir_ioapic_source_id_locked(u16 *source_id) {
     const struct acpi_dmar_info *dmar = acpi64_dmar();
     if (!source_id || !dmar) return -1;
     for (u32 i = 0; i < dmar->scope_count; i++) {
@@ -664,6 +702,13 @@ int vtd64_ir_ioapic_source_id(u16 *source_id) {
         return 0;
     }
     return -1;
+}
+
+int vtd64_ir_ioapic_source_id(u16 *source_id) {
+    klock_acquire(&iommu_klock);
+    int result = vtd64_ir_ioapic_source_id_locked(source_id);
+    klock_release(&iommu_klock);
+    return result;
 }
 
 u32 vtd64_fault_count(void) {
@@ -694,7 +739,7 @@ int vtd64_fault_decode(u32 unit, u64 low, u64 high,
     return 0;
 }
 
-int vtd64_fault_poll(struct vtd64_fault *fault) {
+int vtd64_fault_poll_locked(struct vtd64_fault *fault) {
     if (!detected || !fault) return -1;
     for (u32 i = 0; i < unit_count; i++) {
         u32 status = reg32(units[i].regs, VTD64_REG_FSTS) & 0x7F;
@@ -717,6 +762,13 @@ int vtd64_fault_poll(struct vtd64_fault *fault) {
         write32(units[i].regs, VTD64_REG_FSTS, status);
     }
     return 0;
+}
+
+int vtd64_fault_poll(struct vtd64_fault *fault) {
+    klock_acquire(&iommu_klock);
+    int result = vtd64_fault_poll_locked(fault);
+    klock_release(&iommu_klock);
+    return result;
 }
 
 static int vtd64_iommu_fault_poll(struct iommu_fault *fault) {
@@ -750,7 +802,7 @@ int vtd64_register_backend(void) {
     return detected ? iommu_register(&backend) : -1;
 }
 
-int vtd64_domain_create(u32 owner, struct kernel_object *pci_object) {
+int vtd64_domain_create_locked(u32 owner, struct kernel_object *pci_object) {
     if (!detected || !owner || find_domain(owner)) return -1;
     const struct pci_resource *pci = pci_resource_get(pci_object);
     if (!pci) return -1;
@@ -798,7 +850,14 @@ int vtd64_domain_create(u32 owner, struct kernel_object *pci_object) {
     return -1;
 }
 
-int vtd64_domain_map(u32 owner, paddr_t physical, u32 pages, u64 *iova) {
+int vtd64_domain_create(u32 owner, struct kernel_object *pci_object) {
+    klock_acquire(&iommu_klock);
+    int result = vtd64_domain_create_locked(owner, pci_object);
+    klock_release(&iommu_klock);
+    return result;
+}
+
+int vtd64_domain_map_locked(u32 owner, paddr_t physical, u32 pages, u64 *iova) {
     struct vtd64_domain *d = find_domain(owner);
     if (!d || d->suspended || !iova || !physical || (physical & 0xFFF) ||
         !pages || pages > 256)
@@ -847,7 +906,14 @@ int vtd64_domain_map(u32 owner, paddr_t physical, u32 pages, u64 *iova) {
     return 0;
 }
 
-int vtd64_domain_unmap(u32 owner, u64 iova, u32 pages) {
+int vtd64_domain_map(u32 owner, paddr_t physical, u32 pages, u64 *iova) {
+    klock_acquire(&iommu_klock);
+    int result = vtd64_domain_map_locked(owner, physical, pages, iova);
+    klock_release(&iommu_klock);
+    return result;
+}
+
+int vtd64_domain_unmap_locked(u32 owner, u64 iova, u32 pages) {
     struct vtd64_domain *d = find_domain(owner);
     if (!d || !iova || (iova & 0xFFF) || !pages) return -1;
     for (u32 i = 0; i < VTD64_MAPPING_MAX; i++) {
@@ -869,7 +935,14 @@ int vtd64_domain_unmap(u32 owner, u64 iova, u32 pages) {
     return -1;
 }
 
-int vtd64_domain_translate(u32 owner, u64 iova, paddr_t *physical) {
+int vtd64_domain_unmap(u32 owner, u64 iova, u32 pages) {
+    klock_acquire(&iommu_klock);
+    int result = vtd64_domain_unmap_locked(owner, iova, pages);
+    klock_release(&iommu_klock);
+    return result;
+}
+
+int vtd64_domain_translate_locked(u32 owner, u64 iova, paddr_t *physical) {
     struct vtd64_domain *d = find_domain(owner);
     if (!d || d->suspended || !physical) return -1;
     u64 *pte = domain_pte(d, iova & ~0xFFFULL, 0);
@@ -878,11 +951,25 @@ int vtd64_domain_translate(u32 owner, u64 iova, paddr_t *physical) {
     return 0;
 }
 
-int vtd64_domain_exists(u32 owner) {
+int vtd64_domain_translate(u32 owner, u64 iova, paddr_t *physical) {
+    klock_acquire(&iommu_klock);
+    int result = vtd64_domain_translate_locked(owner, iova, physical);
+    klock_release(&iommu_klock);
+    return result;
+}
+
+int vtd64_domain_exists_locked(u32 owner) {
     return find_domain(owner) != 0;
 }
 
-int vtd64_domain_suspend(u32 owner) {
+int vtd64_domain_exists(u32 owner) {
+    klock_acquire(&iommu_klock);
+    int result = vtd64_domain_exists_locked(owner);
+    klock_release(&iommu_klock);
+    return result;
+}
+
+int vtd64_domain_suspend_locked(u32 owner) {
     struct vtd64_domain *d = find_domain(owner);
     if (!d || d->suspended) return d && d->suspended ? 0 : -1;
     for (u32 i = 0; i < VTD64_MAPPING_MAX; i++) {
@@ -898,7 +985,14 @@ int vtd64_domain_suspend(u32 owner) {
     return translation_enabled ? invalidate_mask(d->unit_mask) : 0;
 }
 
-int vtd64_domain_resume(u32 owner) {
+int vtd64_domain_suspend(u32 owner) {
+    klock_acquire(&iommu_klock);
+    int result = vtd64_domain_suspend_locked(owner);
+    klock_release(&iommu_klock);
+    return result;
+}
+
+int vtd64_domain_resume_locked(u32 owner) {
     struct vtd64_domain *d = find_domain(owner);
     if (!d || !d->suspended) return d && !d->suspended ? 0 : -1;
     for (u32 i = 0; i < VTD64_MAPPING_MAX; i++) {
@@ -927,7 +1021,14 @@ int vtd64_domain_resume(u32 owner) {
     return 0;
 }
 
-int vtd64_domain_destroy(u32 owner) {
+int vtd64_domain_resume(u32 owner) {
+    klock_acquire(&iommu_klock);
+    int result = vtd64_domain_resume_locked(owner);
+    klock_release(&iommu_klock);
+    return result;
+}
+
+int vtd64_domain_destroy_locked(u32 owner) {
     struct vtd64_domain *d = find_domain(owner);
     if (!d) return -1;
     clear_context(d);
@@ -941,4 +1042,11 @@ int vtd64_domain_destroy(u32 owner) {
     d->suspended = 0;
     d->active = 0;
     return 0;
+}
+
+int vtd64_domain_destroy(u32 owner) {
+    klock_acquire(&iommu_klock);
+    int result = vtd64_domain_destroy_locked(owner);
+    klock_release(&iommu_klock);
+    return result;
 }

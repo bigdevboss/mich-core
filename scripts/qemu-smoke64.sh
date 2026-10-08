@@ -990,6 +990,8 @@ if [ "$profile" = "smp" ]; then
         "Mich x86_64: SMP spawn storm pass" \
         "Mich x86_64: SMP net receive storm pass" \
         "Mich x86_64: SMP receive mailbox pass" \
+        "Mich x86_64: SMP resource storm pass" \
+        "Mich x86_64: SMP vector storm pass" \
         "Mich x86_64: SMP lock order pass" \
         "Mich x86_64: SMP dual-core userspace pass"
     do

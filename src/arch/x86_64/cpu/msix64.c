@@ -5,6 +5,7 @@
 #include "resource.h"
 #include "object.h"
 #include "vtd64.h"
+#include "klock.h"
 
 #define MSIX64_MAX 64
 
@@ -31,7 +32,7 @@ static struct msix64_state *state_for(u32 source) {
     return state->active ? state : 0;
 }
 
-static int msix_mask(u32 source, int masked) {
+static int msix_mask_locked(u32 source, int masked) {
     struct msix64_state *state = state_for(source);
     if (!state || !state->entry) return -1;
     if (!masked) {
@@ -47,7 +48,14 @@ static int msix_mask(u32 source, int masked) {
     return 0;
 }
 
-static void msix_release(u32 source) {
+static int msix_mask(u32 source, int masked) {
+    klock_acquire(&irq_program_klock);
+    int result = msix_mask_locked(source, masked);
+    klock_release(&irq_program_klock);
+    return result;
+}
+
+static void msix_release_locked(u32 source) {
     struct msix64_state *state = state_for(source);
     if (!state) return;
     if (state->entry) state->entry[3] |= 1u;
@@ -58,8 +66,8 @@ static void msix_release(u32 source) {
     if (table && !object_retain(table->pci)) pci = table->pci;
     if (state->mapping)
         vm64_iounmap(state->mapping, state->mapping_length);
-    uptr_t owner = vector64_owner(state->vector);
-    if (owner) vector64_release(state->vector, owner);
+    uptr_t owner = vector64_owner_locked(state->vector);
+    if (owner) vector64_release_locked(state->vector, owner);
     if (state->table) object_release(state->table);
     state->table = 0;
     state->irq = 0;
@@ -85,7 +93,14 @@ static void msix_release(u32 source) {
     }
 }
 
+static void msix_release(u32 source) {
+    klock_acquire(&irq_program_klock);
+    msix_release_locked(source);
+    klock_release(&irq_program_klock);
+}
+
 int msix64_init(u8 destination_apic_id) {
+    klock_acquire(&irq_program_klock);
     destination_id = destination_apic_id;
     for (u32 index = 0; index < MSIX64_MAX; index++) {
         states[index].table = 0;
@@ -100,12 +115,13 @@ int msix64_init(u8 destination_apic_id) {
         states[index].enabled = 0;
         states[index].active = 0;
     }
+    klock_release(&irq_program_klock);
     return irq_resource_set_backend(IRQ_CONTROLLER_MSIX,
                                     msix_mask, msix_release);
 }
 
-struct kernel_object *msix64_create(struct kernel_object *table_object,
-                                    u32 entry_index) {
+static struct kernel_object *msix_create_locked(
+    struct kernel_object *table_object, u32 entry_index) {
     const struct msix_table_resource *table =
         msix_table_resource_get(table_object);
     if (!table || entry_index >= table->entries) return 0;
@@ -145,9 +161,9 @@ struct kernel_object *msix64_create(struct kernel_object *table_object,
         state->irq = 0;
         state->enabled = 0;
         state->active = 1;
-        int vector = vector64_allocate((uptr_t)state);
+        int vector = vector64_allocate_locked((uptr_t)state);
         if (vector < 0) {
-            msix_release(index + 1);
+            msix_release_locked(index + 1);
             return 0;
         }
         state->vector = (u8)vector;
@@ -160,7 +176,7 @@ struct kernel_object *msix64_create(struct kernel_object *table_object,
             u16 handle;
             if (vtd64_ir_allocate(sid, (u8)vector, destination_id, 0, 1,
                                   &handle)) {
-                msix_release(index + 1);
+                msix_release_locked(index + 1);
                 return 0;
             }
             vtd64_ir_compose_msi(handle, 0, &address, &data);
@@ -175,11 +191,11 @@ struct kernel_object *msix64_create(struct kernel_object *table_object,
                                      (u32)vector, IRQ_TRIGGER_EDGE,
                                      IRQ_POLARITY_HIGH);
         if (!irq) {
-            msix_release(index + 1);
+            msix_release_locked(index + 1);
             return 0;
         }
         state->irq = irq;
-        if (vector64_transfer((u8)vector, (uptr_t)state, (uptr_t)irq)) {
+        if (vector64_transfer_locked((u8)vector, (uptr_t)state, (uptr_t)irq)) {
             object_release(irq);
             return 0;
         }
@@ -188,9 +204,17 @@ struct kernel_object *msix64_create(struct kernel_object *table_object,
     return 0;
 }
 
-int msix64_irq_entry(struct kernel_object *irq, struct kernel_object *pci,
-                     u32 *entry_index) {
-    if (!irq || !pci || !entry_index) return -1;
+struct kernel_object *msix64_create(struct kernel_object *table_object,
+                                    u32 entry_index) {
+    klock_acquire(&irq_program_klock);
+    struct kernel_object *irq = msix_create_locked(table_object, entry_index);
+    klock_release(&irq_program_klock);
+    return irq;
+}
+
+static int msix_irq_entry_locked(struct kernel_object *irq,
+                                 struct kernel_object *pci,
+                                 u32 *entry_index) {
     for (u32 index = 0; index < MSIX64_MAX; index++) {
         struct msix64_state *state = &states[index];
         if (!state->active || state->irq != irq) continue;
@@ -203,9 +227,19 @@ int msix64_irq_entry(struct kernel_object *irq, struct kernel_object *pci,
     return -1;
 }
 
-int msix64_create_group(struct kernel_object *table, u32 first_entry,
-                        u32 count, struct kernel_object **irqs,
-                        u32 capacity) {
+int msix64_irq_entry(struct kernel_object *irq, struct kernel_object *pci,
+                     u32 *entry_index) {
+    if (!irq || !pci || !entry_index) return -1;
+    klock_acquire(&irq_program_klock);
+    int result = msix_irq_entry_locked(irq, pci, entry_index);
+    klock_release(&irq_program_klock);
+    return result;
+}
+
+static int msix_create_group_locked(struct kernel_object *table,
+                                    u32 first_entry, u32 count,
+                                    struct kernel_object **irqs,
+                                    u32 capacity) {
     const struct msix_table_resource *resource =
         msix_table_resource_get(table);
     if (!resource || !irqs || !count || count > capacity ||
@@ -215,7 +249,7 @@ int msix64_create_group(struct kernel_object *table, u32 first_entry,
     u32 created = 0;
     while (created < count) {
         struct kernel_object *irq =
-            msix64_create(table, first_entry + created);
+            msix_create_locked(table, first_entry + created);
         if (!irq) break;
         irqs[created++] = irq;
     }
@@ -223,4 +257,14 @@ int msix64_create_group(struct kernel_object *table, u32 first_entry,
     while (created) object_release(irqs[--created]);
     for (u32 index = 0; index < capacity; index++) irqs[index] = 0;
     return -1;
+}
+
+int msix64_create_group(struct kernel_object *table, u32 first_entry,
+                        u32 count, struct kernel_object **irqs,
+                        u32 capacity) {
+    klock_acquire(&irq_program_klock);
+    int result = msix_create_group_locked(table, first_entry, count, irqs,
+                                          capacity);
+    klock_release(&irq_program_klock);
+    return result;
 }
