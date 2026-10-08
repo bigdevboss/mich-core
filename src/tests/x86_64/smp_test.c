@@ -99,14 +99,16 @@ static int test_smp64_spin(void) {
         if (smp64_ipi_cpu(index, SMP64_IPI_WORK))
             return -1;
     smp64_spin_bsp(SMP64_SPIN_TURNS);
-    // Four times the ordinary window: three APs share one ticket lock, and
-    // under TCG on a contended host the last of them can still be draining
-    // its turns a second after the BSP finished, which is slowness and not
-    // a lost CPU. A CPU that never reports is still a failure.
+    // Ten times the ordinary window: the APs share one ticket lock and one
+    // host core can carry several of them, so under TCG the last to finish
+    // can be many seconds behind the BSP. That is slowness, not a lost CPU,
+    // and a CPU that never reports still fails here.
     for (u32 index = 1; index < n; index++)
         if (wait_rounds(smp64_work_done, index,
-                        SMP64_BOOT_TIMEOUT_MS / 10 * 4)) {
-            serial64_write("Mich x86_64: SMP spinlock stress lost a cpu\n");
+                        SMP64_BOOT_TIMEOUT_MS / 10 * 10)) {
+            serial64_write("Mich x86_64: SMP spinlock stress lost cpu ");
+            serial64_hex(index);
+            serial64_write("\n");
             return -1;
         }
     if (smp64_spin_count() != (u64)n * SMP64_SPIN_TURNS) {
