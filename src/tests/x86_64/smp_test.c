@@ -567,6 +567,8 @@ static int test_smp64_refcount_concur(void) {
 // window is longer: four CPUs share one host here, and a CPU that is only
 // slow must not read as a CPU that stopped.
 #define SMP64_SPAWN_ROUNDS (SMP64_BOOT_TIMEOUT_MS / 10 * 15)
+#define SMP64_PARALLEL_WINDOW_MS 20
+#define SMP64_PARALLEL_ROUNDS 20
 
 // What the storm must not move is the pool's capacity, not the free-slot
 // count: allocating past the grown part of the pool turns a never-used slot
@@ -917,6 +919,7 @@ static int test_smp64_parallel(void) {
     u64 b1;
     u32 slot_a;
     u32 slot_b;
+    u32 both = 0;
     u64 current_a;
     u64 current_b;
     if (smp64_cpu_count() < 3) {
@@ -948,11 +951,29 @@ static int test_smp64_parallel(void) {
         reason = 2;
     a0 = ca[0];
     b0 = cb[0];
+    a1 = a0;
+    b1 = b0;
     if (!reason) {
-        apic64_delay_ms(20);
-        a1 = ca[0];
-        b1 = cb[0];
-        if (a1 <= a0 || b1 <= b0) reason = 3;
+        // A starved vCPU can hold one window still, which reads exactly like a
+        // task that never ran, so keep sampling until a window shows both
+        // counters moving against that window's own base.
+        for (u32 round = 0; round < SMP64_PARALLEL_ROUNDS; round++) {
+            u64 base_a = ca[0];
+            u64 base_b = cb[0];
+            apic64_delay_ms(SMP64_PARALLEL_WINDOW_MS);
+            a1 = ca[0];
+            b1 = cb[0];
+            if (a1 > base_a && b1 > base_b) {
+                both = 1;
+                break;
+            }
+            a1 = base_a;
+            b1 = base_b;
+        }
+        if (!both) reason = 3;
+        if (smp64_cpu_current(index_a) != slot_a ||
+            smp64_cpu_current(index_b) != slot_b)
+            reason = 4;
     } else {
         a1 = ca[0];
         b1 = cb[0];
