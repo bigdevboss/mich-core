@@ -11,6 +11,8 @@
 #include "task.h"
 #include "vm64.h"
 #include "kernel64_internal.h"
+#include "pmm.h"
+#include "object.h"
 
 // Trampoline chunks (smp_tramp.asm) placed by the BSP at SMP64_TRAMP_BASE: entry
 // 0x000, overlay 0x500, GDTs 0x100, code 0x200/0x300/0x400. SIPI starts the AP at
@@ -58,6 +60,8 @@ struct smp64_cpu {
     volatile u32 syscall_live;
     // Set by the reschedule IPI, consumed by the interrupt tail.
     volatile u32 resched;
+    // Set by the shared-state stress when this CPU finishes its turns.
+    volatile u32 stress_done;
 };
 
 struct smp64_stack {
@@ -79,6 +83,11 @@ static u8 smp64_bsp_id;
 static struct smp64_cpu *smp64_cpu_by_apic[256];
 static struct spinlock smp64_spin = SPINLOCK_INIT;
 static volatile u64 smp64_spin_counter;
+static volatile u64 smp64_stress_page_count;
+static volatile u64 smp64_stress_object_count;
+static volatile u32 smp64_stress_failure;
+static u32 smp64_stress_turns;
+static struct kernel_object *smp64_stress_object;
 static u64 smp64_kernel_cr3;
 static u64 smp64_kernel_cr4;
 static u64 smp64_kernel_efer;
@@ -557,6 +566,68 @@ u64 smp64_spin_count(void) {
     return smp64_spin_counter;
 }
 
+// The two-CPU hammer the allocator and refcount tests share. Four pages are
+// held at once, so a page handed out to both CPUs at the same time is caught
+// here and not by the free count alone; the shared object takes one retain
+// and one release per turn, so a lost refcount update ends the storm with a
+// count that cannot come from the arithmetic.
+void smp64_stress_run(u32 turns) {
+    for (u32 turn = 0; turn < turns; turn++) {
+        paddr_t held[SMP64_STRESS_HOLD];
+        for (u32 slot = 0; slot < SMP64_STRESS_HOLD; slot++) {
+            held[slot] = pmm_alloc_page();
+            if (!held[slot]) {
+                __atomic_store_n(&smp64_stress_failure, 1, __ATOMIC_RELEASE);
+                return;
+            }
+            for (u32 other = 0; other < slot; other++)
+                if (held[other] == held[slot]) {
+                    __atomic_store_n(&smp64_stress_failure, 1,
+                                     __ATOMIC_RELEASE);
+                    return;
+                }
+        }
+        for (u32 slot = 0; slot < SMP64_STRESS_HOLD; slot++)
+            pmm_free_page(held[slot]);
+        __atomic_fetch_add(&smp64_stress_page_count, SMP64_STRESS_HOLD,
+                           __ATOMIC_RELAXED);
+        if (!smp64_stress_object) continue;
+        if (object_retain(smp64_stress_object)) {
+            __atomic_store_n(&smp64_stress_failure, 1, __ATOMIC_RELEASE);
+            return;
+        }
+        object_release(smp64_stress_object);
+        __atomic_fetch_add(&smp64_stress_object_count, 1, __ATOMIC_RELAXED);
+    }
+}
+
+void smp64_stress_reset(u32 turns, struct kernel_object *shared) {
+    smp64_stress_turns = turns;
+    smp64_stress_object = shared;
+    smp64_stress_page_count = 0;
+    smp64_stress_object_count = 0;
+    smp64_stress_failure = 0;
+    for (u32 index = 0; index < SMP64_MAX; index++)
+        smp64_cpus[index].stress_done = 0;
+}
+
+u64 smp64_stress_pages(void) {
+    return smp64_stress_page_count;
+}
+
+u64 smp64_stress_objects(void) {
+    return smp64_stress_object_count;
+}
+
+u32 smp64_stress_failed(void) {
+    return smp64_stress_failure;
+}
+
+u32 smp64_stress_done(u32 index) {
+    struct smp64_cpu *cpu = smp64_cpu(index);
+    return cpu ? cpu->stress_done : 0;
+}
+
 // Dedicated AP user slot, never init64-two. Stub bytes come from the caller (tests
 // pass fixtures, host_start passes the idle spin). pin maps the task; arm also makes
 // it this CPU's current for IPI_USER.
@@ -751,6 +822,9 @@ void smp64_ipi_dispatch(u32 vector) {
             spin_unlock(&smp64_spin);
         }
         __atomic_store_n(&cpu->work_done, 1, __ATOMIC_RELEASE);
+    } else if (vector == SMP64_IPI_STRESS) {
+        smp64_stress_run(smp64_stress_turns);
+        __atomic_store_n(&cpu->stress_done, 1, __ATOMIC_RELEASE);
     } else if (vector == SMP64_IPI_TIMER) {
         apic64_timer_enable();
     } else if (vector == SMP64_IPI_TIMER_OFF) {

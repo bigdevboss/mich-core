@@ -9,6 +9,9 @@
 #include "vm64.h"
 #include "kernel64_internal.h"
 #include "serial64.h"
+#include "pmm.h"
+#include "object.h"
+#include "klock.h"
 
 #define SMP64_USER_GETPID 16
 #define SMP64_USER_STUB_AFTER 7
@@ -54,13 +57,16 @@ static const u8 smp64_bad_return_stub[] = {
     0xEB, 0xFE
 };
 
-static int wait_flag(u32 (*load)(u32), u32 index) {
-    u32 deadline = SMP64_BOOT_TIMEOUT_MS / 10;
-    while (deadline--) {
+static int wait_rounds(u32 (*load)(u32), u32 index, u32 rounds) {
+    while (rounds--) {
         if (load(index)) return 0;
         apic64_delay_ms(10);
     }
     return -1;
+}
+
+static int wait_flag(u32 (*load)(u32), u32 index) {
+    return wait_rounds(load, index, SMP64_BOOT_TIMEOUT_MS / 10);
 }
 
 static int test_smp64_ipi(void) {
@@ -83,10 +89,20 @@ static int test_smp64_spin(void) {
         if (smp64_ipi_cpu(index, SMP64_IPI_WORK))
             return -1;
     smp64_spin_bsp(SMP64_SPIN_TURNS);
+    // Four times the ordinary window: three APs share one ticket lock, and
+    // under TCG on a contended host the last of them can still be draining
+    // its turns a second after the BSP finished, which is slowness and not
+    // a lost CPU. A CPU that never reports is still a failure.
     for (u32 index = 1; index < n; index++)
-        if (wait_flag(smp64_work_done, index)) return -1;
-    if (smp64_spin_count() != (u64)n * SMP64_SPIN_TURNS)
+        if (wait_rounds(smp64_work_done, index,
+                        SMP64_BOOT_TIMEOUT_MS / 10 * 4)) {
+            serial64_write("Mich x86_64: SMP spinlock stress lost a cpu\n");
+            return -1;
+        }
+    if (smp64_spin_count() != (u64)n * SMP64_SPIN_TURNS) {
+        serial64_write("Mich x86_64: SMP spinlock stress short count\n");
         return -1;
+    }
     return 0;
 }
 
@@ -475,6 +491,91 @@ static int test_smp64_contain(void) {
     return 0;
 }
 
+// The allocator is shared the moment two CPUs run at once. Every CPU holds
+// four pages at a time, so a page handed to both of them is caught here, and
+// the free-page count has to land exactly back on the baseline: that is what
+// no lost update means for the bitmap and the refcounts.
+static int test_smp64_alloc_concur(void) {
+    u32 n = smp64_cpu_count();
+    u64 before = pmm_free_pages();
+    smp64_stress_reset(SMP64_STRESS_TURNS, 0);
+    for (u32 index = 1; index < n; index++)
+        if (smp64_ipi_cpu(index, SMP64_IPI_STRESS)) return -1;
+    smp64_stress_run(SMP64_STRESS_TURNS);
+    for (u32 index = 1; index < n; index++)
+        if (wait_rounds(smp64_stress_done, index,
+                        SMP64_BOOT_TIMEOUT_MS / 10 * 4))
+            return -1;
+    if (smp64_stress_failed()) return -1;
+    if (smp64_stress_pages() !=
+        (u64)n * SMP64_STRESS_TURNS * SMP64_STRESS_HOLD)
+        return -1;
+    if (pmm_free_pages() != before) return -1;
+    return 0;
+}
+
+static volatile u32 smp64_destroy_count;
+
+static void smp64_stress_destroy(struct kernel_object *object) {
+    (void)object;
+    __atomic_fetch_add(&smp64_destroy_count, 1, __ATOMIC_RELAXED);
+}
+
+// One object both CPUs retain and release while they hammer the table. The
+// arithmetic is exact: every turn takes one reference and drops it, so the
+// count after the storm is the count before it. A lost update shows as a
+// count that cannot come from that arithmetic, and the destroy callback
+// firing more than once shows the object died early.
+static int test_smp64_refcount_concur(void) {
+    u32 n = smp64_cpu_count();
+    u32 active = object_active_count();
+    int failed = 0;
+    smp64_destroy_count = 0;
+    struct kernel_object *shared =
+        object_create(KOBJECT_PAGE, 0, smp64_stress_destroy);
+    if (!shared) return -1;
+    smp64_stress_reset(SMP64_STRESS_TURNS, shared);
+    for (u32 index = 1; index < n; index++)
+        if (smp64_ipi_cpu(index, SMP64_IPI_STRESS)) failed = 1;
+    if (!failed) {
+        smp64_stress_run(SMP64_STRESS_TURNS);
+        for (u32 index = 1; index < n; index++)
+            if (wait_rounds(smp64_stress_done, index,
+                            SMP64_BOOT_TIMEOUT_MS / 10 * 4))
+                failed = 1;
+    }
+    if (smp64_stress_failed()) failed = 1;
+    if (smp64_stress_objects() != (u64)n * SMP64_STRESS_TURNS) failed = 1;
+    if (shared->references != 1) failed = 1;
+    object_release(shared);
+    if (smp64_destroy_count != 1) failed = 1;
+    if (object_active_count() != active) failed = 1;
+    return failed ? -1 : 0;
+}
+
+// The level checker is what turns a would-be deadlock into a named abort, so
+// the battery has to show it rejects the pairs the order forbids and that
+// the record follows real nesting. The locks here are the test's own: the
+// point is the checker, not the subsystems it guards.
+static int test_smp64_lockorder(void) {
+    static struct klock outer = KLOCK_INIT(KLOCK_LEVEL_OBJECT);
+    static struct klock inner = KLOCK_INIT(KLOCK_LEVEL_PMM);
+    if (klock_order_ok(0, KLOCK_LEVEL_POOL) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_POOL, KLOCK_LEVEL_PMM) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_PMM, KLOCK_LEVEL_PMM) != 0) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_PMM, KLOCK_LEVEL_POOL) != 0) return -1;
+    if (klock_held_level() != 0) return -1;
+    klock_acquire(&outer);
+    if (klock_held_level() != KLOCK_LEVEL_OBJECT) return -1;
+    klock_acquire(&inner);
+    if (klock_held_level() != KLOCK_LEVEL_PMM) return -1;
+    klock_release(&inner);
+    if (klock_held_level() != KLOCK_LEVEL_OBJECT) return -1;
+    klock_release(&outer);
+    if (klock_held_level() != 0) return -1;
+    return 0;
+}
+
 // Two ordinary pinned tasks on two CPUs at once. Both counts have to move
 // inside one sampling window: that is what concurrent means here, and two
 // sequential runs would not move both counts in the same window.
@@ -716,6 +817,22 @@ int tests64_run_smp(void) {
         return -1;
     }
     serial64_write("Mich x86_64: SMP AP syscall containment pass\n");
+    if (test_report_record(TEST_ID_SMP_ALLOC, test_smp64_alloc_concur())) {
+        irq_restore(irq_state);
+        return -1;
+    }
+    serial64_write("Mich x86_64: SMP allocator concurrency pass\n");
+    if (test_report_record(TEST_ID_SMP_REFCOUNT,
+                           test_smp64_refcount_concur())) {
+        irq_restore(irq_state);
+        return -1;
+    }
+    serial64_write("Mich x86_64: SMP refcount concurrency pass\n");
+    if (test_report_record(TEST_ID_SMP_LOCKORDER, test_smp64_lockorder())) {
+        irq_restore(irq_state);
+        return -1;
+    }
+    serial64_write("Mich x86_64: SMP lock order pass\n");
     // This one reports its own pass line: the counts it measured are part
     // of the claim, and at two CPUs it says it was skipped instead.
     if (test_report_record(TEST_ID_SMP_PARALLEL, test_smp64_parallel())) {

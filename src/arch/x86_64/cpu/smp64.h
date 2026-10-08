@@ -29,6 +29,9 @@
 // A CPU told to look at its runnable set now: a parked AP takes a task
 // pinned to it, and one already in ring 3 switches the way its tick would.
 #define SMP64_IPI_RESCHED 0x48
+// Test-only: parks every AP in the shared-state stress loop, so the allocator
+// and the object table are entered by two CPUs at once on purpose.
+#define SMP64_IPI_STRESS 0x49
 #define SMP64_IPI_FIRST 0x41
 #define SMP64_IPI_LAST 0x4F
 #define SMP64_CURRENT_NONE 0xFFFFFFFFu
@@ -108,6 +111,15 @@ int smp64_sysstack_ok_cpu(u32 index);
 void smp64_spin_reset(void);
 void smp64_spin_bsp(u32 turns);
 u64 smp64_spin_count(void);
+#define SMP64_STRESS_TURNS 32
+#define SMP64_STRESS_HOLD 4
+struct kernel_object;
+void smp64_stress_reset(u32 turns, struct kernel_object *shared);
+void smp64_stress_run(u32 turns);
+u64 smp64_stress_pages(void);
+u64 smp64_stress_objects(void);
+u32 smp64_stress_failed(void);
+u32 smp64_stress_done(u32 index);
 int smp64_arm_user(u32 index, const u8 *stub, u32 size);
 int smp64_pin_user(u32 index, const u8 *stub, u32 size, u32 *slot_out);
 void smp64_disarm_user(u32 index);

@@ -1,11 +1,16 @@
 #include "pmm.h"
 #include "serial.h"
 #include "protos.h"
+#include "klock.h"
 
 #define PAGE_SIZE 4096
 #define BITMAP_SIZE 0x20000
 #define BITMAP_BITS (BITMAP_SIZE * 8)
 #define E820_USABLE 1
+
+// S2's transitional cover for the allocator: the bitmap, the page refcounts
+// and the free count move together, and two CPUs reach them at once now.
+static struct klock pmm_klock = KLOCK_INIT(KLOCK_LEVEL_PMM);
 
 struct e820_entry {
     unsigned long long addr;
@@ -142,9 +147,15 @@ paddr_t pmm_alloc_page_range(paddr_t start, paddr_t end) {
     if (limit64 > alloc_page_limit) limit64 = alloc_page_limit;
     if (limit64 > (u64)max_page + 1) limit64 = (u64)max_page + 1;
     if (first64 < 1) first64 = 1;
-    for (u32 page = (u32)first64; page < (u32)limit64; page++)
-        if (!(bitmap[page / 8] & (1u << (page % 8))))
-            return pmm_take_page(page);
+    klock_acquire(&pmm_klock);
+    for (u32 page = (u32)first64; page < (u32)limit64; page++) {
+        if (!(bitmap[page / 8] & (1u << (page % 8)))) {
+            paddr_t physical = pmm_take_page(page);
+            klock_release(&pmm_klock);
+            return physical;
+        }
+    }
+    klock_release(&pmm_klock);
     return 0;
 }
 
@@ -152,12 +163,22 @@ paddr_t pmm_alloc_page(void) {
     u32 high_start = 0x1000000 / PAGE_SIZE;
     u32 limit = max_page + 1;
     if (limit > alloc_page_limit) limit = alloc_page_limit;
-    for (u32 page = high_start; page < limit; page++)
-        if (!(bitmap[page / 8] & (1u << (page % 8))))
-            return pmm_take_page(page);
-    for (u32 page = 1; page < high_start && page < limit; page++)
-        if (!(bitmap[page / 8] & (1u << (page % 8))))
-            return pmm_take_page(page);
+    klock_acquire(&pmm_klock);
+    for (u32 page = high_start; page < limit; page++) {
+        if (!(bitmap[page / 8] & (1u << (page % 8)))) {
+            paddr_t physical = pmm_take_page(page);
+            klock_release(&pmm_klock);
+            return physical;
+        }
+    }
+    for (u32 page = 1; page < high_start && page < limit; page++) {
+        if (!(bitmap[page / 8] & (1u << (page % 8)))) {
+            paddr_t physical = pmm_take_page(page);
+            klock_release(&pmm_klock);
+            return physical;
+        }
+    }
+    klock_release(&pmm_klock);
     return 0;
 }
 
@@ -165,21 +186,34 @@ paddr_t pmm_alloc_page_low(void) {
     u32 limit = 0x1000000 / PAGE_SIZE;
     if (limit > alloc_page_limit) limit = alloc_page_limit;
     if (limit > max_page + 1) limit = max_page + 1;
-    for (u32 page = 1; page < limit; page++)
-        if (!(bitmap[page / 8] & (1u << (page % 8))))
-            return pmm_take_page(page);
+    klock_acquire(&pmm_klock);
+    for (u32 page = 1; page < limit; page++) {
+        if (!(bitmap[page / 8] & (1u << (page % 8)))) {
+            paddr_t physical = pmm_take_page(page);
+            klock_release(&pmm_klock);
+            return physical;
+        }
+    }
+    klock_release(&pmm_klock);
     return 0;
 }
 
 paddr_t pmm_alloc_contiguous(u32 pages, paddr_t max_addr) {
-    if (!pages || pages > free_pages) return 0;
+    klock_acquire(&pmm_klock);
+    if (!pages || pages > free_pages) {
+        klock_release(&pmm_klock);
+        return 0;
+    }
 
     u64 address_limit = (u64)max_addr + 1;
     u32 page_limit = address_limit ? (u32)(address_limit / PAGE_SIZE)
                                    : alloc_page_limit;
     if (page_limit > alloc_page_limit) page_limit = alloc_page_limit;
     if (page_limit > max_page + 1) page_limit = max_page + 1;
-    if (pages > page_limit) return 0;
+    if (pages > page_limit) {
+        klock_release(&pmm_klock);
+        return 0;
+    }
 
     unsigned int run = 0;
     unsigned int run_start = 0;
@@ -194,12 +228,14 @@ paddr_t pmm_alloc_contiguous(u32 pages, paddr_t max_addr) {
                     page_refs[run_start + i] = 1;
                 }
                 free_pages -= pages;
+                klock_release(&pmm_klock);
                 return run_start * PAGE_SIZE;
             }
         } else {
             run = 0;
         }
     }
+    klock_release(&pmm_klock);
     return 0;
 }
 
@@ -208,14 +244,14 @@ void pmm_free_page(paddr_t addr) {
     u64 page64 = (u64)addr / PAGE_SIZE;
     if (!page64 || page64 >= BITMAP_BITS) panic_str("PMM invalid free");
     unsigned int page = (unsigned int)page64;
+    klock_acquire(&pmm_klock);
     if (!page_refs[page]) panic_str("PMM double free");
     page_refs[page]--;
-#if __SIZEOF_POINTER__ == 8
-#endif
     if (!page_refs[page]) {
         bitmap[page / 8] &= (unsigned char)~(1u << (page % 8));
         free_pages++;
     }
+    klock_release(&pmm_klock);
 }
 
 int pmm_retain_page(paddr_t addr) {
@@ -223,22 +259,30 @@ int pmm_retain_page(paddr_t addr) {
     u64 page64 = (u64)addr / PAGE_SIZE;
     if (page64 >= BITMAP_BITS) return -1;
     unsigned int page = (unsigned int)page64;
-    if (!page_refs[page] || page_refs[page] == 0xFFFF)
+    klock_acquire(&pmm_klock);
+    if (!page_refs[page] || page_refs[page] == 0xFFFF) {
+        klock_release(&pmm_klock);
         return -1;
+    }
     page_refs[page]++;
-#if __SIZEOF_POINTER__ == 8
-#endif
+    klock_release(&pmm_klock);
     return 0;
 }
 
 u32 pmm_page_refs(paddr_t addr) {
     u64 page = (u64)addr / PAGE_SIZE;
     if (page >= BITMAP_BITS) return 0;
-    return page_refs[(u32)page];
+    klock_acquire(&pmm_klock);
+    u32 refs = page_refs[(u32)page];
+    klock_release(&pmm_klock);
+    return refs;
 }
 
 u32 pmm_free_pages(void) {
-    return free_pages;
+    klock_acquire(&pmm_klock);
+    u32 count = free_pages;
+    klock_release(&pmm_klock);
+    return count;
 }
 
 int pmm_range_is_ram(paddr_t addr, usize_t len) {
