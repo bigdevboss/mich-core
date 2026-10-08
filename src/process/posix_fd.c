@@ -9,7 +9,7 @@
 #include "posix_tty.h"
 #include "posix_poll.h"
 #include "posix_abi.h"
-#include "spinlock.h"
+#include "klock.h"
 
 struct posix_ofd {
     struct kernel_object *file;
@@ -34,7 +34,7 @@ struct posix_fd_entry {
 
 static struct posix_ofd ofds[POSIX_OFD_MAX];
 static struct posix_fd_entry tables[MAX_TASKS][POSIX_FD_MAX];
-static struct spinlock posix_fd_lock = SPINLOCK_INIT;
+static struct klock posix_fd_klock = KLOCK_INIT(KLOCK_LEVEL_FD);
 
 static int task_slot(const struct task *task) {
     uptr_t address = (uptr_t)task;
@@ -115,9 +115,9 @@ static void release_files(struct kernel_object **files, u32 count) {
 }
 
 static void release_ofd(struct posix_ofd *ofd) {
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     struct kernel_object *file = ofd_release_locked(ofd);
-    spin_unlock(&posix_fd_lock);
+    klock_release(&posix_fd_klock);
     if (file) object_release(file);
 }
 
@@ -125,11 +125,11 @@ static struct posix_ofd *retain_descriptor(struct task *task, int descriptor,
                                            u32 required_access) {
     int slot = live_task_slot(task);
     if (slot < 0) return 0;
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     struct posix_ofd *ofd = descriptor_for_locked((u32)slot, descriptor);
     if (!ofd || (required_access & ~ofd->access) || ofd_retain_locked(ofd))
         ofd = 0;
-    spin_unlock(&posix_fd_lock);
+    klock_release(&posix_fd_klock);
     return ofd;
 }
 
@@ -137,13 +137,13 @@ static struct posix_ofd *retain_descriptor(struct task *task, int descriptor,
 // and a zero count is a hangup or an error to a poll waiter; the scan that
 // reads it takes this same lock, so the notify waits until it is dropped.
 static void unlock_and_notify(void) {
-    spin_unlock(&posix_fd_lock);
+    klock_release(&posix_fd_klock);
     posix_poll_notify();
 }
 
 void posix_fd_init(void) {
-    posix_fd_lock.ticket = 0;
-    posix_fd_lock.served = 0;
+    posix_fd_klock.lock.ticket = 0;
+    posix_fd_klock.lock.served = 0;
     for (u32 index = 0; index < POSIX_OFD_MAX; index++) {
         ofds[index].file = 0;
         ofds[index].lock.ticket = 0;
@@ -174,7 +174,7 @@ int posix_fd_install_vfs(struct task *task, struct kernel_object *file,
     struct vfs_node_info info;
     if (vfs_stat(file, &info) || object_retain(file)) return -1;
 
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     u32 descriptor = POSIX_FD_MAX;
     u32 index = POSIX_OFD_MAX;
     for (u32 current = 0; current < POSIX_FD_MAX; current++)
@@ -190,7 +190,7 @@ int posix_fd_install_vfs(struct task *task, struct kernel_object *file,
     if (descriptor == POSIX_FD_MAX || index == POSIX_OFD_MAX) {
         int result = descriptor == POSIX_FD_MAX ? POSIX_FD_TABLE_FULL :
             POSIX_FD_OFD_FULL;
-        spin_unlock(&posix_fd_lock);
+        klock_release(&posix_fd_klock);
         object_release(file);
         return result;
     }
@@ -205,7 +205,7 @@ int posix_fd_install_vfs(struct task *task, struct kernel_object *file,
     ofd->active = 1;
     tables[slot][descriptor].ofd = ofd;
     tables[slot][descriptor].flags = descriptor_flags;
-    spin_unlock(&posix_fd_lock);
+    klock_release(&posix_fd_klock);
     return (int)descriptor;
 }
 
@@ -219,7 +219,7 @@ int posix_fd_install_pipe(struct task *task, u32 pipe, u32 end, u32 access) {
         (end == POSIX_PIPE_END_READ ?
             access != POSIX_FD_ACCESS_READ : access != POSIX_FD_ACCESS_WRITE))
         return -1;
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     u32 descriptor = POSIX_FD_MAX;
     u32 index = POSIX_OFD_MAX;
     for (u32 current = 0; current < POSIX_FD_MAX; current++)
@@ -235,7 +235,7 @@ int posix_fd_install_pipe(struct task *task, u32 pipe, u32 end, u32 access) {
     if (descriptor == POSIX_FD_MAX || index == POSIX_OFD_MAX) {
         int result = descriptor == POSIX_FD_MAX ? POSIX_FD_TABLE_FULL :
             POSIX_FD_OFD_FULL;
-        spin_unlock(&posix_fd_lock);
+        klock_release(&posix_fd_klock);
         return result;
     }
     struct posix_ofd *ofd = &ofds[index];
@@ -268,7 +268,7 @@ int posix_fd_install_socket(struct task *task, struct kernel_object *socket,
         return -1;
     if (object_retain(socket)) return -1;
 
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     u32 descriptor = POSIX_FD_MAX;
     u32 index = POSIX_OFD_MAX;
     for (u32 current = 0; current < POSIX_FD_MAX; current++)
@@ -284,7 +284,7 @@ int posix_fd_install_socket(struct task *task, struct kernel_object *socket,
     if (descriptor == POSIX_FD_MAX || index == POSIX_OFD_MAX) {
         int result = descriptor == POSIX_FD_MAX ? POSIX_FD_TABLE_FULL :
             POSIX_FD_OFD_FULL;
-        spin_unlock(&posix_fd_lock);
+        klock_release(&posix_fd_klock);
         object_release(socket);
         return result;
     }
@@ -307,7 +307,7 @@ int posix_fd_install_socket(struct task *task, struct kernel_object *socket,
     ofd->socket_peer.address = 0;
     tables[slot][descriptor].ofd = ofd;
     tables[slot][descriptor].flags = 0;
-    spin_unlock(&posix_fd_lock);
+    klock_release(&posix_fd_klock);
     return (int)descriptor;
 }
 
@@ -320,15 +320,15 @@ int posix_fd_socket_of(struct task *task, int descriptor, u32 access,
                        struct posix_sockaddr_in *peer) {
     int slot = live_task_slot(task);
     if (slot < 0) return POSIX_VFS_EBADF;
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     struct posix_ofd *ofd = descriptor_for_locked((u32)slot, descriptor);
     if (!ofd) {
-        spin_unlock(&posix_fd_lock);
+        klock_release(&posix_fd_klock);
         return POSIX_VFS_EBADF;
     }
     if ((access & ~ofd->access) || !ofd->file ||
         ofd->file->type != KOBJECT_SOCKET) {
-        spin_unlock(&posix_fd_lock);
+        klock_release(&posix_fd_klock);
         return POSIX_SOCKET_ENOTSOCK;
     }
     if (socket) *socket = ofd->file;
@@ -336,7 +336,7 @@ int posix_fd_socket_of(struct task *task, int descriptor, u32 access,
     if (flags) *flags = ofd->socket_flags;
     if (local) *local = ofd->socket_local;
     if (peer) *peer = ofd->socket_peer;
-    spin_unlock(&posix_fd_lock);
+    klock_release(&posix_fd_klock);
     return 0;
 }
 
@@ -348,16 +348,16 @@ int posix_fd_socket_update(struct task *task, int descriptor, u32 flags,
                            const struct posix_sockaddr_in *peer) {
     int slot = live_task_slot(task);
     if (slot < 0) return POSIX_VFS_EBADF;
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     struct posix_ofd *ofd = descriptor_for_locked((u32)slot, descriptor);
     if (!ofd || !ofd->file || ofd->file->type != KOBJECT_SOCKET) {
-        spin_unlock(&posix_fd_lock);
+        klock_release(&posix_fd_klock);
         return POSIX_SOCKET_ENOTSOCK;
     }
     if (flags) ofd->socket_flags = flags;
     if (local) ofd->socket_local = *local;
     if (peer) ofd->socket_peer = *peer;
-    spin_unlock(&posix_fd_lock);
+    klock_release(&posix_fd_klock);
     return 0;
 }
 
@@ -389,14 +389,14 @@ int posix_fd_pipe_of(struct task *task, int descriptor, u32 *pipe,
     if (slot < 0 || descriptor < 0 || descriptor >= POSIX_FD_MAX || !pipe ||
         !end)
         return 0;
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     struct posix_ofd *ofd = descriptor_for_locked((u32)slot, descriptor);
     int found = ofd && ofd->pipe;
     if (found) {
         *pipe = ofd->pipe - 1u;
         *end = ofd->pipe_end;
     }
-    spin_unlock(&posix_fd_lock);
+    klock_release(&posix_fd_klock);
     return found;
 }
 
@@ -405,10 +405,10 @@ int posix_fd_validate(struct task *task, int descriptor, u32 access) {
     if (slot < 0 || descriptor < 0 || descriptor >= POSIX_FD_MAX ||
         (access & ~(POSIX_FD_ACCESS_READ | POSIX_FD_ACCESS_WRITE)))
         return -1;
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     struct posix_ofd *ofd = descriptor_for_locked((u32)slot, descriptor);
     int result = !ofd ? -1 : ((ofd->access & access) == access ? 0 : -2);
-    spin_unlock(&posix_fd_lock);
+    klock_release(&posix_fd_klock);
     return result;
 }
 
@@ -416,7 +416,7 @@ u16 posix_fd_poll_events(struct task *task, int descriptor) {
     if (descriptor < 0) return 0;
     int slot = live_task_slot(task);
     if (slot < 0 || descriptor >= POSIX_FD_MAX) return POSIX_POLLNVAL;
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     struct posix_ofd *ofd = descriptor_for_locked((u32)slot, descriptor);
     u32 pipe = ofd ? ofd->pipe : 0;
     u32 pipe_end = ofd ? ofd->pipe_end : 0;
@@ -428,7 +428,7 @@ u16 posix_fd_poll_events(struct task *task, int descriptor) {
     // parked poller has to wake when a line lands.
     u32 special = 0;
     if (socket) vfs_special(socket, &special);
-    spin_unlock(&posix_fd_lock);
+    klock_release(&posix_fd_klock);
     if (!ofd) return POSIX_POLLNVAL;
     u16 ready;
     if (pipe) {
@@ -453,9 +453,9 @@ u16 posix_fd_poll_events(struct task *task, int descriptor) {
 int posix_fd_close(struct task *task, int descriptor) {
     int slot = live_task_slot(task);
     if (slot < 0 || descriptor < 0 || descriptor >= POSIX_FD_MAX) return -1;
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     if (!descriptor_for_locked((u32)slot, descriptor)) {
-        spin_unlock(&posix_fd_lock);
+        klock_release(&posix_fd_klock);
         return -1;
     }
     struct kernel_object *file = detach_descriptor_locked((u32)slot,
@@ -468,7 +468,7 @@ int posix_fd_close(struct task *task, int descriptor) {
 int posix_fd_dup(struct task *task, int descriptor) {
     int slot = live_task_slot(task);
     if (slot < 0 || descriptor < 0 || descriptor >= POSIX_FD_MAX) return -1;
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     struct posix_ofd *ofd = descriptor_for_locked((u32)slot, descriptor);
     u32 replacement = POSIX_FD_MAX;
     for (u32 index = 0; index < POSIX_FD_MAX; index++)
@@ -477,7 +477,7 @@ int posix_fd_dup(struct task *task, int descriptor) {
             break;
         }
     if (!ofd || replacement == POSIX_FD_MAX || ofd_retain_locked(ofd)) {
-        spin_unlock(&posix_fd_lock);
+        klock_release(&posix_fd_klock);
         return -1;
     }
     tables[slot][replacement].ofd = ofd;
@@ -491,18 +491,18 @@ int posix_fd_dup2(struct task *task, int descriptor, int replacement) {
     if (slot < 0 || descriptor < 0 || replacement < 0 ||
         descriptor >= POSIX_FD_MAX || replacement >= POSIX_FD_MAX)
         return -1;
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     struct posix_ofd *ofd = descriptor_for_locked((u32)slot, descriptor);
     if (!ofd) {
-        spin_unlock(&posix_fd_lock);
+        klock_release(&posix_fd_klock);
         return -1;
     }
     if (descriptor == replacement) {
-        spin_unlock(&posix_fd_lock);
+        klock_release(&posix_fd_klock);
         return replacement;
     }
     if (ofd_retain_locked(ofd)) {
-        spin_unlock(&posix_fd_lock);
+        klock_release(&posix_fd_klock);
         return -1;
     }
     struct kernel_object *file = 0;
@@ -519,13 +519,13 @@ int posix_fd_get_cloexec(struct task *task, int descriptor, u32 *enabled) {
     int slot = live_task_slot(task);
     if (slot < 0 || descriptor < 0 || descriptor >= POSIX_FD_MAX || !enabled)
         return -1;
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     if (!descriptor_for_locked((u32)slot, descriptor)) {
-        spin_unlock(&posix_fd_lock);
+        klock_release(&posix_fd_klock);
         return -1;
     }
     *enabled = tables[slot][descriptor].flags & POSIX_FD_CLOEXEC ? 1 : 0;
-    spin_unlock(&posix_fd_lock);
+    klock_release(&posix_fd_klock);
     return 0;
 }
 
@@ -533,14 +533,14 @@ int posix_fd_set_cloexec(struct task *task, int descriptor, u32 enabled) {
     int slot = live_task_slot(task);
     if (slot < 0 || descriptor < 0 || descriptor >= POSIX_FD_MAX || enabled > 1)
         return -1;
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     if (!descriptor_for_locked((u32)slot, descriptor)) {
-        spin_unlock(&posix_fd_lock);
+        klock_release(&posix_fd_klock);
         return -1;
     }
     if (enabled) tables[slot][descriptor].flags |= POSIX_FD_CLOEXEC;
     else tables[slot][descriptor].flags &= ~POSIX_FD_CLOEXEC;
-    spin_unlock(&posix_fd_lock);
+    klock_release(&posix_fd_klock);
     return 0;
 }
 
@@ -806,16 +806,16 @@ int posix_fd_fork(struct task *parent, struct task *child) {
     int child_slot = live_task_slot(child);
     if (parent_slot < 0 || child_slot < 0 || parent_slot == child_slot)
         return -1;
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     for (u32 index = 0; index < POSIX_FD_MAX; index++) {
         if (tables[child_slot][index].ofd) {
-            spin_unlock(&posix_fd_lock);
+            klock_release(&posix_fd_klock);
             return -1;
         }
         struct posix_ofd *ofd = tables[parent_slot][index].ofd;
         if (ofd && (!ofd->active || !ofd->references ||
                     ofd->references == 0xFFFFFFFFu)) {
-            spin_unlock(&posix_fd_lock);
+            klock_release(&posix_fd_klock);
             return -1;
         }
     }
@@ -827,7 +827,7 @@ int posix_fd_fork(struct task *parent, struct task *child) {
                 struct posix_ofd *held = tables[parent_slot][undo].ofd;
                 if (held) ofd_release_locked(held);
             }
-            spin_unlock(&posix_fd_lock);
+            klock_release(&posix_fd_klock);
             return -1;
         }
         tables[child_slot][index].ofd = ofd;
@@ -842,7 +842,7 @@ static void close_descriptors(struct task *task, int cloexec_only) {
     if (slot < 0) return;
     struct kernel_object *files[POSIX_FD_MAX];
     u32 count = 0;
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     for (u32 index = 0; index < POSIX_FD_MAX; index++) {
         if (!tables[slot][index].ofd ||
             (cloexec_only && !(tables[slot][index].flags & POSIX_FD_CLOEXEC)))
@@ -867,7 +867,7 @@ u32 posix_fd_revoke_object(struct kernel_object *object) {
     struct kernel_object *files[POSIX_FD_MAX];
     u32 count = 0;
     u32 revoked = 0;
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     for (u32 task = 0; task < MAX_TASKS; task++) {
         for (u32 descriptor = 0; descriptor < POSIX_FD_MAX; descriptor++) {
             struct posix_ofd *ofd = tables[task][descriptor].ofd;
@@ -885,19 +885,19 @@ u32 posix_fd_revoke_object(struct kernel_object *object) {
 
 u32 posix_fd_active_count(void) {
     u32 count = 0;
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     for (u32 task = 0; task < MAX_TASKS; task++)
         for (u32 descriptor = 0; descriptor < POSIX_FD_MAX; descriptor++)
             if (tables[task][descriptor].ofd) count++;
-    spin_unlock(&posix_fd_lock);
+    klock_release(&posix_fd_klock);
     return count;
 }
 
 u32 posix_ofd_active_count(void) {
     u32 count = 0;
-    spin_lock(&posix_fd_lock);
+    klock_acquire(&posix_fd_klock);
     for (u32 index = 0; index < POSIX_OFD_MAX; index++)
         if (ofds[index].active) count++;
-    spin_unlock(&posix_fd_lock);
+    klock_release(&posix_fd_klock);
     return count;
 }

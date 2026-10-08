@@ -53,14 +53,19 @@ int posix_sleep_ticks(i64 sec, i64 nsec, u32 *ticks) {
 }
 
 void posix_time_tick(u32 now) {
+    // The walk holds the pool lock: it reads the same states the spawn and
+    // the exit write, and a slot freed under it would be woken as a task
+    // that never parked. The body stays on pool fields, so nothing deeper
+    // is taken while the lock is held.
+    task_pool_lock();
     for (int slot = 0; slot < task_pool_count; slot++) {
         struct task *task = &task_pool[slot];
         if (task->state != TASK_BLOCKED_SLEEP) continue;
         if ((i32)(now - task->sleep_deadline) < 0) continue;
-        task->sleep_deadline = 0;
-        task->state = TASK_RUNNING;
+        task_sleep_expire_locked(task);
         // The parked dispatch frame was abandoned on the switch, so the
         // wake publishes the return value the way the event wake does.
         task64_set_result((u32)slot, 0);
     }
+    task_pool_unlock();
 }

@@ -49,7 +49,7 @@ static void wake_slot(u32 slot, i64 result) {
         task_pool[slot].state != TASK_BLOCKED_EVENT)
         return;
     clear_wait_set(slot);
-    task_pool[slot].state = TASK_RUNNING;
+    task_state_set(&task_pool[slot], TASK_RUNNING);
     if (wake_task) wake_task(slot, result);
 }
 
@@ -144,7 +144,7 @@ int event_wait_many(struct kernel_object **objects, u32 count, u32 task_slot,
     wait_counts[task_slot] = count;
     wait_deadlines[task_slot] = deadline;
     wait_timed[task_slot] = timed != 0;
-    task_pool[task_slot].state = TASK_BLOCKED_EVENT;
+    task_state_set(&task_pool[task_slot], TASK_BLOCKED_EVENT);
     irq_restore(irq);
     return 1;
 }

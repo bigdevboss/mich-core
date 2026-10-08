@@ -12,6 +12,8 @@
 #include "pmm.h"
 #include "object.h"
 #include "klock.h"
+#include "posix_fd.h"
+#include "posix_pipe.h"
 
 #define SMP64_USER_GETPID 16
 #define SMP64_USER_STUB_AFTER 7
@@ -498,7 +500,7 @@ static int test_smp64_contain(void) {
 static int test_smp64_alloc_concur(void) {
     u32 n = smp64_cpu_count();
     u64 before = pmm_free_pages();
-    smp64_stress_reset(SMP64_STRESS_TURNS, 0);
+    smp64_stress_reset(SMP64_STRESS_TURNS, 0, SMP64_STRESS_ALLOC);
     for (u32 index = 1; index < n; index++)
         if (smp64_ipi_cpu(index, SMP64_IPI_STRESS)) return -1;
     smp64_stress_run(SMP64_STRESS_TURNS);
@@ -534,7 +536,7 @@ static int test_smp64_refcount_concur(void) {
     struct kernel_object *shared =
         object_create(KOBJECT_PAGE, 0, smp64_stress_destroy);
     if (!shared) return -1;
-    smp64_stress_reset(SMP64_STRESS_TURNS, shared);
+    smp64_stress_reset(SMP64_STRESS_TURNS, shared, SMP64_STRESS_REFCOUNT);
     for (u32 index = 1; index < n; index++)
         if (smp64_ipi_cpu(index, SMP64_IPI_STRESS)) failed = 1;
     if (!failed) {
@@ -553,24 +555,105 @@ static int test_smp64_refcount_concur(void) {
     return failed ? -1 : 0;
 }
 
+// A storm turn does far more per turn than the allocator hammer, so its
+// window is longer: four CPUs share one host here, and a CPU that is only
+// slow must not read as a CPU that stopped.
+#define SMP64_SPAWN_ROUNDS (SMP64_BOOT_TIMEOUT_MS / 10 * 15)
+
+// What the storm must not move is the pool's capacity, not the free-slot
+// count: allocating past the grown part of the pool turns a never-used slot
+// (state RUNNING by the zero-init) into a reusable one, so the free count
+// can legitimately rise by one while the pool still holds the same number
+// of slots it can hand out.
+static u32 spawn_capacity(void) {
+    u32 capacity = (u32)MAX_TASKS - (u32)task_pool_count;
+    for (u32 slot = 0; slot < (u32)MAX_TASKS; slot++)
+        if (task_pool[slot].state == TASK_FREE) capacity++;
+    return capacity;
+}
+
+static u32 spawn_free_mask(void) {
+    u32 mask = 0;
+    for (u32 slot = 0; slot < (u32)MAX_TASKS; slot++)
+        if (task_pool[slot].state == TASK_FREE) mask |= 1u << slot;
+    return mask;
+}
+
+// A spawn rewrites the pool, the descriptor table and a pipe, so the storm
+// runs that whole sequence on every CPU at once. The arithmetic is exact
+// again: each CPU finishes its own turns and the counters land back on the
+// baseline, which is what a lost update would move.
+static int test_smp64_spawn(void) {
+    u32 n = smp64_cpu_count();
+    u32 fds = posix_fd_active_count();
+    u32 pipes = posix_pipe_active_count();
+    u32 capacity_before = spawn_capacity();
+    u32 mask_before = spawn_free_mask();
+    u32 reason = 0;
+    smp64_spawn_reset(SMP64_STRESS_TURNS);
+    for (u32 index = 1; index < n; index++)
+        if (smp64_ipi_cpu(index, SMP64_IPI_STRESS)) reason = 1;
+    if (!reason) {
+        smp64_stress_run(SMP64_STRESS_TURNS);
+        for (u32 index = 1; index < n; index++)
+            if (wait_rounds(smp64_stress_done, index, SMP64_SPAWN_ROUNDS))
+                reason = 1;
+    }
+    if (!reason && smp64_stress_failed()) reason = 2;
+    if (!reason && smp64_spawn_slots() != (u64)n * SMP64_STRESS_TURNS)
+        reason = 3;
+    if (!reason && posix_fd_active_count() != fds) reason = 4;
+    if (!reason && posix_pipe_active_count() != pipes) reason = 5;
+    if (!reason && spawn_capacity() != capacity_before) reason = 6;
+    // The failure line carries the numbers the check read: a red run should
+    // not need a second instrumented build to say which count moved.
+    if (reason) {
+        serial64_write("Mich x86_64: spawn storm check failed: ");
+        serial64_hex(reason);
+        serial64_write(" cpus="); serial64_hex(n);
+        serial64_write(" want="); serial64_hex((u64)n * SMP64_STRESS_TURNS);
+        serial64_write(" got="); serial64_hex(smp64_spawn_slots());
+        serial64_write(" storm="); serial64_hex(smp64_stress_failed());
+        serial64_write(" fds="); serial64_hex(posix_fd_active_count());
+        serial64_write(" base="); serial64_hex(fds);
+        serial64_write(" pipes="); serial64_hex(posix_pipe_active_count());
+        serial64_write(" base="); serial64_hex(pipes);
+        serial64_write(" cap="); serial64_hex(spawn_capacity());
+        serial64_write(" base="); serial64_hex(capacity_before);
+        serial64_write(" mask="); serial64_hex(spawn_free_mask());
+        serial64_write(" base="); serial64_hex(mask_before);
+        for (u32 index = 1; index < n; index++) {
+            serial64_write(" d"); serial64_hex(index);
+            serial64_write("="); serial64_hex(smp64_stress_done(index));
+        }
+        serial64_write("\n");
+    }
+    return reason ? -1 : 0;
+}
+
 // The level checker is what turns a would-be deadlock into a named abort, so
 // the battery has to show it rejects the pairs the order forbids and that
 // the record follows real nesting. The locks here are the test's own: the
 // point is the checker, not the subsystems it guards.
 static int test_smp64_lockorder(void) {
-    static struct klock outer = KLOCK_INIT(KLOCK_LEVEL_OBJECT);
+    static struct klock outer = KLOCK_INIT(KLOCK_LEVEL_FD);
     static struct klock inner = KLOCK_INIT(KLOCK_LEVEL_PMM);
-    if (klock_order_ok(0, KLOCK_LEVEL_POOL) != 1) return -1;
-    if (klock_order_ok(KLOCK_LEVEL_POOL, KLOCK_LEVEL_PMM) != 1) return -1;
+    if (klock_order_ok(0, KLOCK_LEVEL_FD) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_FD, KLOCK_LEVEL_PIPE) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_PIPE, KLOCK_LEVEL_POOL) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_POOL, KLOCK_LEVEL_OBJECT) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_OBJECT, KLOCK_LEVEL_PMM) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_FD, KLOCK_LEVEL_PMM) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_PIPE, KLOCK_LEVEL_FD) != 0) return -1;
     if (klock_order_ok(KLOCK_LEVEL_PMM, KLOCK_LEVEL_PMM) != 0) return -1;
     if (klock_order_ok(KLOCK_LEVEL_PMM, KLOCK_LEVEL_POOL) != 0) return -1;
     if (klock_held_level() != 0) return -1;
     klock_acquire(&outer);
-    if (klock_held_level() != KLOCK_LEVEL_OBJECT) return -1;
+    if (klock_held_level() != KLOCK_LEVEL_FD) return -1;
     klock_acquire(&inner);
     if (klock_held_level() != KLOCK_LEVEL_PMM) return -1;
     klock_release(&inner);
-    if (klock_held_level() != KLOCK_LEVEL_OBJECT) return -1;
+    if (klock_held_level() != KLOCK_LEVEL_FD) return -1;
     klock_release(&outer);
     if (klock_held_level() != 0) return -1;
     return 0;
@@ -590,12 +673,15 @@ static int test_smp64_parallel(void) {
     u64 b1;
     u32 slot_a;
     u32 slot_b;
+    u64 current_a;
+    u64 current_b;
     if (smp64_cpu_count() < 3) {
         serial64_write("Mich x86_64: SMP two-task parallel skipped (");
         serial64_hex(smp64_cpu_count());
         serial64_write(" cpus)\n");
         return 0;
     }
+    u32 reason = 0;
     if (smp64_pin_task(index_a, smp64_spin_stub, sizeof(smp64_spin_stub),
                        &slot_a, (u64 **)&ca))
         return -1;
@@ -609,25 +695,40 @@ static int test_smp64_parallel(void) {
     apic64_delay_ms(20);
     if (ca[0] || cb[0] ||
         smp64_cpu_current(index_a) != SMP64_CURRENT_NONE ||
-        smp64_cpu_current(index_b) != SMP64_CURRENT_NONE) {
-        drop_pinned(slot_a, index_a);
-        drop_pinned(slot_b, index_b);
-        return -1;
-    }
-    if (smp64_resched_cpu(index_a) || smp64_resched_cpu(index_b) ||
-        wait_counter(ca, 0) || wait_counter(cb, 0) ||
-        smp64_cpu_current(index_a) != slot_a ||
-        smp64_cpu_current(index_b) != slot_b) {
-        drop_pinned(slot_a, index_a);
-        drop_pinned(slot_b, index_b);
-        return -1;
-    }
+        smp64_cpu_current(index_b) != SMP64_CURRENT_NONE)
+        reason = 1;
+    if (!reason && (smp64_resched_cpu(index_a) || smp64_resched_cpu(index_b) ||
+                    wait_counter(ca, 0) || wait_counter(cb, 0) ||
+                    smp64_cpu_current(index_a) != slot_a ||
+                    smp64_cpu_current(index_b) != slot_b))
+        reason = 2;
     a0 = ca[0];
     b0 = cb[0];
-    apic64_delay_ms(20);
-    a1 = ca[0];
-    b1 = cb[0];
-    if (a1 <= a0 || b1 <= b0) {
+    if (!reason) {
+        apic64_delay_ms(20);
+        a1 = ca[0];
+        b1 = cb[0];
+        if (a1 <= a0 || b1 <= b0) reason = 3;
+    } else {
+        a1 = ca[0];
+        b1 = cb[0];
+    }
+    // Same contract as the storm's failure line: a red run names the check
+    // and the numbers it read instead of needing a second build.
+    if (reason) {
+        current_a = (u64)smp64_cpu_current(index_a);
+        current_b = (u64)smp64_cpu_current(index_b);
+        serial64_write("Mich x86_64: two-task parallel check failed: ");
+        serial64_hex(reason);
+        serial64_write(" a0="); serial64_hex(a0);
+        serial64_write(" a1="); serial64_hex(a1);
+        serial64_write(" b0="); serial64_hex(b0);
+        serial64_write(" b1="); serial64_hex(b1);
+        serial64_write(" cur_a="); serial64_hex(current_a);
+        serial64_write(" cur_b="); serial64_hex(current_b);
+        serial64_write(" slot_a="); serial64_hex(slot_a);
+        serial64_write(" slot_b="); serial64_hex(slot_b);
+        serial64_write("\n");
         drop_pinned(slot_a, index_a);
         drop_pinned(slot_b, index_b);
         return -1;
@@ -828,6 +929,11 @@ int tests64_run_smp(void) {
         return -1;
     }
     serial64_write("Mich x86_64: SMP refcount concurrency pass\n");
+    if (test_report_record(TEST_ID_SMP_SPAWN, test_smp64_spawn())) {
+        irq_restore(irq_state);
+        return -1;
+    }
+    serial64_write("Mich x86_64: SMP spawn storm pass\n");
     if (test_report_record(TEST_ID_SMP_LOCKORDER, test_smp64_lockorder())) {
         irq_restore(irq_state);
         return -1;

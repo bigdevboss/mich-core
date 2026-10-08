@@ -151,6 +151,31 @@ static inline unsigned int task_full_pid(const struct task *t) {
     return PID_MAKE(t->gen, (unsigned int)(t - task_pool));
 }
 
+// The pool lock, level 1 of the order in the notes. A single transition
+// takes the wrapper; a walk across the pool takes the lock for the loop and
+// uses the _locked forms inside, so no slot is freed under the walk.
+void task_pool_lock(void);
+void task_pool_unlock(void);
+void task_state_set(struct task *t, int state);
+void task_state_set_locked(struct task *t, int state);
+int task_state_wake(struct task *t, int from_state);
+int task_sleep_wake_claim(struct task *t, u32 *deadline, uptr_t *request);
+int task_state_wake_locked(struct task *t, int from_state);
+void task_sleep_block(struct task *t, u32 deadline);
+void task_sleep_block_locked(struct task *t, u32 deadline);
+void task_sleep_expire_locked(struct task *t);
+void task_exit_signal_set(struct task *t, u32 signo);
+void task_wait_park(struct task *t, int pid, int posix, u32 options,
+                    uptr_t status_address);
+int task_wait_wake(struct task *t, int child_id);
+int task_wait_cancel(struct task *t, int child_id);
+void task_wait_clear(struct task *t);
+void task_cpu_claim(struct task *t, int cpu);
+void task_cpu_release(struct task *t);
+int task_pick_next(int current, int cpu);
+int task_pick_and_claim(int current, int cpu);
+int task_pick_pinned(int cpu, int current);
+
 struct task *create_task(void (*entry)(void), reg_t *stack_top, reg_t *kernel_stack_top, int ring);
 struct task *task_alloc_slot(void);
 void task_free_slot(struct task *t);

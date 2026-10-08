@@ -977,8 +977,8 @@ static __attribute__((cold, noinline, optimize("Os,no-jump-tables"))) void drive
         serial64_write("Mich test64: driver live recovery isolation pass\n");
         if (task_pool[1].id != 1 || task_pool[2].id != 2)
             driver_live_recovery_fail();
-        task_pool[1].state = TASK_RUNNING;
-        task_pool[2].state = TASK_RUNNING;
+        task_state_set(&task_pool[1], TASK_RUNNING);
+        task_state_set(&task_pool[2], TASK_RUNNING);
         test->phase = DRIVER_LIVE_RECOVERY_COMPLETE;
         return;
     }
@@ -1535,8 +1535,10 @@ int scheduler_cpu_id(void) {
 }
 
 u32 scheduler64_next_slot(void) {
+    // The claim happens inside the pick: two CPUs on the shared queue would
+    // otherwise both choose the same task between the pick and the switch.
     u32 here = smp64_running_slot();
-    int next = scheduler_pick_next((int)here);
+    int next = task_pick_and_claim((int)here, (int)smp64_cpu_index());
     return next < 0 ? here : (u32)next;
 }
 
@@ -1546,13 +1548,13 @@ void scheduler64_set_running(u32 slot) {
     // clearing its owner bit would free a task another CPU is running.
     u32 old = smp64_running_slot();
     int cpu = (int)smp64_cpu_index();
-    if (old < MAX_TASKS)
-        task_pool[old].on_cpu = TASK_CPU_NONE;
+    if (old < MAX_TASKS && old != slot)
+        task_cpu_release(&task_pool[old]);
     current_task_slot = slot;
     scheduler_set_current((int)slot);
     smp64_set_current(slot);
     if (slot < MAX_TASKS)
-        task_pool[slot].on_cpu = cpu;
+        task_cpu_claim(&task_pool[slot], cpu);
 }
 
 void scheduler64_switch(void) {
@@ -1587,7 +1589,7 @@ i64 task64_self_stop(u32 slot) {
 
 void task64_terminate(u32 slot, u32 signo) {
     if (slot >= (u32)task_pool_count) return;
-    task_pool[slot].exit_signal = signo;
+    task_exit_signal_set(&task_pool[slot], signo);
     terminate64(slot, 128 + (int)signo);
 }
 
@@ -1653,12 +1655,9 @@ static int wake_waiting_parent(u32 child_slot) {
     u32 parent_slot = PID_SLOT((u32)child->parent_id);
     if (parent_slot == 0 || parent_slot >= (u32)task_pool_count) return -1;
     struct task *parent = &task_pool[parent_slot];
-    if (parent->id != child->parent_id || parent->state != TASK_BLOCKED_WAIT ||
-        (parent->wait_pid != -1 && parent->wait_pid != child->id))
-        return -1;
+    if (parent->id != child->parent_id) return -1;
     int code = child->exit_code;
-    parent->wait_pid = -1;
-    parent->state = TASK_RUNNING;
+    if (!task_wait_wake(parent, child->id)) return -1;
     if (parent->wait_posix) {
         parent->wait_posix = 0;
         u64 status_address = parent->wait_status_address;
@@ -1692,26 +1691,22 @@ void task64_report_child(u32 child_slot) {
     u32 parent_slot = PID_SLOT((u32)child->parent_id);
     if (parent_slot == 0 || parent_slot >= (u32)task_pool_count) return;
     struct task *parent = &task_pool[parent_slot];
-    if (parent->id != child->parent_id || parent->state != TASK_BLOCKED_WAIT ||
-        !parent->wait_posix ||
-        (parent->wait_pid != -1 && parent->wait_pid != child->id))
-        return;
+    if (parent->id != child->parent_id || !parent->wait_posix) return;
     if (child->stop_report && !(parent->wait_options & POSIX_WAIT_UNTRACED))
         return;
     if (child->continued_report &&
         !(parent->wait_options & POSIX_WAIT_CONTINUED))
         return;
+    if (!task_wait_wake(parent, child->id)) return;
     u32 status = posix_wait_status((u32)child->exit_code, 0,
                                    child->stop_report,
                                    child->continued_report);
     uptr_t status_address = parent->wait_status_address;
     child->stop_report = 0;
     child->continued_report = 0;
-    parent->wait_pid = -1;
     parent->wait_posix = 0;
     parent->wait_options = 0;
     parent->wait_status_address = 0;
-    parent->state = TASK_RUNNING;
     if (status_address)
         vm64_copy_to(parent->page_dir, status_address, &status, 4);
     task_contexts[parent_slot].rax = (u64)(u32)child->id;
@@ -1889,7 +1884,8 @@ void exception64_dispatch(struct exception_frame64 *frame) {
     // The death code stays 128 + vector because the crash passport and the
     // driver recovery catalog match on it. A POSIX parent still reads a
     // real termsig: the waitpid packing looks at exit_signal first.
-    if (fault_signo) task_pool[current_task_slot].exit_signal = fault_signo;
+    if (fault_signo)
+        task_exit_signal_set(&task_pool[current_task_slot], fault_signo);
     terminate64(current_task_slot, 128 + (int)frame->vector);
     u32 next = scheduler64_next_slot();
     if (next == current_task_slot || task_pool[next].state != TASK_RUNNING) {
@@ -2471,8 +2467,8 @@ void kernel64_main(u32 magic, struct bd_info *info) {
         // Keep the lifecycle probe out of the init1/init2 handshake. A bench
         // boot has no recovery lab to reach COMPLETE and unblock these, so it
         // must leave the init tasks runnable.
-        task_pool[1].state = TASK_BLOCKED_RECV;
-        task_pool[2].state = TASK_BLOCKED_RECV;
+        task_state_set(&task_pool[1], TASK_BLOCKED_RECV);
+        task_state_set(&task_pool[2], TASK_BLOCKED_RECV);
     }
 #endif
     serial64_write("Mich x86_64: LAPIC controller pass\n");

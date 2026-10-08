@@ -357,13 +357,9 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                 return (u64)(u32)code;
             }
         }
-        parent->wait_pid = pid;
-        parent->wait_posix = 0;
-        parent->wait_status_address = 0;
-        parent->state = TASK_BLOCKED_WAIT;
+        task_wait_park(parent, pid, 0, 0, 0);
         if (scheduler_pick_next((int)current_task_slot) < 0) {
-            parent->wait_pid = -1;
-            parent->state = TASK_RUNNING;
+            task_wait_clear(parent);
             return (u64)(i64)EDEADLK;
         }
         return (u64)task64_block_switch();
@@ -427,7 +423,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
         // runs on: the syscall executes with interrupts masked, so nothing
         // preempts between creation and this state change.
         if (pid > 0 && (arg1 & SPAWN_FLAG_SUSPENDED))
-            task_pool[PID_SLOT((u32)pid)].state = TASK_SUSPENDED;
+            task_state_set(&task_pool[PID_SLOT((u32)pid)], TASK_SUSPENDED);
         return (u64)(i64)pid;
     }
     if (number == 216) {
@@ -439,7 +435,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             (target->parent_id != owner->id &&
              !(owner->capabilities & CAP_TASK_ADMIN)))
             return (u64)-1;
-        target->state = TASK_RUNNING;
+        task_state_set(target, TASK_RUNNING);
         return 0;
     }
     if (number == 33)
@@ -2421,8 +2417,7 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
                              sizeof(request)))
                 return (u64)(i64)POSIX_VFS_EIO;
             if (!ticks) return 0;
-            task->state = TASK_BLOCKED_SLEEP;
-            task->sleep_deadline = timer_ticks + ticks;
+            task_sleep_block(task, timer_ticks + ticks);
             task->sleep_request = arg0;
             return (u64)task64_block_switch();
         }
@@ -2878,17 +2873,9 @@ u64 syscall64_dispatch(u64 number, u64 arg0, u64 arg1, u64 arg2) {
             if (options & POSIX_WAIT_NOHANG) return 0;
             // A blocking dispatch frame is abandoned on switch, so the wake
             // path delivers the pid and publishes the status word itself.
-            parent->wait_pid = pid;
-            parent->wait_posix = 1;
-            parent->wait_options = options;
-            parent->wait_status_address = status_address;
-            parent->state = TASK_BLOCKED_WAIT;
+            task_wait_park(parent, pid, 1, options, status_address);
             if (scheduler_pick_next((int)current_task_slot) < 0) {
-                parent->wait_pid = -1;
-                parent->wait_posix = 0;
-                parent->wait_options = 0;
-                parent->wait_status_address = 0;
-                parent->state = TASK_RUNNING;
+                task_wait_clear(parent);
                 return (u64)(i64)POSIX_PROCESS_EINVAL;
             }
             scheduler64_switch();

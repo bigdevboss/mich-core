@@ -112,7 +112,7 @@ static i64 socket_park(struct task *task, struct kernel_object *socket,
     waits[slot].message = message ? *message : empty_message;
     for (u32 index = 0; index < length; index++)
         waits[slot].staging[index] = staging ? staging[index] : 0;
-    task->state = TASK_BLOCKED_SOCKET;
+    task_state_set(task, TASK_BLOCKED_SOCKET);
     // A notification that lands between the caller's readiness read and
     // this commit reaches no parked waiter, and the socket keeps that
     // fact: one completion attempt spends it instead of sleeping a wakeup
@@ -127,7 +127,7 @@ static i64 socket_park(struct task *task, struct kernel_object *socket,
         waits[slot].socket = 0;
         waits[slot].kind = POSIX_SOCKET_WAIT_NONE;
         waits[slot].request = 0;
-        task->state = TASK_RUNNING;
+        task_state_set(task, TASK_RUNNING);
         object_release(socket);
         return POSIX_VFS_EDEADLK;
     }
@@ -143,7 +143,7 @@ static i64 finish_wait(u32 slot, i64 answer) {
     waits[slot].flavor = 0;
     waits[slot].length = 0;
     waits[slot].offset = 0;
-    task_pool[slot].state = TASK_RUNNING;
+    task_state_set(&task_pool[slot], TASK_RUNNING);
     if (socket) object_release(socket);
     task64_set_result(slot, answer);
     return answer;

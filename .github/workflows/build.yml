@@ -156,6 +156,30 @@ jobs:
       - name: SMP smoke
         run: make test64-smp
 
+  stress-smoke:
+    # The battery on four CPUs, the configuration the stress profile names.
+    # Four CPUs share one host under TCG, so every storm in the battery is
+    # much slower here: the guest budget and the job timeout are the long
+    # ones, and this job exists because a race that needs three APs at once
+    # can hide from the two-CPU run.
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    timeout-minutes: 45
+    steps:
+      - name: Install the toolchain and the UEFI firmware
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git ca-certificates nodejs make gcc python3 \
+            nasm qemu-system-x86 ovmf
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Stress smoke
+        run: make test64-smp4
+
   unit-ubuntu:
     # The same battery on the runner's own Ubuntu 24.04 image: gcc 13 with the
     # distribution QEMU 8.2 and OVMF. This configuration exists because it is

@@ -12,6 +12,8 @@
 #include "vm64.h"
 #include "kernel64_internal.h"
 #include "pmm.h"
+#include "posix_fd.h"
+#include "posix_pipe.h"
 #include "object.h"
 
 // Trampoline chunks (smp_tramp.asm) placed by the BSP at SMP64_TRAMP_BASE: entry
@@ -87,7 +89,10 @@ static volatile u64 smp64_stress_page_count;
 static volatile u64 smp64_stress_object_count;
 static volatile u32 smp64_stress_failure;
 static u32 smp64_stress_turns;
+static u32 smp64_stress_mode;
 static struct kernel_object *smp64_stress_object;
+static volatile u64 smp64_spawn_slot_count;
+static volatile u32 smp64_spawn_held[MAX_TASKS];
 static u64 smp64_kernel_cr3;
 static u64 smp64_kernel_cr4;
 static u64 smp64_kernel_efer;
@@ -571,9 +576,43 @@ u64 smp64_spin_count(void) {
 // here and not by the free count alone; the shared object takes one retain
 // and one release per turn, so a lost refcount update ends the storm with a
 // count that cannot come from the arithmetic.
+// One storm turn runs the whole spawn sequence: a pool slot, a pipe with
+// both ends in the descriptor table, then the teardown. The claim word is
+// what makes the one failure silence would hide visible, a slot handed to
+// two CPUs at once: the loser of that race sets the failure flag.
+static void smp64_spawn_turn(void) {
+    struct task *task = task_alloc_slot();
+    if (!task) {
+        __atomic_store_n(&smp64_stress_failure, 1, __ATOMIC_RELEASE);
+        return;
+    }
+    u32 slot = (u32)(task - task_pool);
+    if (slot >= (u32)MAX_TASKS ||
+        __sync_lock_test_and_set(&smp64_spawn_held[slot], 1u)) {
+        __atomic_store_n(&smp64_stress_failure, 1, __ATOMIC_RELEASE);
+        task_free_slot(task);
+        return;
+    }
+    int created = posix_pipe_create();
+    if (created < 0 ||
+        posix_fd_install_pipe(task, (u32)created, POSIX_PIPE_END_READ,
+                              POSIX_FD_ACCESS_READ) < 0 ||
+        posix_fd_install_pipe(task, (u32)created, POSIX_PIPE_END_WRITE,
+                              POSIX_FD_ACCESS_WRITE) < 0)
+        __atomic_store_n(&smp64_stress_failure, 1, __ATOMIC_RELEASE);
+    posix_fd_close_all(task);
+    __atomic_store_n(&smp64_spawn_held[slot], 0u, __ATOMIC_RELEASE);
+    task_free_slot(task);
+    __atomic_fetch_add(&smp64_spawn_slot_count, 1, __ATOMIC_RELAXED);
+}
+
 void smp64_stress_run(u32 turns) {
     for (u32 turn = 0; turn < turns; turn++) {
         paddr_t held[SMP64_STRESS_HOLD];
+        if (smp64_stress_mode == SMP64_STRESS_SPAWN) {
+            smp64_spawn_turn();
+            continue;
+        }
         for (u32 slot = 0; slot < SMP64_STRESS_HOLD; slot++) {
             held[slot] = pmm_alloc_page();
             if (!held[slot]) {
@@ -601,14 +640,25 @@ void smp64_stress_run(u32 turns) {
     }
 }
 
-void smp64_stress_reset(u32 turns, struct kernel_object *shared) {
+void smp64_stress_reset(u32 turns, struct kernel_object *shared, u32 mode) {
     smp64_stress_turns = turns;
+    smp64_stress_mode = mode;
     smp64_stress_object = shared;
     smp64_stress_page_count = 0;
     smp64_stress_object_count = 0;
     smp64_stress_failure = 0;
     for (u32 index = 0; index < SMP64_MAX; index++)
         smp64_cpus[index].stress_done = 0;
+}
+
+void smp64_spawn_reset(u32 turns) {
+    smp64_stress_reset(turns, 0, SMP64_STRESS_SPAWN);
+    smp64_spawn_slot_count = 0;
+    for (u32 slot = 0; slot < MAX_TASKS; slot++) smp64_spawn_held[slot] = 0;
+}
+
+u64 smp64_spawn_slots(void) {
+    return smp64_spawn_slot_count;
 }
 
 u64 smp64_stress_pages(void) {
@@ -677,7 +727,7 @@ static int smp64_pin_stub(u32 index, const u8 *stub, u32 size, u32 *slot_out,
     task->ring = 3;
     task->page_dir = vm64_root(space);
     task->parent_id = 0;
-    task->on_cpu = (int)cpu->index;
+    task_cpu_claim(task, (int)cpu->index);
     task_set_name(task, "ap-user");
     context->rflags = USER_EFLAGS;
     context->rip = VM64_PROGRAM_BASE;
@@ -724,21 +774,10 @@ int smp64_arm_user(u32 index, const u8 *stub, u32 size) {
     return 0;
 }
 
-// A task this CPU may run: pinned to it and runnable. An idle task is the
-// fallback, so a real task pinned to the same CPU still gets it.
+// A task this CPU may run: pinned to it and runnable. The scan is task.c's,
+// under the pool lock, so a pinned task cannot be freed under it.
 static int smp64_pick_owned(u32 index, int current) {
-    int idle = -1;
-    for (int offset = 1; offset <= task_pool_count; offset++) {
-        int candidate = ((int)current + offset) % task_pool_count;
-        if (task_pool[candidate].state != TASK_RUNNING) continue;
-        if (task_pool[candidate].on_cpu != (int)index) continue;
-        if (task_pool[candidate].is_idle) {
-            if (idle < 0) idle = candidate;
-            continue;
-        }
-        return candidate;
-    }
-    return idle;
+    return task_pick_pinned((int)index, current);
 }
 
 // Only tasks already on this CPU. Does not steal TASK_CPU_NONE (init64-two).

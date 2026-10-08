@@ -8,6 +8,7 @@
 #include "vm64.h"
 #include "scheduler.h"
 #include "runtime64.h"
+#include "klock.h"
 
 struct posix_pipe_state {
     u8 ring[POSIX_PIPE_BUF];
@@ -26,13 +27,13 @@ struct pipe_wait {
 };
 
 static struct posix_pipe_state pipes[POSIX_PIPE_MAX];
+static struct klock posix_pipe_klock = KLOCK_INIT(KLOCK_LEVEL_PIPE);
 static struct pipe_wait waits[MAX_TASKS];
 
-// Syscalls run with interrupts masked on this single CPU, so pipe state
-// mutates only from syscall context, one task at a time; the wake paths
-// run in the caller's own syscall. The ipc layer relies on the same
-// serialization, and the fd layer's spinlock never crosses into here.
-// Per-pipe locks arrive with the second CPU, not before.
+// The klock below covers every field in this file: two CPUs can reach the
+// same ring from their own syscalls now. The fd layer takes it while its
+// own lock is held, and the wake paths take the task pool after it, which
+// is the order the levels fix.
 
 static u32 ring_free(const struct posix_pipe_state *pipe) {
     return POSIX_PIPE_BUF - pipe->count;
@@ -83,7 +84,7 @@ static void wake_readers(u32 index) {
         waits[slot].pipe = 0;
         waits[slot].request = 0;
         waits[slot].length = 0;
-        reader->state = TASK_RUNNING;
+        task_state_set(reader, TASK_RUNNING);
         task64_set_result(slot, answer);
     }
 }
@@ -106,7 +107,7 @@ static void wake_writers(u32 index) {
             waits[slot].pipe = 0;
             waits[slot].request = 0;
             waits[slot].length = 0;
-            writer->state = TASK_RUNNING;
+            task_state_set(writer, TASK_RUNNING);
             task64_set_result(slot, (i64)POSIX_VFS_EIO);
             continue;
         }
@@ -116,7 +117,7 @@ static void wake_writers(u32 index) {
         waits[slot].pipe = 0;
         waits[slot].request = 0;
         waits[slot].length = 0;
-        writer->state = TASK_RUNNING;
+        task_state_set(writer, TASK_RUNNING);
         task64_set_result(slot, (i64)transferred);
     }
 }
@@ -135,12 +136,12 @@ static void wake_writers_broken(u32 index) {
         waits[slot].pipe = 0;
         waits[slot].request = 0;
         waits[slot].length = 0;
-        writer->state = TASK_RUNNING;
+        task_state_set(writer, TASK_RUNNING);
         task64_set_result(slot, (i64)POSIX_VFS_EPIPE);
     }
 }
 
-int posix_pipe_create(void) {
+static int pipe_create_locked(void) {
     for (u32 index = 0; index < POSIX_PIPE_MAX; index++) {
         if (pipes[index].active) continue;
         pipes[index].tail = 0;
@@ -153,13 +154,26 @@ int posix_pipe_create(void) {
     return POSIX_VFS_ENFILE;
 }
 
-void posix_pipe_retain(u32 index, u32 end) {
+int posix_pipe_create(void) {
+    klock_acquire(&posix_pipe_klock);
+    int created = pipe_create_locked();
+    klock_release(&posix_pipe_klock);
+    return created;
+}
+
+static void pipe_retain_locked(u32 index, u32 end) {
     if (index >= POSIX_PIPE_MAX || !pipes[index].active) return;
     if (end == POSIX_PIPE_END_READ) pipes[index].readers++;
     else if (end == POSIX_PIPE_END_WRITE) pipes[index].writers++;
 }
 
-void posix_pipe_release(u32 index, u32 end) {
+void posix_pipe_retain(u32 index, u32 end) {
+    klock_acquire(&posix_pipe_klock);
+    pipe_retain_locked(index, end);
+    klock_release(&posix_pipe_klock);
+}
+
+static void pipe_release_locked(u32 index, u32 end) {
     if (index >= POSIX_PIPE_MAX || !pipes[index].active) return;
     if (end == POSIX_PIPE_END_READ) {
         if (!pipes[index].readers) return;
@@ -182,7 +196,7 @@ void posix_pipe_release(u32 index, u32 end) {
             waits[slot].pipe = 0;
             waits[slot].request = 0;
             waits[slot].length = 0;
-            task_pool[slot].state = TASK_RUNNING;
+            task_state_set(&task_pool[slot], TASK_RUNNING);
             task64_set_result(slot, 0);
         }
     } else {
@@ -193,8 +207,18 @@ void posix_pipe_release(u32 index, u32 end) {
         pipes[index].active = 0;
 }
 
-int posix_pipe_io(struct task *task, u32 index, u32 end, uptr_t request,
-                  u32 length) {
+void posix_pipe_release(u32 index, u32 end) {
+    klock_acquire(&posix_pipe_klock);
+    pipe_release_locked(index, end);
+    klock_release(&posix_pipe_klock);
+}
+
+// The lock is dropped before the switch: the parked task must not hold a
+// klock across a context switch. Parking the state first is what keeps a
+// wake that lands in between from being lost.
+static i64 pipe_io_locked(struct task *task, u32 index, u32 end,
+                          uptr_t request, u32 length, int *parked,
+                          int *notify) {
     if (index >= POSIX_PIPE_MAX || !pipes[index].active ||
         !length || length > POSIX_IO_MAX)
         return POSIX_VFS_EINVAL;
@@ -215,7 +239,7 @@ int posix_pipe_io(struct task *task, u32 index, u32 end, uptr_t request,
             // The space opens before the writers wake, so each completed
             // writer finds room for its whole request.
             wake_writers(index);
-            posix_poll_notify();
+            *notify = 1;
             return (int)take;
         }
         if (!pipe->writers) {
@@ -226,7 +250,7 @@ int posix_pipe_io(struct task *task, u32 index, u32 end, uptr_t request,
         waits[slot].end = POSIX_PIPE_END_READ;
         waits[slot].request = request;
         waits[slot].length = length;
-        task->state = TASK_BLOCKED_PIPE;
+        task_state_set(task, TASK_BLOCKED_PIPE);
         if (scheduler_pick_next(slot) < 0) {
             // Nothing else can run, so the park would freeze the CPU
             // inside the syscall. The ipc sender answers EDEADLK for
@@ -234,10 +258,11 @@ int posix_pipe_io(struct task *task, u32 index, u32 end, uptr_t request,
             waits[slot].pipe = 0;
             waits[slot].request = 0;
             waits[slot].length = 0;
-            task->state = TASK_RUNNING;
+            task_state_set(task, TASK_RUNNING);
             return POSIX_VFS_EDEADLK;
         }
-        return (int)task64_block_switch();
+        *parked = 1;
+        return 0;
     }
 
     if (end != POSIX_PIPE_END_WRITE) return POSIX_VFS_EINVAL;
@@ -249,15 +274,16 @@ int posix_pipe_io(struct task *task, u32 index, u32 end, uptr_t request,
         waits[slot].end = POSIX_PIPE_END_WRITE;
         waits[slot].request = request;
         waits[slot].length = length;
-        task->state = TASK_BLOCKED_PIPE;
+        task_state_set(task, TASK_BLOCKED_PIPE);
         if (scheduler_pick_next(slot) < 0) {
             waits[slot].pipe = 0;
             waits[slot].request = 0;
             waits[slot].length = 0;
-            task->state = TASK_RUNNING;
+            task_state_set(task, TASK_RUNNING);
             return POSIX_VFS_EDEADLK;
         }
-        return (int)task64_block_switch();
+        *parked = 1;
+        return 0;
     }
     if (vm64_copy_from(task->page_dir, staging, request + POSIX_IO_DATA_OFFSET,
                        length))
@@ -266,21 +292,40 @@ int posix_pipe_io(struct task *task, u32 index, u32 end, uptr_t request,
     u32 transferred = length;
     posix_io_patch_result(task, request, transferred);
     wake_readers(index);
-    posix_poll_notify();
+    *notify = 1;
     return (int)length;
+}
+
+int posix_pipe_io(struct task *task, u32 index, u32 end, uptr_t request,
+                  u32 length) {
+    int parked = 0;
+    int notify = 0;
+    klock_acquire(&posix_pipe_klock);
+    i64 result = pipe_io_locked(task, index, end, request, length, &parked,
+                                &notify);
+    klock_release(&posix_pipe_klock);
+    // The poll scan reads the descriptor table, so it runs after the pipe
+    // lock is gone: those two levels only go one way.
+    if (notify) posix_poll_notify();
+    if (parked) return (int)task64_block_switch();
+    return (int)result;
 }
 
 i64 posix_pipe_signal(struct task *target) {
     u32 slot = (u32)(target - task_pool);
-    if (slot >= (u32)MAX_TASKS || target->state != TASK_BLOCKED_PIPE)
-        return 0;
-    waits[slot].pipe = 0;
-    waits[slot].request = 0;
-    waits[slot].length = 0;
-    return POSIX_SIGNAL_EINTR;
+    klock_acquire(&posix_pipe_klock);
+    i64 answer = 0;
+    if (slot < (u32)MAX_TASKS && target->state == TASK_BLOCKED_PIPE) {
+        waits[slot].pipe = 0;
+        waits[slot].request = 0;
+        waits[slot].length = 0;
+        answer = POSIX_SIGNAL_EINTR;
+    }
+    klock_release(&posix_pipe_klock);
+    return answer;
 }
 
-u16 posix_pipe_poll(u32 index, u32 end) {
+static u16 pipe_poll_locked(u32 index, u32 end) {
     if (index >= POSIX_PIPE_MAX || !pipes[index].active) return POSIX_POLLNVAL;
     struct posix_pipe_state *pipe = &pipes[index];
     if (end == POSIX_PIPE_END_READ) {
@@ -298,9 +343,23 @@ u16 posix_pipe_poll(u32 index, u32 end) {
     return ready;
 }
 
-u32 posix_pipe_active_count(void) {
+u16 posix_pipe_poll(u32 index, u32 end) {
+    klock_acquire(&posix_pipe_klock);
+    u16 ready = pipe_poll_locked(index, end);
+    klock_release(&posix_pipe_klock);
+    return ready;
+}
+
+static u32 pipe_active_count_locked(void) {
     u32 active = 0;
     for (u32 index = 0; index < POSIX_PIPE_MAX; index++)
         if (pipes[index].active) active++;
+    return active;
+}
+
+u32 posix_pipe_active_count(void) {
+    klock_acquire(&posix_pipe_klock);
+    u32 active = pipe_active_count_locked();
+    klock_release(&posix_pipe_klock);
     return active;
 }

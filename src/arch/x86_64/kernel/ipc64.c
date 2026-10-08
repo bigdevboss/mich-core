@@ -46,7 +46,7 @@ static void break_deadlock(struct task *chain, struct task *sender) {
         pending_timed[slot] = 0;
         cursor->send_to = 0;
         cursor->send_deadline = 0;
-        cursor->state = TASK_RUNNING;
+        task_state_set(cursor, TASK_RUNNING);
         task64_set_result(slot, EDEADLK);
         cursor = next;
     }
@@ -66,7 +66,7 @@ static int send_now(struct task *sender, struct task *receiver,
                          &delivered);
     receiver->recv_buf = 0;
     receiver->recv_expect = 0;
-    receiver->state = TASK_RUNNING;
+    task_state_set(receiver, TASK_RUNNING);
     task64_set_result((u32)(receiver - task_pool), result);
     return result;
 }
@@ -99,14 +99,14 @@ static int send_internal(u32 destination, vaddr_t message_address,
     pending_valid[current] = 1;
     sender->send_to = destination;
     sender->send_deadline = deadline;
-    sender->state = TASK_BLOCKED_SEND;
+    task_state_set(sender, TASK_BLOCKED_SEND);
     pending_timed[current] = timed != 0;
     if (scheduler_pick_next(current) < 0) {
         pending_valid[current] = 0;
         pending_timed[current] = 0;
         sender->send_to = 0;
         sender->send_deadline = 0;
-        sender->state = TASK_RUNNING;
+        task_state_set(sender, TASK_RUNNING);
         return EDEADLK;
     }
     return (int)task64_block_switch();
@@ -164,17 +164,17 @@ int ipc64_recv(u32 expected, vaddr_t message_address) {
         pending_timed[slot] = 0;
         sender->send_to = 0;
         sender->send_deadline = 0;
-        sender->state = TASK_RUNNING;
+        task_state_set(sender, TASK_RUNNING);
         task64_set_result((u32)slot, result);
         return result;
     }
     receiver->recv_buf = (struct message *)(uptr_t)message_address;
     receiver->recv_expect = expected;
-    receiver->state = TASK_BLOCKED_RECV;
+    task_state_set(receiver, TASK_BLOCKED_RECV);
     if (scheduler_pick_next(current) < 0) {
         receiver->recv_buf = 0;
         receiver->recv_expect = 0;
-        receiver->state = TASK_RUNNING;
+        task_state_set(receiver, TASK_RUNNING);
         return EDEADLK;
     }
     return (int)task64_block_switch();
@@ -193,7 +193,7 @@ void ipc64_task_died(u32 pid) {
             pending_timed[slot] = 0;
             task->send_to = 0;
             task->send_deadline = 0;
-            task->state = TASK_RUNNING;
+            task_state_set(task, TASK_RUNNING);
             task64_set_result((u32)slot, ESRCH);
         }
         if (task->state == TASK_BLOCKED_RECV && task->recv_buf &&
@@ -206,7 +206,7 @@ void ipc64_task_died(u32 pid) {
             int result = deliver(task, (vaddr_t)(uptr_t)task->recv_buf, &message);
             task->recv_buf = 0;
             task->recv_expect = 0;
-            task->state = TASK_RUNNING;
+            task_state_set(task, TASK_RUNNING);
             task64_set_result((u32)slot, result);
         }
     }
@@ -222,7 +222,7 @@ void ipc64_tick(u32 now) {
         pending_timed[slot] = 0;
         sender->send_to = 0;
         sender->send_deadline = 0;
-        sender->state = TASK_RUNNING;
+        task_state_set(sender, TASK_RUNNING);
         task64_set_result((u32)slot, ETIMEDOUT);
     }
 }

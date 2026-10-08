@@ -2,6 +2,7 @@
 #include "irq.h"
 #include "protos.h"
 #include "scheduler.h"
+#include "serial.h"
 
 #define KLOCK_DEPTH_MAX 4
 
@@ -16,6 +17,20 @@ static struct {
 
 int klock_order_ok(u32 held, u32 wanted) {
     return wanted > held;
+}
+
+// The abort prints the pair it refused: a bare reason leaves the next red
+// run to guess which nesting it tripped on.
+static void klock_violation(u32 held, u32 wanted) {
+    char digit[2] = {'0', 0};
+    serial_write("KLOCK order violation held=");
+    digit[0] = (char)('0' + held % 10);
+    serial_write(digit);
+    serial_write(" wanted=");
+    digit[0] = (char)('0' + wanted % 10);
+    serial_write(digit);
+    serial_write("\n");
+    panic_str("KLOCK order violation");
 }
 
 static u32 klock_cpu(void) {
@@ -38,7 +53,7 @@ void klock_acquire(struct klock *klock) {
     u32 depth = klock_records[cpu].depth;
     u32 held = depth ? klock_records[cpu].levels[depth - 1] : 0;
     if (depth >= KLOCK_DEPTH_MAX || !klock_order_ok(held, klock->level))
-        panic_str("KLOCK order violation");
+        klock_violation(held, klock->level);
     spin_lock(&klock->lock);
     klock_records[cpu].levels[depth] = klock->level;
     klock_records[cpu].flags[depth] = flags;

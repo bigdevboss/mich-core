@@ -987,6 +987,7 @@ if [ "$profile" = "smp" ]; then
         "Mich x86_64: SMP AP syscall containment pass" \
         "Mich x86_64: SMP allocator concurrency pass" \
         "Mich x86_64: SMP refcount concurrency pass" \
+        "Mich x86_64: SMP spawn storm pass" \
         "Mich x86_64: SMP lock order pass" \
         "Mich x86_64: SMP dual-core userspace pass"
     do

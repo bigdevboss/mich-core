@@ -114,8 +114,14 @@ u64 smp64_spin_count(void);
 #define SMP64_STRESS_TURNS 32
 #define SMP64_STRESS_HOLD 4
 struct kernel_object;
-void smp64_stress_reset(u32 turns, struct kernel_object *shared);
+#define SMP64_STRESS_ALLOC 0u
+#define SMP64_STRESS_REFCOUNT 1u
+#define SMP64_STRESS_SPAWN 2u
+
+void smp64_stress_reset(u32 turns, struct kernel_object *shared, u32 mode);
 void smp64_stress_run(u32 turns);
+void smp64_spawn_reset(u32 turns);
+u64 smp64_spawn_slots(void);
 u64 smp64_stress_pages(void);
 u64 smp64_stress_objects(void);
 u32 smp64_stress_failed(void);

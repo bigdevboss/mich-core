@@ -348,7 +348,7 @@ static void tty_wake_readers(u32 index) {
         else
             answer = (i64)transferred;
         tty_clear_wait(slot);
-        reader->state = TASK_RUNNING;
+        task_state_set(reader, TASK_RUNNING);
         task64_set_result(slot, answer);
     }
 }
@@ -360,7 +360,7 @@ int posix_tty_park(struct task *task, u32 index, uptr_t request, u32 length) {
     tty_waits[slot].index = index + 1u;
     tty_waits[slot].request = request;
     tty_waits[slot].length = length;
-    task->state = TASK_BLOCKED_TTY;
+    task_state_set(task, TASK_BLOCKED_TTY);
     return 0;
 }
 
@@ -393,7 +393,7 @@ i64 posix_tty_io_read(struct task *task, u32 index, uptr_t request,
     if (posix_tty_park(task, index, request, length)) return POSIX_TTY_EIO;
     if (scheduler_pick_next(slot) < 0) {
         tty_clear_wait((u32)slot);
-        task->state = TASK_RUNNING;
+        task_state_set(task, TASK_RUNNING);
         return POSIX_TTY_EDEADLK;
     }
     return (i64)task64_block_switch();

@@ -132,12 +132,12 @@ void posix_signal_stop(struct task *target, u32 signo) {
         // the task stops as a runnable one that will answer EINTR; POSIX
         // would keep the park and resume it after the continue.
         wake_with_eintr(target);
-        target->state = TASK_STOPPED;
+        task_state_set(target, TASK_STOPPED);
         target->stop_report = signo;
         task64_report_child((u32)(target - task_pool));
         return;
     }
-    target->state = TASK_STOPPED;
+    task_state_set(target, TASK_STOPPED);
     target->stop_report = signo;
     task64_report_child((u32)(target - task_pool));
 }
@@ -155,7 +155,7 @@ void posix_signal_continue_task(struct task *target) {
                             POSIX_SIGNAL_BIT(POSIX_SIG_TTOU));
     }
     if (target->state != TASK_STOPPED) return;
-    target->state = TASK_RUNNING;
+    task_state_set(target, TASK_RUNNING);
     target->stop_report = 0;
     target->continued_report = 1;
     // The answer a self-stopped syscall owes is published here and not at
@@ -237,12 +237,9 @@ int posix_signal_one(struct task *caller, struct task *target, u32 signo) {
 // still owed, which POSIX reports through the remainder pointer.
 static void wake_with_eintr(struct task *target) {
     u32 slot = (u32)(target - task_pool);
-    if (target->state == TASK_BLOCKED_SLEEP) {
-        u32 deadline = target->sleep_deadline;
-        uptr_t request = target->sleep_request;
-        target->sleep_deadline = 0;
-        target->sleep_request = 0;
-        target->state = TASK_RUNNING;
+    u32 deadline = 0;
+    uptr_t request = 0;
+    if (task_sleep_wake_claim(target, &deadline, &request)) {
         task64_set_result(slot, POSIX_SIGNAL_EINTR);
         if (request) {
             u32 left = deadline - timer_ticks;
@@ -256,37 +253,35 @@ static void wake_with_eintr(struct task *target) {
         }
         return;
     }
+    // The answer comes first: the pose modules answer the wake by looking
+    // at the state the task is parked in, so flipping it first would make
+    // them answer zero and the caller would resume with a plain 0.
     if (target->state == TASK_BLOCKED_PIPE) {
         i64 answer = posix_pipe_signal(target);
-        target->state = TASK_RUNNING;
-        task64_set_result(slot, answer);
+        if (task_state_wake(target, TASK_BLOCKED_PIPE))
+            task64_set_result(slot, answer);
         return;
     }
     if (target->state == TASK_BLOCKED_SOCKET) {
         i64 answer = posix_socket_signal(target);
-        target->state = TASK_RUNNING;
-        task64_set_result(slot, answer);
+        if (task_state_wake(target, TASK_BLOCKED_SOCKET))
+            task64_set_result(slot, answer);
         return;
     }
     if (target->state == TASK_BLOCKED_POLL) {
         i64 answer = posix_poll_signal(target);
-        target->state = TASK_RUNNING;
-        task64_set_result(slot, answer);
+        if (task_state_wake(target, TASK_BLOCKED_POLL))
+            task64_set_result(slot, answer);
         return;
     }
     if (target->state == TASK_BLOCKED_TTY) {
         i64 answer = posix_tty_signal(target);
-        target->state = TASK_RUNNING;
-        task64_set_result(slot, answer);
+        if (task_state_wake(target, TASK_BLOCKED_TTY))
+            task64_set_result(slot, answer);
         return;
     }
-    if (target->state == TASK_BLOCKED_WAIT) {
-        target->wait_pid = -1;
-        target->wait_posix = 0;
-        target->wait_status_address = 0;
-        target->state = TASK_RUNNING;
+    if (task_wait_cancel(target, -1))
         task64_set_result(slot, POSIX_SIGNAL_EINTR);
-    }
 }
 
 // Single-target resolution, kept for the callers that already know which

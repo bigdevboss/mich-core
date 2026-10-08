@@ -69,7 +69,7 @@ static void poll_complete(u32 slot, int deadline) {
     waits[slot].request = 0;
     waits[slot].count = 0;
     task->poll_deadline = 0;
-    task->state = TASK_RUNNING;
+    task_state_set(task, TASK_RUNNING);
     task64_set_result(slot, answer);
 }
 
@@ -94,7 +94,7 @@ i64 posix_poll(struct task *task, uptr_t request,
             if (ticks > 0xFFFFFFFEull) ticks = 0xFFFFFFFEull;
             task->poll_deadline = timer_ticks + (u32)ticks;
         }
-        task->state = TASK_BLOCKED_POLL;
+        task_state_set(task, TASK_BLOCKED_POLL);
         if (scheduler_pick_next(slot) < 0) {
             // Nothing else can run, so the park would freeze the CPU
             // inside the syscall. The pipe and ipc parks answer the same
@@ -102,7 +102,7 @@ i64 posix_poll(struct task *task, uptr_t request,
             waits[slot].request = 0;
             waits[slot].count = 0;
             task->poll_deadline = 0;
-            task->state = TASK_RUNNING;
+            task_state_set(task, TASK_RUNNING);
             return POSIX_VFS_EDEADLK;
         }
         return (int)task64_block_switch();
