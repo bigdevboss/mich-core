@@ -14,6 +14,8 @@
 #include "pmm.h"
 #include "posix_fd.h"
 #include "posix_pipe.h"
+#include "net_rx.h"
+#include "net_interface.h"
 #include "object.h"
 
 // Trampoline chunks (smp_tramp.asm) placed by the BSP at SMP64_TRAMP_BASE: entry
@@ -92,6 +94,9 @@ static u32 smp64_stress_turns;
 static u32 smp64_stress_mode;
 static struct kernel_object *smp64_stress_object;
 static volatile u64 smp64_spawn_slot_count;
+static struct kernel_object *smp64_net_storm_interface;
+static const u8 *smp64_net_storm_frame;
+static u32 smp64_net_storm_length;
 static volatile u32 smp64_spawn_held[MAX_TASKS];
 static u64 smp64_kernel_cr3;
 static u64 smp64_kernel_cr4;
@@ -451,6 +456,15 @@ int smp64_ipi_cpu(u32 index, u32 vector) {
 }
 
 // Wake a CPU up to a task it owns. A CPU kicking itself has nothing to do.
+// The mailbox kick: a frame posted for another CPU cannot wait for that
+// CPU's next tick if the driver is polling in a tight loop, so the post
+// breaks it out of hlt the way a wake does.
+void smp64_net_kick(u32 cpu) {
+    struct smp64_cpu *target = smp64_cpu(cpu);
+    if (!target || target->index == smp64_this()->index) return;
+    smp64_ipi_cpu(cpu, SMP64_IPI_NET_RX);
+}
+
 int smp64_resched_cpu(u32 index) {
     struct smp64_cpu *cpu = smp64_cpu(index);
     if (!cpu) return -1;
@@ -613,6 +627,14 @@ void smp64_stress_run(u32 turns) {
             smp64_spawn_turn();
             continue;
         }
+        if (smp64_stress_mode == SMP64_STRESS_NET) {
+            if (net_interface_receive_frame(smp64_net_storm_interface,
+                                            smp64_net_storm_frame,
+                                            smp64_net_storm_length,
+                                            timer_ticks))
+                __atomic_store_n(&smp64_stress_failure, 1, __ATOMIC_RELEASE);
+            continue;
+        }
         for (u32 slot = 0; slot < SMP64_STRESS_HOLD; slot++) {
             held[slot] = pmm_alloc_page();
             if (!held[slot]) {
@@ -649,6 +671,13 @@ void smp64_stress_reset(u32 turns, struct kernel_object *shared, u32 mode) {
     smp64_stress_failure = 0;
     for (u32 index = 0; index < SMP64_MAX; index++)
         smp64_cpus[index].stress_done = 0;
+}
+
+void smp64_net_storm_prepare(struct kernel_object *interface,
+                             const u8 *frame, u32 length) {
+    smp64_net_storm_interface = interface;
+    smp64_net_storm_frame = frame;
+    smp64_net_storm_length = length;
 }
 
 void smp64_spawn_reset(u32 turns) {
@@ -884,6 +913,12 @@ void smp64_ipi_dispatch(u32 vector) {
             __asm__ volatile("sti; hlt" ::: "memory");
     } else if (vector == SMP64_IPI_RESCHED) {
         __atomic_store_n(&cpu->resched, 1, __ATOMIC_RELEASE);
+    } else if (vector == SMP64_IPI_NET_RX) {
+        // The receive mailbox's worker entry: the frame is processed on the
+        // CPU that owns the interface, which is the whole point of the
+        // hand-off. A drain that finds the slot empty is a coalesced kick
+        // and nothing else.
+        net_rx_drain(cpu->index);
     } else if (vector == SMP64_IPI_TSS) {
         u16 tr;
         __asm__ volatile("str %0" : "=m"(tr));

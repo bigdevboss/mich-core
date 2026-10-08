@@ -91,6 +91,10 @@ struct net_interface {
     // net_interface_tick() still runs it unconditionally on the timer path.
     u32 last_arp_tick;
     u32 arp_ready;
+    // The CPU the interface's receive path runs on: the creating CPU while
+    // the driver stays where it started, which is where its frames arrive.
+    // A frame handed in from another CPU takes that CPU's receive mailbox.
+    u32 rx_cpu;
     u32 owner_domain_id;
     u32 interface_id;
     u32 generation;
@@ -215,6 +219,8 @@ int net_interface_route_send(struct route_table *routes, u64 buffer_id,
                              u32 destination, u32 now);
 int net_interface_receive_frame(struct kernel_object *object,
                                 const void *frame, u32 length, u32 now);
+void net_interface_receive_buffer(struct kernel_object *object, u64 buffer_id,
+                                  u32 offset, u32 length, u32 now);
 u64 net_interface_driver_acquire_rx(struct kernel_object *object,
                                     struct driver_domain *owner);
 int net_interface_driver_receive(struct kernel_object *object,

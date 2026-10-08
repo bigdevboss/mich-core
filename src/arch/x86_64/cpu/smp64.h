@@ -32,6 +32,7 @@
 // Test-only: parks every AP in the shared-state stress loop, so the allocator
 // and the object table are entered by two CPUs at once on purpose.
 #define SMP64_IPI_STRESS 0x49
+#define SMP64_IPI_NET_RX 0x4A
 #define SMP64_IPI_FIRST 0x41
 #define SMP64_IPI_LAST 0x4F
 #define SMP64_CURRENT_NONE 0xFFFFFFFFu
@@ -117,8 +118,11 @@ struct kernel_object;
 #define SMP64_STRESS_ALLOC 0u
 #define SMP64_STRESS_REFCOUNT 1u
 #define SMP64_STRESS_SPAWN 2u
+#define SMP64_STRESS_NET 3u
 
 void smp64_stress_reset(u32 turns, struct kernel_object *shared, u32 mode);
+void smp64_net_storm_prepare(struct kernel_object *interface,
+                             const u8 *frame, u32 length);
 void smp64_stress_run(u32 turns);
 void smp64_spawn_reset(u32 turns);
 u64 smp64_spawn_slots(void);
@@ -133,6 +137,7 @@ void smp64_enter_task(u32 index, u32 slot);
 int smp64_pick_pinned(u32 index);
 int smp64_pick_next(u32 current);
 int smp64_resched_cpu(u32 index);
+void smp64_net_kick(u32 cpu);
 u32 smp64_take_resched(void);
 void smp64_enter_pinned(u32 index);
 int smp64_pin_task(u32 index, const u8 *stub, u32 size, u32 *slot_out,

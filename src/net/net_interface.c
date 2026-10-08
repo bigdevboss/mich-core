@@ -5,6 +5,9 @@
 #include "event.h"
 #include "resource.h"
 #include "socket.h"
+#include "net_lock.h"
+#include "net_rx.h"
+#include "scheduler.h"
 #include "entropy.h"
 #include "crypto.h"
 
@@ -396,6 +399,7 @@ struct kernel_object *net_interface_create(
         for (usize_t byte = 0; byte < sizeof(interface->stats); byte++)
             stats[byte] = 0;
         pmtu_init(&interface->pmtu, 60000);
+        interface->rx_cpu = (u32)scheduler_cpu_id();
         interface->active = 1;
         struct kernel_object *object = object_create(
             KOBJECT_NET_INTERFACE, index + 1, interface_destroy);
@@ -1621,7 +1625,27 @@ int net_interface_receive_frame(struct kernel_object *object,
     struct net_interface *interface = net_interface_get(object);
     if (!interface || interface->state != NET_INTERFACE_UP || !frame)
         return -1;
-    return net_interface_receive_frame_ctx(interface, frame, length, now);
+    net_lock();
+    int result = net_interface_receive_frame_ctx(interface, frame, length, now);
+    net_unlock();
+    return result;
+}
+
+// The drain side of the receive mailbox: the frame already sits in a driver
+// buffer the mailbox owns, and this is the CPU that owns the interface.
+void net_interface_receive_buffer(struct kernel_object *object, u64 buffer_id,
+                                  u32 offset, u32 length, u32 now) {
+    struct net_interface *interface = net_interface_get(object);
+    if (!interface || interface->state != NET_INTERFACE_UP)
+        return;
+    void *buffer = packet_pool_data(interface->pool, buffer_id,
+                                    NET_BUFFER_DRIVER_RX);
+    if (!buffer) return;
+    net_lock();
+    net_interface_receive_frame_ctx(interface, (const u8 *)buffer + offset,
+                                    length, now);
+    packet_pool_release(interface->pool, buffer_id, NET_BUFFER_DRIVER_RX);
+    net_unlock();
 }
 
 u64 net_interface_driver_acquire_rx(struct kernel_object *object,
@@ -1641,14 +1665,24 @@ int net_interface_driver_receive(struct kernel_object *object,
         !owner_valid(interface, owner) || offset >= NET_PACKET_DATA_MAX ||
         !length || length > NET_PACKET_DATA_MAX - offset)
         return -1;
+    // A driver that runs on another CPU does not touch the protocol state
+    // from there: the frame goes to the owner CPU's mailbox and comes back
+    // through its drain. A refused hand-off means the owner has not drained
+    // the previous frame yet, so delivering this one here would reorder the
+    // stream; the refusal is what keeps the order.
+    if ((u32)scheduler_cpu_id() != interface->rx_cpu &&
+        net_rx_post(interface->rx_cpu, object, buffer_id, offset, length, now))
+        return 0;
     void *buffer = packet_pool_data(interface->pool, buffer_id,
                                     NET_BUFFER_DRIVER_RX);
     if (!buffer) return -1;
-    int result = net_interface_receive_frame(
-        object, (u8 *)buffer + offset, length, now);
+    net_lock();
+    int result = net_interface_receive_frame_ctx(
+        interface, (const u8 *)buffer + offset, length, now);
     if (packet_pool_release(interface->pool, buffer_id,
                             NET_BUFFER_DRIVER_RX))
-        return -1;
+        result = -1;
+    net_unlock();
     return result;
 }
 
@@ -1740,12 +1774,21 @@ u32 net_interface_driver_receive_batch(struct kernel_object *object,
                                         NET_BUFFER_DRIVER_RX);
         if (!buffer)
             break;
-        if (net_interface_receive_frame_ctx(
-                interface, (const u8 *)buffer + request->offset,
-                request->length, now) ||
-            packet_pool_release(interface->pool, request->buffer_id,
-                                NET_BUFFER_DRIVER_RX))
+        if (!processed && (u32)scheduler_cpu_id() != interface->rx_cpu &&
+            net_rx_post(interface->rx_cpu, object, request->buffer_id,
+                        request->offset, request->length, now)) {
+            processed++;
             break;
+        }
+        net_lock();
+        int delivered = net_interface_receive_frame_ctx(
+            interface, (const u8 *)buffer + request->offset,
+            request->length, now);
+        if (packet_pool_release(interface->pool, request->buffer_id,
+                                NET_BUFFER_DRIVER_RX))
+            delivered = -1;
+        net_unlock();
+        if (delivered) break;
         processed++;
     }
     return processed;
@@ -1789,6 +1832,7 @@ struct kernel_object *net_interface_pool(struct kernel_object *object,
 void net_interface_tick(struct kernel_object *object, u32 now) {
     struct net_interface *interface = net_interface_get(object);
     if (!interface || interface->state == NET_INTERFACE_REVOKED) return;
+    net_lock();
     interface->now = now;
     pmtu_tick(&interface->pmtu, now);
     if (interface->arp_ready) arp_tick(&interface->arp, now);
@@ -1871,6 +1915,7 @@ void net_interface_tick(struct kernel_object *object, u32 now) {
             !arp_lookup(&interface->arp, pending->next_hop, hardware, now))
             flush_pending(interface, pending->next_hop, hardware);
     }
+    net_unlock();
 }
 
 int net_interface_revoke(struct kernel_object *object) {

@@ -3,6 +3,7 @@
 #include "vfs.h"
 #include "event.h"
 #include "socket_abi.h"
+#include "net_lock.h"
 #include "irq.h"
 
 struct socket_state {
@@ -104,7 +105,9 @@ static void socket_destroy(struct kernel_object *object) {
     state->active = 0;
 }
 
-int socket_init(struct udp_context *udp, struct route_table *routes) {
+static int socket_init_locked(
+    struct udp_context *udp, struct route_table *routes) {
+
     if (!udp || !routes) return -1;
     for (u32 index = 0; index < SOCKET_MAX; index++)
         if (sockets[index].active) return -1;
@@ -142,8 +145,18 @@ int socket_init(struct udp_context *udp, struct route_table *routes) {
     return 0;
 }
 
-int socket_register_udp(struct udp_context *udp, u32 interface_id,
-                        u32 interface_generation) {
+
+int socket_init(struct udp_context *udp, struct route_table *routes) {
+    net_lock();
+    int result = socket_init_locked(udp, routes);
+    net_unlock();
+    return result;
+}
+
+
+static int socket_register_udp_locked(
+    struct udp_context *udp, u32 interface_id, u32 interface_generation) {
+
     if (!udp || !interface_id || !interface_generation) return -1;
     for (u32 index = 0; index < SOCKET_UDP_CONTEXT_MAX; index++)
         if (udp_contexts[index].active &&
@@ -164,7 +177,19 @@ int socket_register_udp(struct udp_context *udp, u32 interface_id,
     return -1;
 }
 
-void socket_unregister_udp(struct udp_context *udp) {
+
+int socket_register_udp(
+    struct udp_context *udp, u32 interface_id, u32 interface_generation) {
+    net_lock();
+    int result = socket_register_udp_locked(
+            udp, interface_id, interface_generation);
+    net_unlock();
+    return result;
+}
+
+
+static void socket_unregister_udp_locked(struct udp_context *udp) {
+
     if (!udp) return;
     for (u32 index = 0; index < SOCKET_MAX; index++) {
         struct socket_state *state = &sockets[index];
@@ -184,8 +209,17 @@ void socket_unregister_udp(struct udp_context *udp) {
     }
 }
 
-int socket_register_udpv6(struct udpv6_context *udp, u32 interface_id,
-                          u32 interface_generation) {
+
+void socket_unregister_udp(struct udp_context *udp) {
+    net_lock();
+    socket_unregister_udp_locked(udp);
+    net_unlock();
+}
+
+
+static int socket_register_udpv6_locked(
+    struct udpv6_context *udp, u32 interface_id, u32 interface_generation) {
+
     if (!udp || !interface_id || !interface_generation) return -1;
     for (u32 index = 0; index < SOCKET_UDP_CONTEXT_MAX; index++)
         if (udpv6_contexts[index].active &&
@@ -206,7 +240,19 @@ int socket_register_udpv6(struct udpv6_context *udp, u32 interface_id,
     return -1;
 }
 
-void socket_unregister_udpv6(struct udpv6_context *udp) {
+
+int socket_register_udpv6(
+    struct udpv6_context *udp, u32 interface_id, u32 interface_generation) {
+    net_lock();
+    int result = socket_register_udpv6_locked(
+            udp, interface_id, interface_generation);
+    net_unlock();
+    return result;
+}
+
+
+static void socket_unregister_udpv6_locked(struct udpv6_context *udp) {
+
     if (!udp) return;
     for (u32 index = 0; index < SOCKET_MAX; index++) {
         struct socket_state *state = &sockets[index];
@@ -225,6 +271,14 @@ void socket_unregister_udpv6(struct udpv6_context *udp) {
         context->active = 0;
     }
 }
+
+
+void socket_unregister_udpv6(struct udpv6_context *udp) {
+    net_lock();
+    socket_unregister_udpv6_locked(udp);
+    net_unlock();
+}
+
 
 struct kernel_object *socket_create(void) {
     if (!udp_contexts[0].active || !socket_routes) return 0;
@@ -298,9 +352,10 @@ struct kernel_object *socket_create_stream(void) {
     return 0;
 }
 
-int socket_stream_connect(struct kernel_object *object,
-                          struct kernel_object *interface,
-                          u32 destination, u16 port) {
+static int socket_stream_connect_locked(
+    struct kernel_object *object, struct kernel_object *interface, 
+    u32 destination, u16 port) {
+
     struct socket_state *state = state_for(object);
     if (!state || state->family != 14 || state->bound || !destination || !port)
         return -1;
@@ -330,9 +385,22 @@ int socket_stream_connect(struct kernel_object *object,
     return 0;
 }
 
-int socket_stream_listen(struct kernel_object *object,
-                         struct kernel_object *interface,
-                         u16 port, u32 backlog) {
+
+int socket_stream_connect(
+    struct kernel_object *object, struct kernel_object *interface, 
+    u32 destination, u16 port) {
+    net_lock();
+    int result = socket_stream_connect_locked(
+            object, interface, destination, port);
+    net_unlock();
+    return result;
+}
+
+
+static int socket_stream_listen_locked(
+    struct kernel_object *object, struct kernel_object *interface, u16 port, 
+    u32 backlog) {
+
     struct socket_state *state = state_for(object);
     if (!state || state->family != 14 || state->bound || !interface ||
         !port || !backlog || backlog > 32 || object_retain(interface))
@@ -354,9 +422,21 @@ int socket_stream_listen(struct kernel_object *object,
     return 0;
 }
 
-int socket_stream_listen_ipv6(struct kernel_object *object,
-                              struct kernel_object *interface,
-                              u16 port, u32 backlog) {
+
+int socket_stream_listen(
+    struct kernel_object *object, struct kernel_object *interface, u16 port, 
+    u32 backlog) {
+    net_lock();
+    int result = socket_stream_listen_locked(object, interface, port, backlog);
+    net_unlock();
+    return result;
+}
+
+
+static int socket_stream_listen_ipv6_locked(
+    struct kernel_object *object, struct kernel_object *interface, u16 port, 
+    u32 backlog) {
+
     struct socket_state *state = state_for(object);
     if (!state || state->family != 14 || state->bound || !interface ||
         !port || !backlog || backlog > 32 || object_retain(interface))
@@ -377,6 +457,18 @@ int socket_stream_listen_ipv6(struct kernel_object *object,
     state->backlog = backlog;
     return 0;
 }
+
+
+int socket_stream_listen_ipv6(
+    struct kernel_object *object, struct kernel_object *interface, u16 port, 
+    u32 backlog) {
+    net_lock();
+    int result = socket_stream_listen_ipv6_locked(
+            object, interface, port, backlog);
+    net_unlock();
+    return result;
+}
+
 
 struct kernel_object *socket_stream_accept(struct kernel_object *object) {
     struct socket_state *listener = state_for(object);
@@ -402,17 +494,29 @@ struct kernel_object *socket_stream_accept(struct kernel_object *object) {
     return accepted;
 }
 
-int socket_stream_send(struct kernel_object *object,
-                       const void *data, u32 length) {
+static int socket_stream_send_locked(
+    struct kernel_object *object, const void *data, u32 length) {
+
     struct socket_state *state = state_for(object);
     return state && state->family == 14 && state->bound ?
         net_interface_tcp_send(state->interface, state->tcp_connection,
                                data, length) : -1;
 }
 
-int socket_stream_send_file(struct kernel_object *object,
-                            struct kernel_object *node, u32 offset,
-                            u32 length) {
+
+int socket_stream_send(
+    struct kernel_object *object, const void *data, u32 length) {
+    net_lock();
+    int result = socket_stream_send_locked(object, data, length);
+    net_unlock();
+    return result;
+}
+
+
+static int socket_stream_send_file_locked(
+    struct kernel_object *object, struct kernel_object *node, u32 offset, 
+    u32 length) {
+
     struct socket_state *state = state_for(object);
     if (!state || state->family != 14 || !state->bound)
         return -1;
@@ -427,9 +531,21 @@ int socket_stream_send_file(struct kernel_object *object,
     return result;
 }
 
-int socket_stream_receive_file(struct kernel_object *object,
-                               struct kernel_object *node, u32 offset,
-                               u32 length) {
+
+int socket_stream_send_file(
+    struct kernel_object *object, struct kernel_object *node, u32 offset, 
+    u32 length) {
+    net_lock();
+    int result = socket_stream_send_file_locked(object, node, offset, length);
+    net_unlock();
+    return result;
+}
+
+
+static int socket_stream_receive_file_locked(
+    struct kernel_object *object, struct kernel_object *node, u32 offset, 
+    u32 length) {
+
     struct socket_state *state = state_for(object);
     if (!state || state->family != 14 || !state->bound)
         return -1;
@@ -444,25 +560,59 @@ int socket_stream_receive_file(struct kernel_object *object,
     return result;
 }
 
-int socket_stream_receive(struct kernel_object *object,
-                          void *data, u32 capacity, u32 *received) {
+
+int socket_stream_receive_file(
+    struct kernel_object *object, struct kernel_object *node, u32 offset, 
+    u32 length) {
+    net_lock();
+    int result = socket_stream_receive_file_locked(
+            object, node, offset, length);
+    net_unlock();
+    return result;
+}
+
+
+static int socket_stream_receive_locked(
+    struct kernel_object *object, void *data, u32 capacity, u32 *received) {
+
     struct socket_state *state = state_for(object);
     return state && state->family == 14 && state->bound ?
         net_interface_tcp_receive(state->interface, state->tcp_connection,
                                   data, capacity, received) : -1;
 }
 
-int socket_stream_shutdown(struct kernel_object *object) {
+
+int socket_stream_receive(
+    struct kernel_object *object, void *data, u32 capacity, u32 *received) {
+    net_lock();
+    int result = socket_stream_receive_locked(object, data, capacity, received);
+    net_unlock();
+    return result;
+}
+
+
+static int socket_stream_shutdown_locked(struct kernel_object *object) {
+
     struct socket_state *state = state_for(object);
     return state && state->family == 14 && state->bound ?
         net_interface_tcp_shutdown(state->interface,
                                    state->tcp_connection) : -1;
 }
 
+
+int socket_stream_shutdown(struct kernel_object *object) {
+    net_lock();
+    int result = socket_stream_shutdown_locked(object);
+    net_unlock();
+    return result;
+}
+
+
 // Takes the flag a notification left when it reached no parked waiter, so
 // the park path can spend it on one completion attempt: masking keeps a
 // notification that lands mid-read from losing its flag.
-int socket_stream_take_notify(struct kernel_object *object) {
+static int socket_stream_take_notify_locked(struct kernel_object *object) {
+
     struct socket_state *state = state_for(object);
     if (!state) return 0;
     irq_state_t irq = irq_save();
@@ -472,10 +622,19 @@ int socket_stream_take_notify(struct kernel_object *object) {
     return pending;
 }
 
-int socket_stream_state(struct kernel_object *object,
-                        u32 *state_out, u32 *readiness,
-                        i32 *error_out, u32 *eof_out,
-                        u32 *granted_out) {
+
+int socket_stream_take_notify(struct kernel_object *object) {
+    net_lock();
+    int result = socket_stream_take_notify_locked(object);
+    net_unlock();
+    return result;
+}
+
+
+static int socket_stream_state_locked(
+    struct kernel_object *object, u32 *state_out, u32 *readiness, 
+    i32 *error_out, u32 *eof_out, u32 *granted_out) {
+
     struct socket_state *state = state_for(object);
     if (!state || state->family != 14 || !state->bound ||
         !state_out || !readiness || !error_out || !eof_out || !granted_out)
@@ -510,14 +669,39 @@ int socket_stream_state(struct kernel_object *object,
     return 0;
 }
 
-int socket_stream_take_error(struct kernel_object *object, i32 *error) {
+
+int socket_stream_state(
+    struct kernel_object *object, u32 *state_out, u32 *readiness, 
+    i32 *error_out, u32 *eof_out, u32 *granted_out) {
+    net_lock();
+    int result = socket_stream_state_locked(
+            object, state_out, readiness, error_out, eof_out, granted_out);
+    net_unlock();
+    return result;
+}
+
+
+static int socket_stream_take_error_locked(
+    struct kernel_object *object, i32 *error) {
+
     struct socket_state *state = state_for(object);
     return state && state->family == 14 && state->bound && error ?
         net_interface_tcp_take_error(state->interface,
                                      state->tcp_connection, error) : -1;
 }
 
-void socket_tcp_abort_context(struct tcp_context *tcp, i32 error) {
+
+int socket_stream_take_error(struct kernel_object *object, i32 *error) {
+    net_lock();
+    int result = socket_stream_take_error_locked(object, error);
+    net_unlock();
+    return result;
+}
+
+
+static void socket_tcp_abort_context_locked(
+    struct tcp_context *tcp, i32 error) {
+
     if (!tcp || !error) return;
     tcp_abort_all(tcp, error);
     for (u32 index = 0; index < SOCKET_MAX; index++) {
@@ -530,7 +714,17 @@ void socket_tcp_abort_context(struct tcp_context *tcp, i32 error) {
     }
 }
 
-void socket_tcp_notify(struct tcp_context *tcp, u64 connection_id) {
+
+void socket_tcp_abort_context(struct tcp_context *tcp, i32 error) {
+    net_lock();
+    socket_tcp_abort_context_locked(tcp, error);
+    net_unlock();
+}
+
+
+static void socket_tcp_notify_locked(
+    struct tcp_context *tcp, u64 connection_id) {
+
     if (!tcp || !connection_id) return;
     u64 listener_id = 0;
     tcp_parent_listener(tcp, connection_id, &listener_id);
@@ -547,7 +741,17 @@ void socket_tcp_notify(struct tcp_context *tcp, u64 connection_id) {
     }
 }
 
-int socket_bind(struct kernel_object *object, u32 address, u16 port) {
+
+void socket_tcp_notify(struct tcp_context *tcp, u64 connection_id) {
+    net_lock();
+    socket_tcp_notify_locked(tcp, connection_id);
+    net_unlock();
+}
+
+
+static int socket_bind_locked(
+    struct kernel_object *object, u32 address, u16 port) {
+
     struct socket_state *state = state_for(object);
     struct socket_udp_context *context = context_for_address(address);
     if (!state || state->family != 4 || state->bound || !context) return -1;
@@ -559,8 +763,19 @@ int socket_bind(struct kernel_object *object, u32 address, u16 port) {
     return 0;
 }
 
-int socket_bind_ipv6(struct kernel_object *object,
-                     const u8 address[IPV6_ADDRESS_SIZE], u16 port) {
+
+int socket_bind(struct kernel_object *object, u32 address, u16 port) {
+    net_lock();
+    int result = socket_bind_locked(object, address, port);
+    net_unlock();
+    return result;
+}
+
+
+static int socket_bind_ipv6_locked(
+    struct kernel_object *object, const u8 address[IPV6_ADDRESS_SIZE],
+    u16 port) {
+
     struct socket_state *state = state_for(object);
     if (!state || state->family != 6 || state->bound || !address) return -1;
     struct socket_udp_context *selected = 0;
@@ -581,8 +796,21 @@ int socket_bind_ipv6(struct kernel_object *object,
     return 0;
 }
 
-int socket_send_to(struct kernel_object *object, u32 address, u16 port,
-                   const void *payload, u32 length) {
+
+int socket_bind_ipv6(
+    struct kernel_object *object, const u8 address[IPV6_ADDRESS_SIZE],
+    u16 port) {
+    net_lock();
+    int result = socket_bind_ipv6_locked(object, address, port);
+    net_unlock();
+    return result;
+}
+
+
+static int socket_send_to_locked(
+    struct kernel_object *object, u32 address, u16 port, const void *payload, 
+    u32 length) {
+
     struct socket_state *state = state_for(object);
     if (!state || state->family != 4 || !state->bound ||
         !state->udp || !address || !port)
@@ -594,9 +822,22 @@ int socket_send_to(struct kernel_object *object, u32 address, u16 port,
                     payload, length);
 }
 
-int socket_send_to_ipv6(struct kernel_object *object,
-                        const u8 address[IPV6_ADDRESS_SIZE], u16 port,
-                        const void *payload, u32 length) {
+
+int socket_send_to(
+    struct kernel_object *object, u32 address, u16 port, const void *payload, 
+    u32 length) {
+    net_lock();
+    int result = socket_send_to_locked(object, address, port, payload, length);
+    net_unlock();
+    return result;
+}
+
+
+static int socket_send_to_ipv6_locked(
+    struct kernel_object *object, const u8 address[IPV6_ADDRESS_SIZE],
+    u16 port, 
+    const void *payload, u32 length) {
+
     struct socket_state *state = state_for(object);
     if (!state || state->family != 6 || !state->bound ||
         !state->udpv6 || !address || !port)
@@ -605,24 +846,60 @@ int socket_send_to_ipv6(struct kernel_object *object,
                       address, port, payload, length);
 }
 
-int socket_receive_from_ipv6(struct kernel_object *object,
-                             struct udpv6_datagram *datagram) {
+
+int socket_send_to_ipv6(
+    struct kernel_object *object, const u8 address[IPV6_ADDRESS_SIZE],
+    u16 port, 
+    const void *payload, u32 length) {
+    net_lock();
+    int result = socket_send_to_ipv6_locked(
+            object, address, port, payload, length);
+    net_unlock();
+    return result;
+}
+
+
+static int socket_receive_from_ipv6_locked(
+    struct kernel_object *object, struct udpv6_datagram *datagram) {
+
     struct socket_state *state = state_for(object);
     return state && state->family == 6 && state->bound && state->udpv6 ?
         udpv6_receive(state->udpv6, state->binding_id, datagram) : -1;
 }
 
-int socket_receive_from(struct kernel_object *object,
-                        struct udp_datagram *datagram) {
+
+int socket_receive_from_ipv6(
+    struct kernel_object *object, struct udpv6_datagram *datagram) {
+    net_lock();
+    int result = socket_receive_from_ipv6_locked(object, datagram);
+    net_unlock();
+    return result;
+}
+
+
+static int socket_receive_from_locked(
+    struct kernel_object *object, struct udp_datagram *datagram) {
+
     struct socket_state *state = state_for(object);
     return state && state->bound && state->udp ?
         udp_receive(state->udp, state->binding_id, datagram) : -1;
 }
 
+
+int socket_receive_from(
+    struct kernel_object *object, struct udp_datagram *datagram) {
+    net_lock();
+    int result = socket_receive_from_locked(object, datagram);
+    net_unlock();
+    return result;
+}
+
+
 // The readiness probe behind poll on a datagram socket: a queued datagram
 // answers a receive without parking. Stream sockets have no queue to ask,
 // their readiness comes from the connection state probe.
-int socket_datagram_pending(struct kernel_object *object) {
+static int socket_datagram_pending_locked(struct kernel_object *object) {
+
     struct socket_state *state = state_for(object);
     if (!state || !state->bound) return 0;
     if (state->family == 4 && state->udp)
@@ -632,12 +909,32 @@ int socket_datagram_pending(struct kernel_object *object) {
     return 0;
 }
 
-int socket_local_address(struct kernel_object *object,
-                         u32 *address, u16 *port) {
+
+int socket_datagram_pending(struct kernel_object *object) {
+    net_lock();
+    int result = socket_datagram_pending_locked(object);
+    net_unlock();
+    return result;
+}
+
+
+static int socket_local_address_locked(
+    struct kernel_object *object, u32 *address, u16 *port) {
+
     struct socket_state *state = state_for(object);
     return state && state->bound && state->udp ?
         udp_binding_local(state->udp, state->binding_id, address, port) : -1;
 }
+
+
+int socket_local_address(
+    struct kernel_object *object, u32 *address, u16 *port) {
+    net_lock();
+    int result = socket_local_address_locked(object, address, port);
+    net_unlock();
+    return result;
+}
+
 
 struct kernel_object *socket_wait_event(struct kernel_object *object) {
     struct socket_state *state = state_for(object);
@@ -650,14 +947,25 @@ struct kernel_object *socket_wait_event(struct kernel_object *object) {
     return 0;
 }
 
-u32 socket_active_count(void) {
+static u32 socket_active_count_locked(void) {
+
     u32 count = 0;
     for (u32 index = 0; index < SOCKET_MAX; index++)
         if (sockets[index].active) count++;
     return count;
 }
 
-void socket_udp_notify(struct udp_context *udp, u64 binding_id) {
+
+u32 socket_active_count(void) {
+    net_lock();
+    u32 result = socket_active_count_locked();
+    net_unlock();
+    return result;
+}
+
+
+static void socket_udp_notify_locked(struct udp_context *udp, u64 binding_id) {
+
     if (!udp || !binding_id) return;
     for (u32 index = 0; index < SOCKET_MAX; index++) {
         struct socket_state *state = &sockets[index];
@@ -667,6 +975,14 @@ void socket_udp_notify(struct udp_context *udp, u64 binding_id) {
         wake_index(index);
     }
 }
+
+
+void socket_udp_notify(struct udp_context *udp, u64 binding_id) {
+    net_lock();
+    socket_udp_notify_locked(udp, binding_id);
+    net_unlock();
+}
+
 
 struct kernel_object *socket_interface_for(u32 address) {
     const struct route_entry *route = route_lookup(socket_routes, address);

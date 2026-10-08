@@ -14,6 +14,13 @@
 #include "klock.h"
 #include "posix_fd.h"
 #include "posix_pipe.h"
+#include "net_buffer.h"
+#include "net_rx.h"
+#include "net_test.h"
+#include "route.h"
+#include "socket.h"
+#include "vnic.h"
+#include "driver.h"
 
 #define SMP64_USER_GETPID 16
 #define SMP64_USER_STUB_AFTER 7
@@ -631,29 +638,169 @@ static int test_smp64_spawn(void) {
     return reason ? -1 : 0;
 }
 
+// The receive path is shared the moment a frame can arrive on one CPU while
+// another CPU runs the protocol stack: the driver capsule's batch, the tick
+// and a second driver's poll are all inside it. Every CPU here delivers the
+// same frame the way the driver does, and the receive counter has to land
+// exactly on what the arithmetic says: that is what no lost update means on
+// a path this wide.
+static int test_smp64_net_storm(void) {
+    u32 n = smp64_cpu_count();
+    u32 free_pages = pmm_free_pages();
+    u32 objects = object_active_count();
+    u32 interfaces = net_interface_active_count();
+    u32 pools = packet_pool_active_count();
+    u32 vnics = vnic_active_count();
+    u32 rings = ring_active_count();
+    int reason = 0;
+    struct driver_domain owner;
+    u8 *owner_bytes = (u8 *)&owner;
+    for (usize_t index = 0; index < sizeof(owner); index++)
+        owner_bytes[index] = 0;
+    owner.id = 79;
+    owner.pid = 0;
+    owner.state = DRIVER_DOMAIN_RUNNING;
+    owner.active = 1;
+    const u8 mac[6] = {0x02, 0x4D, 0x49, 0x43, 0x48, 0x21};
+    struct kernel_object *vnic = vnic_create(16, 16);
+    struct kernel_object *interface = vnic ? net_interface_create(
+        &owner, vnic_pool(vnic), vnic_rx_ring(vnic), vnic_tx_ring(vnic),
+        mac, 1500, "eth-storm") : 0;
+    if (!vnic || !interface || net_interface_register(interface) ||
+        net_interface_set_ipv4(interface, &owner, 0x0A090002u, 0xFFFFFF00u) ||
+        net_interface_set_link(interface, &owner, 1))
+        reason = 1;
+    static u8 storm_frame[64];
+    const u8 peer[6] = {0x02, 0x4D, 0x49, 0x43, 0x48, 0x22};
+    const u8 empty[6] = {0, 0, 0, 0, 0, 0};
+    if (!reason) {
+        for (u32 index = 0; index < sizeof(storm_frame); index++)
+            storm_frame[index] = (u8)index;
+        build_ethernet_frame(storm_frame, mac, peer, 0x0806,
+                             sizeof(storm_frame));
+        // A request for somebody else's address: the interface consumes it
+        // (one received packet) and answers nothing, so the storm drives the
+        // receive path alone and never touches the transmit ring.
+        build_arp_payload(storm_frame + 14, 1, peer, 0x0A090001u, empty,
+                          0x0A0900FFu);
+        struct net_interface *info = net_interface_get(interface);
+        if (!info) reason = 1;
+        else {
+            smp64_net_storm_prepare(interface, storm_frame,
+                                    sizeof(storm_frame));
+            smp64_stress_reset(SMP64_STRESS_TURNS, 0, SMP64_STRESS_NET);
+            for (u32 index = 1; index < n; index++)
+                if (smp64_ipi_cpu(index, SMP64_IPI_STRESS)) reason = 2;
+            if (!reason) {
+                smp64_stress_run(SMP64_STRESS_TURNS);
+                for (u32 index = 1; index < n; index++)
+                    if (wait_rounds(smp64_stress_done, index,
+                                    SMP64_BOOT_TIMEOUT_MS / 10 * 4))
+                        reason = 3;
+            }
+            if (!reason) {
+                if (smp64_stress_failed()) reason = 4;
+                else if (info->stats.rx_packets !=
+                         (u64)n * SMP64_STRESS_TURNS) reason = 5;
+                else if (info->stats.rx_drops) reason = 6;
+            }
+            smp64_net_storm_prepare(0, 0, 0);
+        }
+    }
+    if (reason) {
+        struct net_interface *info = net_interface_get(interface);
+        serial64_write("Mich x86_64: net storm check failed: ");
+        serial64_hex(reason);
+        serial64_write(" cpus="); serial64_hex(n);
+        serial64_write(" want=");
+        serial64_hex((u64)n * SMP64_STRESS_TURNS);
+        serial64_write(" rx=");
+        serial64_hex(info ? info->stats.rx_packets : 0);
+        serial64_write(" drops=");
+        serial64_hex(info ? info->stats.rx_drops : 0);
+        serial64_write(" storm="); serial64_hex(smp64_stress_failed());
+        for (u32 index = 1; index < n; index++) {
+            serial64_write(" d"); serial64_hex(index);
+            serial64_write("="); serial64_hex(smp64_stress_done(index));
+        }
+        serial64_write("\n");
+    }
+    if (interface) {
+        net_interface_revoke(interface);
+        net_interface_remove(interface);
+        object_release(interface);
+    }
+    if (vnic) object_release(vnic);
+    if (pmm_free_pages() != free_pages || object_active_count() != objects ||
+        net_interface_active_count() != interfaces ||
+        packet_pool_active_count() != pools || vnic_active_count() != vnics ||
+        ring_active_count() != rings)
+        reason = 7;
+    return reason ? -1 : 0;
+}
+
+static u32 smp64_mailbox_kicks;
+
+static void smp64_mailbox_kick(u32 cpu) {
+    (void)cpu;
+    smp64_mailbox_kicks++;
+}
+
+// The receive mailbox is a hand-off, not a queue: the frame either takes the
+// slot or goes back to its caller, so the slot can add latency to a frame
+// and never a drop or a second copy. The kick is the worker entry's signal,
+// and one post has to mean exactly one kick.
+static int test_smp64_rx_mailbox(void) {
+    struct kernel_object *carrier = object_create(KOBJECT_PAGE, 0, 0);
+    if (!carrier) return -1;
+    net_rx_init();
+    net_rx_set_kick(smp64_mailbox_kick);
+    smp64_mailbox_kicks = 0;
+    u32 cpu = smp64_cpu_count() > 1 ? 1u : 0u;
+    u64 handoffs = net_rx_handoffs();
+    u64 drains = net_rx_drains(cpu);
+    int failed = 0;
+    if (!net_rx_post(cpu, carrier, 7, 16, 32, 9)) failed = 1;
+    if (net_rx_post(cpu, carrier, 8, 16, 32, 9)) failed = 2;
+    if (smp64_mailbox_kicks != 1) failed = 3;
+    if (net_rx_handoffs() != handoffs + 1) failed = 4;
+    if (!net_rx_drain(cpu)) failed = 5;
+    if (net_rx_drain(cpu)) failed = 6;
+    if (net_rx_drains(cpu) != drains + 1) failed = 7;
+    if (!net_rx_post(cpu, carrier, 9, 0, 8, 9)) failed = 8;
+    if (!net_rx_drain(cpu)) failed = 9;
+    if (smp64_mailbox_kicks != 2) failed = 10;
+    if (net_rx_post(NET_RX_SLOT_MAX, carrier, 1, 0, 1, 0)) failed = 11;
+    if (net_rx_post(cpu, 0, 1, 0, 1, 0)) failed = 12;
+    net_rx_set_kick(smp64_net_kick);
+    object_release(carrier);
+    return failed ? -1 : 0;
+}
+
 // The level checker is what turns a would-be deadlock into a named abort, so
 // the battery has to show it rejects the pairs the order forbids and that
 // the record follows real nesting. The locks here are the test's own: the
 // point is the checker, not the subsystems it guards.
 static int test_smp64_lockorder(void) {
-    static struct klock outer = KLOCK_INIT(KLOCK_LEVEL_FD);
+    static struct klock outer = KLOCK_INIT(KLOCK_LEVEL_NET);
     static struct klock inner = KLOCK_INIT(KLOCK_LEVEL_PMM);
-    if (klock_order_ok(0, KLOCK_LEVEL_FD) != 1) return -1;
-    if (klock_order_ok(KLOCK_LEVEL_FD, KLOCK_LEVEL_PIPE) != 1) return -1;
+    if (klock_order_ok(0, KLOCK_LEVEL_NET) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_NET, KLOCK_LEVEL_FD) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_FD, KLOCK_LEVEL_OBJECT) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_OBJECT, KLOCK_LEVEL_PIPE) != 1) return -1;
     if (klock_order_ok(KLOCK_LEVEL_PIPE, KLOCK_LEVEL_POOL) != 1) return -1;
-    if (klock_order_ok(KLOCK_LEVEL_POOL, KLOCK_LEVEL_OBJECT) != 1) return -1;
-    if (klock_order_ok(KLOCK_LEVEL_OBJECT, KLOCK_LEVEL_PMM) != 1) return -1;
-    if (klock_order_ok(KLOCK_LEVEL_FD, KLOCK_LEVEL_PMM) != 1) return -1;
-    if (klock_order_ok(KLOCK_LEVEL_PIPE, KLOCK_LEVEL_FD) != 0) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_POOL, KLOCK_LEVEL_PMM) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_NET, KLOCK_LEVEL_PMM) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_PIPE, KLOCK_LEVEL_NET) != 0) return -1;
     if (klock_order_ok(KLOCK_LEVEL_PMM, KLOCK_LEVEL_PMM) != 0) return -1;
     if (klock_order_ok(KLOCK_LEVEL_PMM, KLOCK_LEVEL_POOL) != 0) return -1;
     if (klock_held_level() != 0) return -1;
     klock_acquire(&outer);
-    if (klock_held_level() != KLOCK_LEVEL_FD) return -1;
+    if (klock_held_level() != KLOCK_LEVEL_NET) return -1;
     klock_acquire(&inner);
     if (klock_held_level() != KLOCK_LEVEL_PMM) return -1;
     klock_release(&inner);
-    if (klock_held_level() != KLOCK_LEVEL_FD) return -1;
+    if (klock_held_level() != KLOCK_LEVEL_NET) return -1;
     klock_release(&outer);
     if (klock_held_level() != 0) return -1;
     return 0;
@@ -934,6 +1081,16 @@ int tests64_run_smp(void) {
         return -1;
     }
     serial64_write("Mich x86_64: SMP spawn storm pass\n");
+    if (test_report_record(TEST_ID_SMP_NET, test_smp64_net_storm())) {
+        irq_restore(irq_state);
+        return -1;
+    }
+    serial64_write("Mich x86_64: SMP net receive storm pass\n");
+    if (test_report_record(TEST_ID_SMP_MAILBOX, test_smp64_rx_mailbox())) {
+        irq_restore(irq_state);
+        return -1;
+    }
+    serial64_write("Mich x86_64: SMP receive mailbox pass\n");
     if (test_report_record(TEST_ID_SMP_LOCKORDER, test_smp64_lockorder())) {
         irq_restore(irq_state);
         return -1;

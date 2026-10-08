@@ -9,11 +9,12 @@
 // and a nested take at the same or a shallower level aborts: the same
 // nesting under load is a deadlock, and aborting names the pair instead of
 // hanging the boot. The order itself is written down in the notes.
-#define KLOCK_LEVEL_FD 1u
-#define KLOCK_LEVEL_PIPE 2u
-#define KLOCK_LEVEL_POOL 3u
-#define KLOCK_LEVEL_OBJECT 4u
-#define KLOCK_LEVEL_PMM 5u
+#define KLOCK_LEVEL_NET 1u
+#define KLOCK_LEVEL_FD 2u
+#define KLOCK_LEVEL_OBJECT 3u
+#define KLOCK_LEVEL_PIPE 4u
+#define KLOCK_LEVEL_POOL 5u
+#define KLOCK_LEVEL_PMM 6u
 
 // The same ceiling as the CPU target, SMP64_MAX in the arch record.
 #define KLOCK_MAX_CPUS 16

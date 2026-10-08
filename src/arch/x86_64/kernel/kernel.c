@@ -59,6 +59,7 @@
 #include "wait_many.h"
 #include "net_buffer.h"
 #include "vnic.h"
+#include "net_rx.h"
 #include "net_interface.h"
 #include "net_interface_abi.h"
 #include "net_abi.h"
@@ -1009,6 +1010,8 @@ static int network_runtime_init(void) {
         return -1;
     }
     route_init(&runtime_routes);
+    net_rx_init();
+    net_rx_set_kick(smp64_net_kick);
     if (net_interface_init(&runtime_routes)) {
         loopback_destroy(&runtime_loopback);
         return -1;
@@ -2030,6 +2033,9 @@ void timer64_dispatch(struct interrupt_frame64 *frame) {
 #endif
     iommu64_fault_tick();
     reap_orphan_zombies();
+    // The mailbox backstop: the drain on this CPU's slot, so a frame handed
+    // over while the owning CPU had nothing to run it still lands.
+    net_rx_drain((u32)scheduler_cpu_id());
     if (timer_ticks == 8)
         serial64_write("Mich x86_64: preemptive scheduler pass\n");
     if (smp64_host_note(frame->cs))
