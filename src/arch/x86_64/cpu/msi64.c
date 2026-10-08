@@ -182,30 +182,39 @@ static int msi_create_group_locked(struct kernel_object *pci, u32 count,
             break;
         }
         state->irq = irq;
-        if (vector64_transfer_locked(vectors[member], (uptr_t)group,
-                                     (uptr_t)irq)) {
-            object_release(irq);
-            break;
-        }
         irqs[created++] = irq;
+        if (vector64_transfer_locked(vectors[member], (uptr_t)group,
+                                     (uptr_t)irq))
+            break;
     }
+    // The created objects stay in the caller's array: their destroys run the
+    // mask and release backends, which take this lock, so the caller unwinds
+    // them after the unlock.
     if (created == count) return 0;
-    for (u32 index = 0; index < created; index++) object_release(irqs[index]);
     for (u32 index = created; index < count; index++) {
         uptr_t owner = vector64_owner_locked(vectors[index]);
         if (owner == (uptr_t)group)
             vector64_release_locked(vectors[index], (uptr_t)group);
     }
     group_clear(group);
-    for (u32 index = 0; index < capacity; index++) irqs[index] = 0;
     return -1;
+}
+
+static void msi_discard_group(struct kernel_object **irqs, u32 capacity) {
+    for (u32 index = 0; index < capacity; index++) {
+        if (!irqs[index]) continue;
+        object_release(irqs[index]);
+        irqs[index] = 0;
+    }
 }
 
 int msi64_create_group(struct kernel_object *pci, u32 count,
                        struct kernel_object **irqs, u32 capacity) {
+    for (u32 index = 0; irqs && index < capacity; index++) irqs[index] = 0;
     klock_acquire(&irq_program_klock);
     int result = msi_create_group_locked(pci, count, irqs, capacity);
     klock_release(&irq_program_klock);
+    if (result && irqs) msi_discard_group(irqs, capacity);
     return result;
 }
 
@@ -214,5 +223,9 @@ struct kernel_object *msi64_create(struct kernel_object *pci) {
     klock_acquire(&irq_program_klock);
     int result = msi_create_group_locked(pci, 1, &irq, 1);
     klock_release(&irq_program_klock);
-    return result ? 0 : irq;
+    if (result) {
+        if (irq) object_release(irq);
+        return 0;
+    }
+    return irq;
 }

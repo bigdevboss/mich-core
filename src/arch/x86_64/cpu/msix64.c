@@ -121,7 +121,9 @@ int msix64_init(u8 destination_apic_id) {
 }
 
 static struct kernel_object *msix_create_locked(
-    struct kernel_object *table_object, u32 entry_index) {
+    struct kernel_object *table_object, u32 entry_index,
+    struct kernel_object **discard) {
+    *discard = 0;
     const struct msix_table_resource *table =
         msix_table_resource_get(table_object);
     if (!table || entry_index >= table->entries) return 0;
@@ -196,7 +198,9 @@ static struct kernel_object *msix_create_locked(
         }
         state->irq = irq;
         if (vector64_transfer_locked((u8)vector, (uptr_t)state, (uptr_t)irq)) {
-            object_release(irq);
+            // The destroy of this object takes this lock, so the caller
+            // releases it after the unlock.
+            *discard = irq;
             return 0;
         }
         return irq;
@@ -206,9 +210,12 @@ static struct kernel_object *msix_create_locked(
 
 struct kernel_object *msix64_create(struct kernel_object *table_object,
                                     u32 entry_index) {
+    struct kernel_object *discard = 0;
     klock_acquire(&irq_program_klock);
-    struct kernel_object *irq = msix_create_locked(table_object, entry_index);
+    struct kernel_object *irq =
+        msix_create_locked(table_object, entry_index, &discard);
     klock_release(&irq_program_klock);
+    if (discard) object_release(discard);
     return irq;
 }
 
@@ -248,23 +255,37 @@ static int msix_create_group_locked(struct kernel_object *table,
         return -1;
     u32 created = 0;
     while (created < count) {
-        struct kernel_object *irq =
-            msix_create_locked(table, first_entry + created);
+        struct kernel_object *discard = 0;
+        struct kernel_object *irq = msix_create_locked(
+            table, first_entry + created, &discard);
+        if (discard) {
+            irqs[created++] = discard;
+            break;
+        }
         if (!irq) break;
         irqs[created++] = irq;
     }
+    // The created objects stay in the caller's array: their destroys run the
+    // mask and release backends, which take this lock, so the caller unwinds
+    // them after the unlock.
     if (created == count) return 0;
-    while (created) object_release(irqs[--created]);
-    for (u32 index = 0; index < capacity; index++) irqs[index] = 0;
     return -1;
 }
 
 int msix64_create_group(struct kernel_object *table, u32 first_entry,
                         u32 count, struct kernel_object **irqs,
                         u32 capacity) {
+    for (u32 index = 0; irqs && index < capacity; index++) irqs[index] = 0;
     klock_acquire(&irq_program_klock);
     int result = msix_create_group_locked(table, first_entry, count, irqs,
                                           capacity);
     klock_release(&irq_program_klock);
+    if (result && irqs) {
+        for (u32 index = 0; index < capacity; index++) {
+            if (!irqs[index]) continue;
+            object_release(irqs[index]);
+            irqs[index] = 0;
+        }
+    }
     return result;
 }
