@@ -880,7 +880,12 @@ static int test_smp64_vector_storm(void) {
 static int test_smp64_lockorder(void) {
     static struct klock outer = KLOCK_INIT(KLOCK_LEVEL_NET);
     static struct klock inner = KLOCK_INIT(KLOCK_LEVEL_PMM);
-    if (klock_order_ok(0, KLOCK_LEVEL_NET) != 1) return -1;
+    if (klock_order_ok(0, KLOCK_LEVEL_MANAGER) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_MANAGER, KLOCK_LEVEL_SUPERVISOR) != 1)
+        return -1;
+    if (klock_order_ok(KLOCK_LEVEL_SUPERVISOR, KLOCK_LEVEL_MODULE) != 1)
+        return -1;
+    if (klock_order_ok(KLOCK_LEVEL_MODULE, KLOCK_LEVEL_NET) != 1) return -1;
     if (klock_order_ok(KLOCK_LEVEL_NET, KLOCK_LEVEL_FD) != 1) return -1;
     if (klock_order_ok(KLOCK_LEVEL_FD, KLOCK_LEVEL_MSI) != 1) return -1;
     if (klock_order_ok(KLOCK_LEVEL_MSI, KLOCK_LEVEL_IOMMU) != 1) return -1;
@@ -889,8 +894,14 @@ static int test_smp64_lockorder(void) {
     if (klock_order_ok(KLOCK_LEVEL_OBJECT, KLOCK_LEVEL_PIPE) != 1) return -1;
     if (klock_order_ok(KLOCK_LEVEL_PIPE, KLOCK_LEVEL_POOL) != 1) return -1;
     if (klock_order_ok(KLOCK_LEVEL_POOL, KLOCK_LEVEL_PMM) != 1) return -1;
-    if (klock_order_ok(KLOCK_LEVEL_NET, KLOCK_LEVEL_PMM) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_MANAGER, KLOCK_LEVEL_PMM) != 1)
+        return -1;
     if (klock_order_ok(KLOCK_LEVEL_PIPE, KLOCK_LEVEL_NET) != 0) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_SUPERVISOR, KLOCK_LEVEL_MANAGER) != 0)
+        return -1;
+    if (klock_order_ok(KLOCK_LEVEL_MODULE, KLOCK_LEVEL_SUPERVISOR) != 0)
+        return -1;
+    if (klock_order_ok(KLOCK_LEVEL_NET, KLOCK_LEVEL_MODULE) != 0) return -1;
     if (klock_order_ok(KLOCK_LEVEL_MSI, KLOCK_LEVEL_FD) != 0) return -1;
     if (klock_order_ok(KLOCK_LEVEL_RESOURCE, KLOCK_LEVEL_MSI) != 0) return -1;
     if (klock_order_ok(KLOCK_LEVEL_PMM, KLOCK_LEVEL_PMM) != 0) return -1;

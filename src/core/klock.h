@@ -9,15 +9,22 @@
 // and a nested take at the same or a shallower level aborts: the same
 // nesting under load is a deadlock, and aborting names the pair instead of
 // hanging the boot. The order itself is written down in the notes.
-#define KLOCK_LEVEL_NET 1u
-#define KLOCK_LEVEL_FD 2u
-#define KLOCK_LEVEL_MSI 3u
-#define KLOCK_LEVEL_IOMMU 4u
-#define KLOCK_LEVEL_RESOURCE 5u
-#define KLOCK_LEVEL_OBJECT 6u
-#define KLOCK_LEVEL_PIPE 7u
-#define KLOCK_LEVEL_POOL 8u
-#define KLOCK_LEVEL_PMM 9u
+// The driver layer sits at the bottom because it is the caller: a domain
+// teardown reaches the handles, the interrupt controllers, the IOMMU, the
+// resource tables and the object table on the way out, and the manager
+// reaches the supervisor, so all three take their locks before any of those.
+#define KLOCK_LEVEL_MANAGER 1u
+#define KLOCK_LEVEL_SUPERVISOR 2u
+#define KLOCK_LEVEL_MODULE 3u
+#define KLOCK_LEVEL_NET 4u
+#define KLOCK_LEVEL_FD 5u
+#define KLOCK_LEVEL_MSI 6u
+#define KLOCK_LEVEL_IOMMU 7u
+#define KLOCK_LEVEL_RESOURCE 8u
+#define KLOCK_LEVEL_OBJECT 9u
+#define KLOCK_LEVEL_PIPE 10u
+#define KLOCK_LEVEL_POOL 11u
+#define KLOCK_LEVEL_PMM 12u
 
 // The same ceiling as the CPU target, SMP64_MAX in the arch record.
 #define KLOCK_MAX_CPUS 16
