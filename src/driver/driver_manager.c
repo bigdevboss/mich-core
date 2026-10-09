@@ -1,4 +1,5 @@
 #include "driver_manager.h"
+#include "klock.h"
 #include "object.h"
 
 struct manager_manifest {
@@ -26,6 +27,14 @@ static struct manager_binding bindings[DRIVER_MANAGER_BINDING_MAX];
 static struct kernel_object *managed_devices[DRIVER_MANAGER_DEVICE_MAX];
 static u32 managed_device_count;
 static driver_resource_provider_fn resource_provider;
+
+static struct klock driver_manager_klock = KLOCK_INIT(KLOCK_LEVEL_MANAGER);
+
+static int driver_manager_register_recovery_locked(
+    const struct driver_user_manifest *manifest,
+    const struct driver_manager_recovery_config *config);
+static int driver_manager_start_all_locked(struct kernel_object **devices,
+                                           u32 device_count);
 
 static void clear_manifest(struct manager_manifest *entry) {
     u8 *bytes = (u8 *)entry;
@@ -162,7 +171,8 @@ void driver_manager_init(driver_resource_provider_fn provider) {
     resource_provider = provider;
 }
 
-int driver_manager_set_devices(struct kernel_object **devices, u32 device_count) {
+static int driver_manager_set_devices_locked(struct kernel_object **devices,
+                                             u32 device_count) {
     if ((!devices && device_count) || device_count > DRIVER_MANAGER_DEVICE_MAX)
         return -1;
     struct kernel_object *retained[DRIVER_MANAGER_DEVICE_MAX];
@@ -200,16 +210,32 @@ int driver_manager_set_devices(struct kernel_object **devices, u32 device_count)
         managed_devices[index] = retained[index];
     for (u32 index = device_count; index < DRIVER_MANAGER_DEVICE_MAX; index++)
         managed_devices[index] = 0;
-    int started = driver_manager_start_all(managed_devices,
+    int started = driver_manager_start_all_locked(managed_devices,
                                            managed_device_count);
     return removal_failed || started < 0 ? -1 : started;
 }
 
-int driver_manager_register(const struct driver_user_manifest *manifest) {
-    return driver_manager_register_recovery(manifest, 0);
+int driver_manager_set_devices(struct kernel_object **devices,
+                               u32 device_count) {
+    klock_acquire(&driver_manager_klock);
+    int result = driver_manager_set_devices_locked(devices, device_count);
+    klock_release(&driver_manager_klock);
+    return result;
 }
 
-int driver_manager_register_recovery(
+static int driver_manager_register_locked(
+    const struct driver_user_manifest *manifest) {
+    return driver_manager_register_recovery_locked(manifest, 0);
+}
+
+int driver_manager_register(const struct driver_user_manifest *manifest) {
+    klock_acquire(&driver_manager_klock);
+    int result = driver_manager_register_locked(manifest);
+    klock_release(&driver_manager_klock);
+    return result;
+}
+
+static int driver_manager_register_recovery_locked(
     const struct driver_user_manifest *manifest,
     const struct driver_manager_recovery_config *config) {
     if (driver_user_manifest_validate(manifest) ||
@@ -241,13 +267,22 @@ int driver_manager_register_recovery(
             clear_manifest(&manifests[index]);
             return -1;
         }
-        driver_manager_start_all(managed_devices, managed_device_count);
+        driver_manager_start_all_locked(managed_devices, managed_device_count);
         return (int)index + 1;
     }
     return -1;
 }
 
-int driver_manager_unregister(int manifest_id) {
+int driver_manager_register_recovery(
+    const struct driver_user_manifest *manifest,
+    const struct driver_manager_recovery_config *config) {
+    klock_acquire(&driver_manager_klock);
+    int result = driver_manager_register_recovery_locked(manifest, config);
+    klock_release(&driver_manager_klock);
+    return result;
+}
+
+static int driver_manager_unregister_locked(int manifest_id) {
     struct manager_manifest *entry = manifest_at(manifest_id);
     if (!entry) return -1;
     u32 slot = (u32)manifest_id - 1;
@@ -267,12 +302,28 @@ int driver_manager_unregister(int manifest_id) {
     return 0;
 }
 
-const struct driver_user_manifest *driver_manager_manifest(int manifest_id) {
+int driver_manager_unregister(int manifest_id) {
+    klock_acquire(&driver_manager_klock);
+    int result = driver_manager_unregister_locked(manifest_id);
+    klock_release(&driver_manager_klock);
+    return result;
+}
+
+static const struct driver_user_manifest *driver_manager_manifest_locked(
+    int manifest_id) {
     struct manager_manifest *entry = manifest_at(manifest_id);
     return entry ? &entry->manifest : 0;
 }
 
-int driver_manager_set_recovery_fallback(
+const struct driver_user_manifest *driver_manager_manifest(int manifest_id) {
+    klock_acquire(&driver_manager_klock);
+    const struct driver_user_manifest *result = driver_manager_manifest_locked(
+    manifest_id);
+    klock_release(&driver_manager_klock);
+    return result;
+}
+
+static int driver_manager_set_recovery_fallback_locked(
     int manifest_id, const struct driver_recovery_profile *profile) {
     struct manager_manifest *entry = manifest_at(manifest_id);
     if (!entry || !fallback_valid(&entry->manifest, profile)) return -1;
@@ -287,7 +338,16 @@ int driver_manager_set_recovery_fallback(
     return 0;
 }
 
-int driver_manager_set_recovery_fallback_selector(
+int driver_manager_set_recovery_fallback(
+    int manifest_id, const struct driver_recovery_profile *profile) {
+    klock_acquire(&driver_manager_klock);
+    int result = driver_manager_set_recovery_fallback_locked(manifest_id,
+                                                             profile);
+    klock_release(&driver_manager_klock);
+    return result;
+}
+
+static int driver_manager_set_recovery_fallback_selector_locked(
     int manifest_id, const struct driver_recovery_selector *selector) {
     struct manager_manifest *entry = manifest_at(manifest_id);
     if (!entry || !entry->fallback_enabled ||
@@ -303,8 +363,17 @@ int driver_manager_set_recovery_fallback_selector(
     return 0;
 }
 
-int driver_manager_set_recovery_fallback_triggers(int manifest_id,
-                                                  u32 triggers) {
+int driver_manager_set_recovery_fallback_selector(
+    int manifest_id, const struct driver_recovery_selector *selector) {
+    klock_acquire(&driver_manager_klock);
+    int result = driver_manager_set_recovery_fallback_selector_locked(
+    manifest_id, selector);
+    klock_release(&driver_manager_klock);
+    return result;
+}
+
+static int driver_manager_set_recovery_fallback_triggers_locked(int manifest_id,
+                                                                u32 triggers) {
     struct manager_manifest *entry = manifest_at(manifest_id);
     if (!entry || !entry->fallback_enabled ||
         driver_recovery_fallback_triggers_validate(triggers))
@@ -320,7 +389,16 @@ int driver_manager_set_recovery_fallback_triggers(int manifest_id,
     return 0;
 }
 
-int driver_manager_set_crash_circuit_policy(
+int driver_manager_set_recovery_fallback_triggers(int manifest_id,
+                                                  u32 triggers) {
+    klock_acquire(&driver_manager_klock);
+    int result = driver_manager_set_recovery_fallback_triggers_locked(
+    manifest_id, triggers);
+    klock_release(&driver_manager_klock);
+    return result;
+}
+
+static int driver_manager_set_crash_circuit_policy_locked(
     int manifest_id, const struct driver_crash_circuit_policy *policy) {
     struct manager_manifest *entry = manifest_at(manifest_id);
     if (!entry || driver_crash_circuit_policy_validate(policy)) return -1;
@@ -331,6 +409,15 @@ int driver_manager_set_crash_circuit_policy(
     entry->crash_policy = *policy;
     entry->crash_policy_enabled = 1;
     return 0;
+}
+
+int driver_manager_set_crash_circuit_policy(
+    int manifest_id, const struct driver_crash_circuit_policy *policy) {
+    klock_acquire(&driver_manager_klock);
+    int result = driver_manager_set_crash_circuit_policy_locked(manifest_id,
+                                                                policy);
+    klock_release(&driver_manager_klock);
+    return result;
 }
 
 static int dependencies_ready(u32 slot) {
@@ -366,7 +453,8 @@ static int select_manifest(struct kernel_object *device, const u8 *attempted) {
     return selected;
 }
 
-struct driver_domain *driver_manager_start_device(struct kernel_object *device) {
+static struct driver_domain *driver_manager_start_device_locked(
+    struct kernel_object *device) {
     if (!device || !device->active || binding_for(device) ||
         driver_domain_for_device(device))
         return 0;
@@ -416,14 +504,23 @@ struct driver_domain *driver_manager_start_device(struct kernel_object *device) 
     }
 }
 
-int driver_manager_start_all(struct kernel_object **devices, u32 device_count) {
+struct driver_domain *driver_manager_start_device(
+    struct kernel_object *device) {
+    klock_acquire(&driver_manager_klock);
+    struct driver_domain *result = driver_manager_start_device_locked(device);
+    klock_release(&driver_manager_klock);
+    return result;
+}
+
+static int driver_manager_start_all_locked(struct kernel_object **devices,
+                                           u32 device_count) {
     if (!devices && device_count) return -1;
     int started = 0;
     for (;;) {
         int progress = 0;
         for (u32 index = 0; index < device_count; index++)
             if (!binding_for(devices[index]) &&
-                driver_manager_start_device(devices[index])) {
+                driver_manager_start_device_locked(devices[index])) {
                 started++;
                 progress++;
             }
@@ -431,12 +528,27 @@ int driver_manager_start_all(struct kernel_object **devices, u32 device_count) {
     }
 }
 
-struct driver_domain *driver_manager_domain(struct kernel_object *device) {
+int driver_manager_start_all(struct kernel_object **devices, u32 device_count) {
+    klock_acquire(&driver_manager_klock);
+    int result = driver_manager_start_all_locked(devices, device_count);
+    klock_release(&driver_manager_klock);
+    return result;
+}
+
+static struct driver_domain *driver_manager_domain_locked(
+    struct kernel_object *device) {
     struct manager_binding *binding = binding_for(device);
     return binding ? binding->domain : 0;
 }
 
-int driver_manager_stop_device(struct kernel_object *dev) {
+struct driver_domain *driver_manager_domain(struct kernel_object *device) {
+    klock_acquire(&driver_manager_klock);
+    struct driver_domain *result = driver_manager_domain_locked(device);
+    klock_release(&driver_manager_klock);
+    return result;
+}
+
+static int driver_manager_stop_device_locked(struct kernel_object *dev) {
     struct manager_binding *b = binding_for(dev);
     if (!b) return -1;
     b->enabled = 0;
@@ -445,7 +557,14 @@ int driver_manager_stop_device(struct kernel_object *dev) {
     return driver_domain_stop(b->domain);
 }
 
-int driver_manager_restart_device(struct kernel_object *device) {
+int driver_manager_stop_device(struct kernel_object *dev) {
+    klock_acquire(&driver_manager_klock);
+    int result = driver_manager_stop_device_locked(dev);
+    klock_release(&driver_manager_klock);
+    return result;
+}
+
+static int driver_manager_restart_device_locked(struct kernel_object *device) {
     struct manager_binding *binding = binding_for(device);
     if (!binding) return -1;
     binding->enabled = 0;
@@ -459,7 +578,14 @@ int driver_manager_restart_device(struct kernel_object *device) {
     return 0;
 }
 
-void driver_manager_task_exiting(int pid, int code) {
+int driver_manager_restart_device(struct kernel_object *device) {
+    klock_acquire(&driver_manager_klock);
+    int result = driver_manager_restart_device_locked(device);
+    klock_release(&driver_manager_klock);
+    return result;
+}
+
+static void driver_manager_task_exiting_locked(int pid, int code) {
     if (!pid || code) return;
     for (u32 index = 0; index < DRIVER_MANAGER_BINDING_MAX; index++)
         if (bindings[index].active &&
@@ -469,7 +595,13 @@ void driver_manager_task_exiting(int pid, int code) {
             bindings[index].enabled = 0;
 }
 
-void driver_manager_tick(void) {
+void driver_manager_task_exiting(int pid, int code) {
+    klock_acquire(&driver_manager_klock);
+    driver_manager_task_exiting_locked(pid, code);
+    klock_release(&driver_manager_klock);
+}
+
+static void driver_manager_tick_locked(void) {
     for (u32 index = 0; index < DRIVER_MANAGER_BINDING_MAX; index++) {
         struct manager_binding *binding = &bindings[index];
         if (!binding->active || !binding->enabled) continue;
@@ -484,7 +616,13 @@ void driver_manager_tick(void) {
     }
 }
 
-int driver_manager_device_removed(struct kernel_object *device) {
+void driver_manager_tick(void) {
+    klock_acquire(&driver_manager_klock);
+    driver_manager_tick_locked();
+    klock_release(&driver_manager_klock);
+}
+
+static int driver_manager_device_removed_locked(struct kernel_object *device) {
     struct manager_binding *binding = binding_for(device);
     int found = binding != 0;
     int result = 0;
@@ -506,16 +644,37 @@ int driver_manager_device_removed(struct kernel_object *device) {
     return found ? result : -1;
 }
 
-u32 driver_manager_manifest_count(void) {
+int driver_manager_device_removed(struct kernel_object *device) {
+    klock_acquire(&driver_manager_klock);
+    int result = driver_manager_device_removed_locked(device);
+    klock_release(&driver_manager_klock);
+    return result;
+}
+
+static u32 driver_manager_manifest_count_locked(void) {
     u32 count = 0;
     for (u32 index = 0; index < DRIVER_MANAGER_MANIFEST_MAX; index++)
         if (manifests[index].active) count++;
     return count;
 }
 
-u32 driver_manager_binding_count(void) {
+u32 driver_manager_manifest_count(void) {
+    klock_acquire(&driver_manager_klock);
+    u32 result = driver_manager_manifest_count_locked();
+    klock_release(&driver_manager_klock);
+    return result;
+}
+
+static u32 driver_manager_binding_count_locked(void) {
     u32 count = 0;
     for (u32 index = 0; index < DRIVER_MANAGER_BINDING_MAX; index++)
         if (bindings[index].active) count++;
     return count;
+}
+
+u32 driver_manager_binding_count(void) {
+    klock_acquire(&driver_manager_klock);
+    u32 result = driver_manager_binding_count_locked();
+    klock_release(&driver_manager_klock);
+    return result;
 }
