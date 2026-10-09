@@ -1011,7 +1011,8 @@ if [ "$profile" = "dns" ]; then
         "Mich dnsprobe: TCP fallback and framing pass" \
         "Mich dnsprobe: cached answer pass" \
         "Mich dnsprobe: refused name rejected pass" \
-        "Mich dnsprobe: transport pass"
+        "Mich dnsprobe: transport pass" \
+        "Mich virtio-net: probe sockets released pass"
     do
         require_marker "$marker"
     done
@@ -1021,7 +1022,8 @@ if [ "$profile" = "tcpwire" ]; then
         "Mich tcpwire: stream connected" \
         "Mich tcpwire: echo round trip pass" \
         "Mich tcpwire: peer name pass" \
-        "Mich tcpwire: POSIX TCP wire pass"
+        "Mich tcpwire: POSIX TCP wire pass" \
+        "Mich virtio-net: probe sockets released pass"
     do
         require_marker "$marker"
     done
