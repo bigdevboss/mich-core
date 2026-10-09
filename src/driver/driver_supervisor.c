@@ -1416,6 +1416,20 @@ int driver_domain_firmware_allowed(const struct driver_domain *domain,
     return result;
 }
 
+static u32 driver_domain_count_locked(void) {
+    u32 count = 0;
+    for (u32 index = 0; index < DRIVER_DOMAIN_MAX; index++)
+        if (domains[index].active) count++;
+    return count;
+}
+
+u32 driver_domain_count(void) {
+    klock_acquire(&driver_supervisor_klock);
+    u32 result = driver_domain_count_locked();
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
 u32 driver_domain_state(const struct driver_domain *domain) {
     if (!domain) return 0;
     klock_acquire(&driver_supervisor_klock);

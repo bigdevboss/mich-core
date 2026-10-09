@@ -121,10 +121,16 @@ struct kernel_object;
 #define SMP64_STRESS_NET 3u
 #define SMP64_STRESS_RESOURCE 4u
 #define SMP64_STRESS_VECTOR 5u
+#define SMP64_STRESS_DOMAIN 6u
+#define SMP64_STRESS_MODULE 7u
 
 void smp64_stress_reset(u32 turns, struct kernel_object *shared, u32 mode);
 void smp64_net_storm_prepare(struct kernel_object *interface,
                              const u8 *frame, u32 length);
+void smp64_driver_storm_prepare(struct kernel_object *device);
+u64 smp64_stress_domains(void);
+u64 smp64_stress_modules(void);
+u64 smp64_stress_instances(void);
 void smp64_stress_run(u32 turns);
 void smp64_spawn_reset(u32 turns);
 u64 smp64_spawn_slots(void);

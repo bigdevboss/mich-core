@@ -93,6 +93,8 @@ int driver_autobind(int module_id, struct kernel_object **devices,
 int driver_start_all(struct kernel_object **devices, u32 device_count);
 int driver_instance_failed(struct driver_instance *instance);
 void driver_device_removed(struct kernel_object *device);
+u32 driver_module_count(void);
+u32 driver_instance_count(void);
 const char *driver_name(int module_id);
 
 #endif

@@ -18,6 +18,9 @@
 #include "net_interface.h"
 #include "object.h"
 #include "resource.h"
+#include "driver.h"
+#include "driver_supervisor.h"
+#include "pci64.h"
 #include "vector64.h"
 
 // Trampoline chunks (smp_tramp.asm) placed by the BSP at SMP64_TRAMP_BASE: entry
@@ -91,6 +94,10 @@ static struct spinlock smp64_spin = SPINLOCK_INIT;
 static volatile u64 smp64_spin_counter;
 static volatile u64 smp64_stress_page_count;
 static volatile u64 smp64_stress_object_count;
+static volatile u64 smp64_stress_domain_count;
+static volatile u64 smp64_stress_module_count;
+static volatile u64 smp64_stress_instance_count;
+static struct kernel_object *smp64_storm_device;
 static volatile u32 smp64_stress_failure;
 static u32 smp64_stress_turns;
 static u32 smp64_stress_mode;
@@ -623,6 +630,69 @@ static void smp64_spawn_turn(void) {
     __atomic_fetch_add(&smp64_spawn_slot_count, 1, __ATOMIC_RELAXED);
 }
 
+static void smp64_stress_fail(u64 code, u64 detail);
+
+static const char *const smp64_module_names[SMP64_MAX] = {
+    "smpmod00", "smpmod01", "smpmod02", "smpmod03",
+    "smpmod04", "smpmod05", "smpmod06", "smpmod07",
+    "smpmod08", "smpmod09", "smpmod10", "smpmod11",
+    "smpmod12", "smpmod13", "smpmod14", "smpmod15"
+};
+
+static int smp64_driver_start(struct driver_instance *instance) {
+    return instance ? 0 : -1;
+}
+
+static void smp64_domain_turn(u32 turn) {
+    u32 cpu = (u32)scheduler_cpu_id();
+    u32 count = pci64_count();
+    struct kernel_object *device = smp64_storm_device;
+    if (count > 1)
+        device = pci64_object((cpu + turn) % count);
+    struct driver_domain_manifest manifest;
+    manifest.name = "smpstorm";
+    manifest.capabilities = 0;
+    manifest.restart_policy = DRIVER_RESTART_NEVER;
+    manifest.max_restarts = 0;
+    manifest.backoff_ticks = 0;
+    manifest.image_id = 0;
+    manifest.reset_policy = DRIVER_RESET_NONE;
+    manifest.argument = 0;
+    struct driver_domain *domain = driver_domain_create(&manifest, device);
+    if (!domain) return;
+    if (!domain->id)
+        smp64_stress_fail(0x31, 0);
+    driver_domain_destroy(domain);
+    __atomic_fetch_add(&smp64_stress_domain_count, 1, __ATOMIC_RELAXED);
+}
+
+static void smp64_module_turn(u32 turn) {
+    u32 cpu = (u32)scheduler_cpu_id();
+    struct driver_descriptor descriptor;
+    descriptor.name = smp64_module_names[cpu % SMP64_MAX];
+    descriptor.abi_version = DRIVER_ABI_VERSION;
+    descriptor.flags = 0;
+    descriptor.probe = 0;
+    descriptor.start = smp64_driver_start;
+    descriptor.stop = 0;
+    int module = driver_register(&descriptor);
+    if (module <= 0) {
+        smp64_stress_fail(0x41, (u64)driver_module_count());
+        return;
+    }
+    u32 count = pci64_count();
+    struct driver_instance *instance = 0;
+    if (count)
+        instance = driver_bind(module, pci64_object((cpu + turn) % count));
+    if (instance) {
+        __atomic_fetch_add(&smp64_stress_instance_count, 1, __ATOMIC_RELAXED);
+        driver_unbind(instance);
+    }
+    __atomic_fetch_add(&smp64_stress_module_count, 1, __ATOMIC_RELAXED);
+    if (driver_unregister(module))
+        smp64_stress_fail(0x42, (u64)driver_module_count());
+}
+
 static void smp64_stress_fail(u64 code, u64 detail) {
     u64 expected = 0;
     __atomic_compare_exchange_n(&smp64_stress_failure, &expected, code, 0,
@@ -696,6 +766,14 @@ void smp64_stress_run(u32 turns) {
             smp64_resource_turn(turn);
             continue;
         }
+        if (smp64_stress_mode == SMP64_STRESS_DOMAIN) {
+            smp64_domain_turn(turn);
+            continue;
+        }
+        if (smp64_stress_mode == SMP64_STRESS_MODULE) {
+            smp64_module_turn(turn);
+            continue;
+        }
         if (smp64_stress_mode == SMP64_STRESS_VECTOR) {
             smp64_vector_turn();
             continue;
@@ -741,10 +819,29 @@ void smp64_stress_reset(u32 turns, struct kernel_object *shared, u32 mode) {
     smp64_stress_object = shared;
     smp64_stress_page_count = 0;
     smp64_stress_object_count = 0;
+    smp64_stress_domain_count = 0;
+    smp64_stress_module_count = 0;
+    smp64_stress_instance_count = 0;
     smp64_stress_failure = 0;
     smp64_stress_detail = 0;
     for (u32 index = 0; index < SMP64_MAX; index++)
         smp64_cpus[index].stress_done = 0;
+}
+
+void smp64_driver_storm_prepare(struct kernel_object *device) {
+    smp64_storm_device = device;
+}
+
+u64 smp64_stress_domains(void) {
+    return smp64_stress_domain_count;
+}
+
+u64 smp64_stress_modules(void) {
+    return smp64_stress_module_count;
+}
+
+u64 smp64_stress_instances(void) {
+    return smp64_stress_instance_count;
 }
 
 void smp64_net_storm_prepare(struct kernel_object *interface,

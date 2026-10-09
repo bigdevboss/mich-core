@@ -501,6 +501,34 @@ static const char *driver_name_locked(int module_id) {
     return module ? module->name : 0;
 }
 
+static u32 driver_module_count_locked(void) {
+    u32 count = 0;
+    for (u32 index = 0; index < DRIVER_MODULE_MAX; index++)
+        if (modules[index].active) count++;
+    return count;
+}
+
+u32 driver_module_count(void) {
+    klock_acquire(&driver_module_klock);
+    u32 result = driver_module_count_locked();
+    klock_release(&driver_module_klock);
+    return result;
+}
+
+static u32 driver_instance_count_locked(void) {
+    u32 count = 0;
+    for (u32 index = 0; index < DRIVER_INSTANCE_MAX; index++)
+        if (instances[index].active) count++;
+    return count;
+}
+
+u32 driver_instance_count(void) {
+    klock_acquire(&driver_module_klock);
+    u32 result = driver_instance_count_locked();
+    klock_release(&driver_module_klock);
+    return result;
+}
+
 const char *driver_name(int module_id) {
     klock_acquire(&driver_module_klock);
     const char *result = driver_name_locked(module_id);

@@ -22,6 +22,8 @@
 #include "socket.h"
 #include "vnic.h"
 #include "driver.h"
+#include "driver_supervisor.h"
+#include "pci64.h"
 
 #define SMP64_USER_GETPID 16
 #define SMP64_USER_STUB_AFTER 7
@@ -840,6 +842,79 @@ static int test_smp64_resource_storm(void) {
 // it as the owner, and hands both back. One vector handed to two CPUs cannot
 // pass the owner check on both of them, and the available count has to return
 // to its baseline.
+static int test_smp64_domain_storm(void) {
+    u32 n = smp64_cpu_count();
+    u32 domains = driver_domain_count();
+    u32 objects = object_active_count();
+    u32 free_pages = pmm_free_pages();
+    int reason = 0;
+    smp64_driver_storm_prepare(pci64_object(0));
+    smp64_stress_reset(SMP64_STRESS_TURNS, 0, SMP64_STRESS_DOMAIN);
+    for (u32 index = 1; index < n; index++)
+        if (smp64_ipi_cpu(index, SMP64_IPI_STRESS)) reason = 1;
+    if (!reason) {
+        smp64_stress_run(SMP64_STRESS_TURNS);
+        for (u32 index = 1; index < n; index++)
+            if (wait_rounds(smp64_stress_done, index,
+                            SMP64_BOOT_TIMEOUT_MS / 10 * 4))
+                reason = 2;
+    }
+    if (!reason) {
+        if (smp64_stress_failed()) reason = 3;
+        else if (!smp64_stress_domains()) reason = 4;
+        else if (driver_domain_count() != domains) reason = 5;
+        else if (object_active_count() != objects) reason = 6;
+        else if (pmm_free_pages() != free_pages) reason = 7;
+    }
+    if (reason) {
+        u64 detail = smp64_stress_detail_value();
+        serial64_write("Mich x86_64: SMP domain storm failed reason=");
+        serial64_hex((u64)reason);
+        serial64_write(" detail="); serial64_hex(detail);
+        serial64_write(" turn="); serial64_hex(detail >> 32);
+        serial64_write(" successes="); serial64_hex(smp64_stress_domains());
+        serial64_write(" domains="); serial64_hex(driver_domain_count());
+        serial64_write("\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int test_smp64_module_storm(void) {
+    u32 n = smp64_cpu_count();
+    u32 modules = driver_module_count();
+    u32 instances = driver_instance_count();
+    int reason = 0;
+    smp64_stress_reset(SMP64_STRESS_TURNS, 0, SMP64_STRESS_MODULE);
+    for (u32 index = 1; index < n; index++)
+        if (smp64_ipi_cpu(index, SMP64_IPI_STRESS)) reason = 1;
+    if (!reason) {
+        smp64_stress_run(SMP64_STRESS_TURNS);
+        for (u32 index = 1; index < n; index++)
+            if (wait_rounds(smp64_stress_done, index,
+                            SMP64_BOOT_TIMEOUT_MS / 10 * 4))
+                reason = 2;
+    }
+    if (!reason) {
+        if (smp64_stress_failed()) reason = 3;
+        else if (!smp64_stress_modules()) reason = 4;
+        else if (driver_module_count() != modules) reason = 5;
+        else if (driver_instance_count() != instances) reason = 6;
+    }
+    if (reason) {
+        u64 detail = smp64_stress_detail_value();
+        serial64_write("Mich x86_64: SMP module storm failed reason=");
+        serial64_hex((u64)reason);
+        serial64_write(" detail="); serial64_hex(detail);
+        serial64_write(" turn="); serial64_hex(detail >> 32);
+        serial64_write(" modules="); serial64_hex(smp64_stress_modules());
+        serial64_write(" binds="); serial64_hex(smp64_stress_instances());
+        serial64_write("\n");
+        return -1;
+    }
+    return 0;
+}
+
 static int test_smp64_vector_storm(void) {
     u32 n = smp64_cpu_count();
     u32 available = vector64_available();
@@ -1227,6 +1302,18 @@ int tests64_run_smp(void) {
         return -1;
     }
     serial64_write("Mich x86_64: SMP resource storm pass\n");
+    if (test_report_record(TEST_ID_SMP_DOMAIN_STORM,
+                           test_smp64_domain_storm())) {
+        irq_restore(irq_state);
+        return -1;
+    }
+    serial64_write("Mich x86_64: SMP driver domain storm pass\n");
+    if (test_report_record(TEST_ID_SMP_MODULE_STORM,
+                           test_smp64_module_storm())) {
+        irq_restore(irq_state);
+        return -1;
+    }
+    serial64_write("Mich x86_64: SMP driver module storm pass\n");
     if (test_report_record(TEST_ID_SMP_VECTOR, test_smp64_vector_storm())) {
         irq_restore(irq_state);
         return -1;

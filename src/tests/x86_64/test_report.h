@@ -106,6 +106,8 @@
 #define TEST_ID_POSIX_POLL 112
 #define TEST_ID_POSIX_TTY 113
 #define TEST_ID_POSIX_JOB 114
+#define TEST_ID_SMP_DOMAIN_STORM 115
+#define TEST_ID_SMP_MODULE_STORM 116
 
 struct test_result64 {
     u32 id;
