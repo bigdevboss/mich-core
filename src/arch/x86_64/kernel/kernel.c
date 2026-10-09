@@ -1731,9 +1731,14 @@ static void reparent_children(int dead_pid) {
 void terminate64(u32 slot, int code) {
     struct task *task = &task_pool[slot];
     net_interface_task_died(task->id);
-    driver_manager_task_exiting(task->id, code);
-    driver_supervisor_task_died(task->id, code, timer_ticks);
-    driver_manager_tick();
+    // The supervisor reaches here from its own teardown while it holds its
+    // lock, and all three of these would take it again. The manager gets its
+    // turn from the tick that runs right after the supervisor's.
+    if (!driver_supervisor_terminating()) {
+        driver_manager_task_exiting(task->id, code);
+        driver_supervisor_task_died(task->id, code, timer_ticks);
+        driver_manager_tick();
+    }
     ipc64_task_died((u32)task->id);
     event_cancel_task(slot, ESRCH);
     handle_close_all(task);

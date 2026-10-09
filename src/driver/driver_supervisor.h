@@ -275,6 +275,9 @@ int driver_domain_quarantine(u32 id);
 struct driver_domain *driver_domain_for_id(u32 id);
 struct driver_domain *driver_domain_for_device(struct kernel_object *device);
 struct driver_domain *driver_domain_for_pid(int pid);
+u32 driver_domain_state(const struct driver_domain *domain);
+int driver_domain_pid(const struct driver_domain *domain);
+int driver_supervisor_terminating(void);
 int driver_domain_firmware_allowed(const struct driver_domain *domain,
                                    const char *name);
 

@@ -1,5 +1,6 @@
 #include "driver_supervisor.h"
 #include "driver.h"
+#include "klock.h"
 #include "resource.h"
 #include "bridge.h"
 #include "endpoint.h"
@@ -15,6 +16,25 @@ static driver_domain_terminate_fn terminate_backend;
 static driver_domain_release_fn release_backend;
 static u32 next_domain_id;
 static u32 now_ticks;
+
+// Set while this layer is the one asking for a task to go. terminate64 calls
+// back into the supervisor and the manager, and both would take a lock the
+// caller already holds.
+static u32 supervisor_terminating;
+
+static struct klock driver_supervisor_klock =
+    KLOCK_INIT(KLOCK_LEVEL_SUPERVISOR);
+
+static int driver_domain_add_bridge_locked(struct driver_domain *domain,
+                                           u32 rights);
+static int driver_domain_add_resource_kind_locked(struct driver_domain *domain,
+                                                  struct kernel_object *object,
+                                                  u32 rights, u32 kind,
+                                                  u32 index, u64 flags);
+static struct driver_domain *driver_domain_for_device_locked(
+    struct kernel_object *device);
+static struct driver_domain *driver_domain_for_id_locked(u32 id);
+static struct driver_domain *driver_domain_for_pid_locked(int pid);
 
 static void passport_clear(struct driver_crash_passport *passport) {
     u8 *bytes = (u8 *)passport;
@@ -289,6 +309,18 @@ static int teardown(struct driver_domain *domain) {
     return result;
 }
 
+static int terminate_task(int pid) {
+    if (!terminate_backend || pid <= 0) return 0;
+    supervisor_terminating = 1;
+    int result = terminate_backend(pid);
+    supervisor_terminating = 0;
+    return result;
+}
+
+int driver_supervisor_terminating(void) {
+    return supervisor_terminating != 0;
+}
+
 static int launch(struct driver_domain *domain) {
     if (!spawn_backend) return -1;
     int pid = spawn_backend(domain);
@@ -301,7 +333,7 @@ static int launch(struct driver_domain *domain) {
     if (!domain->generation) domain->generation = 1;
     if (issue_bundle(domain)) {
         revoke_handles(domain);
-        if (terminate_backend) terminate_backend(pid);
+        terminate_task(pid);
         domain->pid = -1;
         return -1;
     }
@@ -356,13 +388,13 @@ int driver_supervisor_set_release_backend(driver_domain_release_fn release) {
     return 0;
 }
 
-struct driver_domain *driver_domain_create(
+static struct driver_domain *driver_domain_create_locked(
     const struct driver_domain_manifest *manifest,
     struct kernel_object *device) {
     if (!manifest || !valid_name(manifest->name) || !device ||
         !device->active || device->type != KOBJECT_PCI ||
         manifest->restart_policy > DRIVER_RESTART_ON_FAILURE ||
-        driver_domain_for_device(device))
+        driver_domain_for_device_locked(device))
         return 0;
     for (u32 index = 0; index < DRIVER_DOMAIN_MAX; index++) {
         struct driver_domain *domain = &domains[index];
@@ -410,6 +442,16 @@ struct driver_domain *driver_domain_create(
         return domain;
     }
     return 0;
+}
+
+struct driver_domain *driver_domain_create(
+    const struct driver_domain_manifest *manifest,
+    struct kernel_object *device) {
+    klock_acquire(&driver_supervisor_klock);
+    struct driver_domain *result = driver_domain_create_locked(manifest,
+                                                               device);
+    klock_release(&driver_supervisor_klock);
+    return result;
 }
 
 int driver_user_manifest_validate(const struct driver_user_manifest *manifest) {
@@ -500,9 +542,8 @@ int driver_user_manifest_matches(const struct driver_user_manifest *manifest,
     return 0;
 }
 
-struct driver_domain *driver_domain_create_user(
-    const struct driver_user_manifest *manifest,
-    struct kernel_object *device) {
+static struct driver_domain *driver_domain_create_user_locked(
+    const struct driver_user_manifest *manifest, struct kernel_object *device) {
     if (!driver_user_manifest_matches(manifest, device)) return 0;
     struct driver_domain_manifest base;
     base.name = manifest->name;
@@ -513,7 +554,7 @@ struct driver_domain *driver_domain_create_user(
     base.image_id = manifest->image_id;
     base.reset_policy = manifest->reset_policy;
     base.argument = manifest->argument;
-    struct driver_domain *domain = driver_domain_create(&base, device);
+    struct driver_domain *domain = driver_domain_create_locked(&base, device);
     if (domain) {
         domain->manifest_flags = manifest->flags;
         domain->firmware_count = manifest->firmware_count;
@@ -523,6 +564,15 @@ struct driver_domain *driver_domain_create_user(
                     manifest->firmware[firmware][byte];
     }
     return domain;
+}
+
+struct driver_domain *driver_domain_create_user(
+    const struct driver_user_manifest *manifest, struct kernel_object *device) {
+    klock_acquire(&driver_supervisor_klock);
+    struct driver_domain *result = driver_domain_create_user_locked(manifest,
+                                                                    device);
+    klock_release(&driver_supervisor_klock);
+    return result;
 }
 
 static void rollback_resources(struct driver_domain *domain, u32 count) {
@@ -540,9 +590,9 @@ static void rollback_resources(struct driver_domain *domain, u32 count) {
         domain->bridge_index = DRIVER_DOMAIN_RESOURCE_MAX;
 }
 
-int driver_domain_apply_manifest(struct driver_domain *domain,
-                                 const struct driver_user_manifest *manifest,
-                                 driver_resource_provider_fn provider) {
+static int driver_domain_apply_manifest_locked(
+    struct driver_domain *domain, const struct driver_user_manifest *manifest,
+    driver_resource_provider_fn provider) {
     if (!domain || !domain->active || domain->state != DRIVER_DOMAIN_STOPPED ||
         driver_user_manifest_validate(manifest) ||
         !driver_user_manifest_matches(manifest, domain->device))
@@ -552,9 +602,9 @@ int driver_domain_apply_manifest(struct driver_domain *domain,
         const struct driver_user_request *request = &manifest->requests[index];
         int result;
         if (request->kind == DRIVER_RESOURCE_BRIDGE) {
-            result = driver_domain_add_bridge(domain, request->rights);
+            result = driver_domain_add_bridge_locked(domain, request->rights);
         } else if (request->kind == DRIVER_RESOURCE_PCI) {
-            result = driver_domain_add_resource_kind(
+            result = driver_domain_add_resource_kind_locked(
                 domain, domain->device, request->rights, request->kind,
                 request->index, request->flags);
         } else {
@@ -571,7 +621,7 @@ int driver_domain_apply_manifest(struct driver_domain *domain,
                 for (u32 item = 0; item < capacity; item++)
                     if (objects[item]) object_release(objects[item]);
             for (u32 item = 0; item < supplied; item++) {
-                if (!result && driver_domain_add_resource_kind(
+                if (!result && driver_domain_add_resource_kind_locked(
                         domain, objects[item], request->rights, request->kind,
                         request->index + (u32)item, request->flags))
                     result = -1;
@@ -586,9 +636,20 @@ int driver_domain_apply_manifest(struct driver_domain *domain,
     return 0;
 }
 
-int driver_domain_add_resource_kind(struct driver_domain *domain,
-                                    struct kernel_object *object, u32 rights,
-                                    u32 kind, u32 index, u64 flags) {
+int driver_domain_apply_manifest(struct driver_domain *domain,
+                                 const struct driver_user_manifest *manifest,
+                                 driver_resource_provider_fn provider) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_apply_manifest_locked(domain, manifest,
+                                                     provider);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static int driver_domain_add_resource_kind_locked(struct driver_domain *domain,
+                                                  struct kernel_object *object,
+                                                  u32 rights, u32 kind,
+                                                  u32 index, u64 flags) {
     u32 expected_type = kind == DRIVER_RESOURCE_PCI ? KOBJECT_PCI :
         kind == DRIVER_RESOURCE_BAR ? KOBJECT_MMIO :
         kind == DRIVER_RESOURCE_DMA ? KOBJECT_DMA :
@@ -616,21 +677,41 @@ int driver_domain_add_resource_kind(struct driver_domain *domain,
     return 0;
 }
 
-int driver_domain_add_resource(struct driver_domain *domain,
-                               struct kernel_object *object, u32 rights) {
+int driver_domain_add_resource_kind(struct driver_domain *domain,
+                                    struct kernel_object *object, u32 rights,
+                                    u32 kind, u32 index, u64 flags) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_add_resource_kind_locked(domain, object, rights,
+                                                        kind, index, flags);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static int driver_domain_add_resource_locked(struct driver_domain *domain,
+                                             struct kernel_object *object,
+                                             u32 rights) {
     u32 kind = resource_kind(object);
-    return kind ? driver_domain_add_resource_kind(domain, object, rights,
+    return kind ? driver_domain_add_resource_kind_locked(domain, object, rights,
                                                    kind, 0, 0) : -1;
 }
 
-int driver_domain_add_bridge(struct driver_domain *domain, u32 rights) {
+int driver_domain_add_resource(struct driver_domain *domain,
+                               struct kernel_object *object, u32 rights) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_add_resource_locked(domain, object, rights);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static int driver_domain_add_bridge_locked(struct driver_domain *domain,
+                                           u32 rights) {
     if (!domain || domain->bridge_index < DRIVER_DOMAIN_RESOURCE_MAX ||
         !(rights & KRIGHT_WAIT))
         return -1;
     struct kernel_object *bridge = bridge_endpoint_create();
     if (!bridge) return -1;
     u32 index = domain->resource_count;
-    int result = driver_domain_add_resource_kind(
+    int result = driver_domain_add_resource_kind_locked(
         domain, bridge, rights, DRIVER_RESOURCE_BRIDGE, 0, 0);
     object_release(bridge);
     if (result) return -1;
@@ -638,8 +719,16 @@ int driver_domain_add_bridge(struct driver_domain *domain, u32 rights) {
     return 0;
 }
 
-int driver_domain_set_recovery_fallback(
-    struct driver_domain *domain, const struct driver_recovery_profile *profile) {
+int driver_domain_add_bridge(struct driver_domain *domain, u32 rights) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_add_bridge_locked(domain, rights);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static int driver_domain_set_recovery_fallback_locked(
+    struct driver_domain *domain,
+    const struct driver_recovery_profile *profile) {
     if (!domain || !domain->active || domain->state != DRIVER_DOMAIN_STOPPED ||
         domain->generation || !recovery_profile_valid(domain, profile))
         return -1;
@@ -650,6 +739,15 @@ int driver_domain_set_recovery_fallback(
     domain->fallback_used = 0;
     domain->fallback_triggers = DRIVER_RECOVERY_TRIGGER_CRASH_CIRCUIT;
     return 0;
+}
+
+int driver_domain_set_recovery_fallback(
+    struct driver_domain *domain,
+    const struct driver_recovery_profile *profile) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_set_recovery_fallback_locked(domain, profile);
+    klock_release(&driver_supervisor_klock);
+    return result;
 }
 
 int driver_recovery_selector_validate(
@@ -663,7 +761,7 @@ int driver_recovery_selector_validate(
     return 0;
 }
 
-int driver_domain_set_recovery_fallback_selector(
+static int driver_domain_set_recovery_fallback_selector_locked(
     struct driver_domain *domain,
     const struct driver_recovery_selector *selector) {
     if (!domain || !domain->active || domain->state != DRIVER_DOMAIN_STOPPED ||
@@ -676,18 +774,37 @@ int driver_domain_set_recovery_fallback_selector(
     return 0;
 }
 
+int driver_domain_set_recovery_fallback_selector(
+    struct driver_domain *domain,
+    const struct driver_recovery_selector *selector) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_set_recovery_fallback_selector_locked(domain,
+                                                                     selector);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
 int driver_recovery_fallback_triggers_validate(u32 triggers) {
     return !triggers || (triggers & ~DRIVER_RECOVERY_TRIGGER_ALL) ? -1 : 0;
 }
 
-int driver_domain_set_recovery_fallback_triggers(struct driver_domain *domain,
-                                                  u32 triggers) {
+static int driver_domain_set_recovery_fallback_triggers_locked(
+    struct driver_domain *domain, u32 triggers) {
     if (!domain || !domain->active || domain->state != DRIVER_DOMAIN_STOPPED ||
         domain->generation || !domain->fallback_enabled ||
         driver_recovery_fallback_triggers_validate(triggers))
         return -1;
     domain->fallback_triggers = triggers;
     return 0;
+}
+
+int driver_domain_set_recovery_fallback_triggers(struct driver_domain *domain,
+                                                 u32 triggers) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_set_recovery_fallback_triggers_locked(domain,
+                                                                     triggers);
+    klock_release(&driver_supervisor_klock);
+    return result;
 }
 
 int driver_crash_circuit_policy_validate(
@@ -699,7 +816,7 @@ int driver_crash_circuit_policy_validate(
            -1 : 0;
 }
 
-int driver_domain_set_crash_circuit_policy(
+static int driver_domain_set_crash_circuit_policy_locked(
     struct driver_domain *domain,
     const struct driver_crash_circuit_policy *policy) {
     if (!domain || !domain->active || domain->state != DRIVER_DOMAIN_STOPPED ||
@@ -709,7 +826,16 @@ int driver_domain_set_crash_circuit_policy(
     return 0;
 }
 
-int driver_domain_start(struct driver_domain *domain) {
+int driver_domain_set_crash_circuit_policy(
+    struct driver_domain *domain,
+    const struct driver_crash_circuit_policy *policy) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_set_crash_circuit_policy_locked(domain, policy);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static int driver_domain_start_locked(struct driver_domain *domain) {
     if (!domain || !domain->active || domain->state != DRIVER_DOMAIN_STOPPED)
         return -1;
     domain->terminal_reason = DRIVER_TERMINAL_NONE;
@@ -723,8 +849,15 @@ int driver_domain_start(struct driver_domain *domain) {
     return 0;
 }
 
-int driver_domain_bundle(const struct driver_domain *domain, u32 *handles,
-                         u32 capacity) {
+int driver_domain_start(struct driver_domain *domain) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_start_locked(domain);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static int driver_domain_bundle_locked(const struct driver_domain *domain,
+                                       u32 *handles, u32 capacity) {
     if (!domain || !domain->active || domain->state != DRIVER_DOMAIN_RUNNING ||
         (!handles && domain->resource_count) || capacity < domain->resource_count)
         return -1;
@@ -735,8 +868,16 @@ int driver_domain_bundle(const struct driver_domain *domain, u32 *handles,
     return (int)domain->resource_count;
 }
 
-int driver_domain_status(const struct driver_domain *domain,
-                         struct driver_domain_status *status) {
+int driver_domain_bundle(const struct driver_domain *domain, u32 *handles,
+                         u32 capacity) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_bundle_locked(domain, handles, capacity);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static int driver_domain_status_locked(const struct driver_domain *domain,
+                                       struct driver_domain_status *status) {
     if (!domain || !domain->active || !status) return -1;
     status->id = domain->id;
     status->state = domain->state;
@@ -765,7 +906,16 @@ int driver_domain_status(const struct driver_domain *domain,
     return 0;
 }
 
-int driver_domain_bootstrap(int pid, struct driver_bootstrap_info *info) {
+int driver_domain_status(const struct driver_domain *domain,
+                         struct driver_domain_status *status) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_status_locked(domain, status);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static int driver_domain_bootstrap_locked(int pid,
+                                          struct driver_bootstrap_info *info) {
     if (!info) return -1;
     struct driver_domain *domain = 0;
     for (u32 index = 0; index < DRIVER_DOMAIN_MAX; index++)
@@ -835,7 +985,14 @@ int driver_domain_bootstrap(int pid, struct driver_bootstrap_info *info) {
     return 0;
 }
 
-int driver_domain_request_stop(struct driver_domain *domain) {
+int driver_domain_bootstrap(int pid, struct driver_bootstrap_info *info) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_bootstrap_locked(pid, info);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static int driver_domain_request_stop_locked(struct driver_domain *domain) {
     if (!domain || !domain->active || domain->state != DRIVER_DOMAIN_RUNNING ||
         !(domain->manifest_flags & DRIVER_MANIFEST_GRACEFUL_STOP) ||
         domain->bridge_index >= domain->resource_count)
@@ -852,7 +1009,14 @@ int driver_domain_request_stop(struct driver_domain *domain) {
     return 0;
 }
 
-int driver_domain_stop_ack(int pid) {
+int driver_domain_request_stop(struct driver_domain *domain) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_request_stop_locked(domain);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static int driver_domain_stop_ack_locked(int pid) {
     for (u32 i = 0; i < DRIVER_DOMAIN_MAX; i++) {
         struct driver_domain *d = &domains[i];
         if (!d->active || d->state != DRIVER_DOMAIN_STOPPING || d->pid != pid)
@@ -864,9 +1028,17 @@ int driver_domain_stop_ack(int pid) {
     return -1;
 }
 
-void driver_supervisor_report_user_fault(int pid, u32 vector, u64 error,
-                                         u64 rip, u64 address, u32 ticks) {
-    struct driver_domain *domain = driver_domain_for_pid(pid);
+int driver_domain_stop_ack(int pid) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_stop_ack_locked(pid);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static void driver_supervisor_report_user_fault_locked(int pid, u32 vector,
+                                                       u64 error, u64 rip,
+                                                       u64 address, u32 ticks) {
+    struct driver_domain *domain = driver_domain_for_pid_locked(pid);
     if (!domain) return;
     passport_clear(&domain->pending_crash);
     domain->pending_crash.kind = DRIVER_CRASH_USER_EXCEPTION;
@@ -878,10 +1050,18 @@ void driver_supervisor_report_user_fault(int pid, u32 vector, u64 error,
     domain->pending_crash.address = address;
 }
 
-void driver_supervisor_report_iommu_fault(u32 id, u16 segment, u16 source_id,
-                                          u8 reason, u8 write, u64 address,
-                                          u32 ticks) {
-    struct driver_domain *domain = driver_domain_for_id(id);
+void driver_supervisor_report_user_fault(
+    int pid, u32 vector, u64 error, u64 rip, u64 address, u32 ticks) {
+    klock_acquire(&driver_supervisor_klock);
+    driver_supervisor_report_user_fault_locked(pid, vector, error, rip, address,
+                                               ticks);
+    klock_release(&driver_supervisor_klock);
+}
+
+static void driver_supervisor_report_iommu_fault_locked(
+    u32 id, u16 segment, u16 source_id, u8 reason, u8 write, u64 address,
+    u32 ticks) {
+    struct driver_domain *domain = driver_domain_for_id_locked(id);
     if (!domain || (domain->state != DRIVER_DOMAIN_RUNNING &&
                     domain->state != DRIVER_DOMAIN_STOPPING))
         return;
@@ -901,7 +1081,16 @@ void driver_supervisor_report_iommu_fault(u32 id, u16 segment, u16 source_id,
     domain->crash_repeat_deadline = 0;
 }
 
-void driver_supervisor_task_died(int pid, int code, u32 ticks) {
+void driver_supervisor_report_iommu_fault(u32 id, u16 segment, u16 source_id,
+                                          u8 reason, u8 write, u64 address,
+                                          u32 ticks) {
+    klock_acquire(&driver_supervisor_klock);
+    driver_supervisor_report_iommu_fault_locked(id, segment, source_id, reason,
+                                                write, address, ticks);
+    klock_release(&driver_supervisor_klock);
+}
+
+static void driver_supervisor_task_died_locked(int pid, int code, u32 ticks) {
     for (u32 i = 0; i < DRIVER_DOMAIN_MAX; i++) {
         struct driver_domain *d = &domains[i];
         if (!d->active ||
@@ -978,7 +1167,13 @@ void driver_supervisor_task_died(int pid, int code, u32 ticks) {
     }
 }
 
-void driver_supervisor_tick(u32 ticks) {
+void driver_supervisor_task_died(int pid, int code, u32 ticks) {
+    klock_acquire(&driver_supervisor_klock);
+    driver_supervisor_task_died_locked(pid, code, ticks);
+    klock_release(&driver_supervisor_klock);
+}
+
+static void driver_supervisor_tick_locked(u32 ticks) {
     now_ticks = ticks;
     for (u32 i = 0; i < DRIVER_DOMAIN_MAX; i++) {
         struct driver_domain *d = &domains[i];
@@ -995,7 +1190,7 @@ void driver_supervisor_tick(u32 ticks) {
             d->last_decision = rc ?
                 DRIVER_RECOVERY_DECISION_TEARDOWN_QUARANTINE :
                 DRIVER_RECOVERY_DECISION_STOP_TIMEOUT;
-            if (!rc && terminate_backend && pid > 0 && terminate_backend(pid)) {
+            if (!rc && terminate_task(pid)) {
                 d->terminal_reason = DRIVER_TERMINAL_STOP_FAILURE;
                 d->last_decision = DRIVER_RECOVERY_DECISION_STOP_FAILURE;
                 d->state = DRIVER_DOMAIN_QUARANTINED;
@@ -1013,7 +1208,13 @@ void driver_supervisor_tick(u32 ticks) {
     }
 }
 
-int driver_domain_stop(struct driver_domain *d) {
+void driver_supervisor_tick(u32 ticks) {
+    klock_acquire(&driver_supervisor_klock);
+    driver_supervisor_tick_locked(ticks);
+    klock_release(&driver_supervisor_klock);
+}
+
+static int driver_domain_stop_locked(struct driver_domain *d) {
     if (!d || !d->active || d->state == DRIVER_DOMAIN_QUARANTINED)
         return -1;
     int rc = 0;
@@ -1021,7 +1222,7 @@ int driver_domain_stop(struct driver_domain *d) {
         int pid = d->pid;
         rc = teardown(d);
         d->state = rc ? DRIVER_DOMAIN_QUARANTINED : DRIVER_DOMAIN_STOPPED;
-        if (!rc && terminate_backend && pid > 0 && terminate_backend(pid))
+        if (!rc && terminate_task(pid))
             rc = -1;
     }
     d->state = rc ? DRIVER_DOMAIN_QUARANTINED : DRIVER_DOMAIN_STOPPED;
@@ -1035,9 +1236,16 @@ int driver_domain_stop(struct driver_domain *d) {
     return rc;
 }
 
-int driver_domain_remove(struct driver_domain *domain) {
+int driver_domain_stop(struct driver_domain *d) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_stop_locked(d);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static int driver_domain_remove_locked(struct driver_domain *domain) {
     if (!domain || !domain->active) return -1;
-    int result = driver_domain_stop(domain);
+    int result = driver_domain_stop_locked(domain);
     if (quiesce_backend && quiesce_backend(domain->device)) result = -1;
     domain->state = result ? DRIVER_DOMAIN_QUARANTINED
                            : DRIVER_DOMAIN_REMOVED;
@@ -1049,11 +1257,18 @@ int driver_domain_remove(struct driver_domain *domain) {
     return result;
 }
 
-void driver_domain_destroy(struct driver_domain *domain) {
+int driver_domain_remove(struct driver_domain *domain) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_remove_locked(domain);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static void driver_domain_destroy_locked(struct driver_domain *domain) {
     if (!domain || !domain->active ||
         domain->state == DRIVER_DOMAIN_QUARANTINED)
         return;
-    if (driver_domain_stop(domain) ||
+    if (driver_domain_stop_locked(domain) ||
         domain->state == DRIVER_DOMAIN_QUARANTINED)
         return;
     for (u32 index = 0; index < domain->resource_count; index++) {
@@ -1089,30 +1304,50 @@ void driver_domain_destroy(struct driver_domain *domain) {
     domain->active = 0;
 }
 
-int driver_domain_admin_release(struct driver_domain *domain) {
+void driver_domain_destroy(struct driver_domain *domain) {
+    klock_acquire(&driver_supervisor_klock);
+    driver_domain_destroy_locked(domain);
+    klock_release(&driver_supervisor_klock);
+}
+
+static int driver_domain_admin_release_locked(struct driver_domain *domain) {
     if (!domain || !domain->active ||
         domain->state != DRIVER_DOMAIN_QUARANTINED)
         return -1;
     domain->state = DRIVER_DOMAIN_STOPPED;
-    driver_domain_destroy(domain);
+    driver_domain_destroy_locked(domain);
     return domain->active ? -1 : 0;
 }
 
-struct driver_domain *driver_domain_for_id(u32 id) {
+int driver_domain_admin_release(struct driver_domain *domain) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_admin_release_locked(domain);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static struct driver_domain *driver_domain_for_id_locked(u32 id) {
     if (!id) return 0;
     for (u32 i = 0; i < DRIVER_DOMAIN_MAX; i++)
         if (domains[i].active && domains[i].id == id) return &domains[i];
     return 0;
 }
 
-int driver_domain_quarantine(u32 id) {
-    struct driver_domain *d = driver_domain_for_id(id);
+struct driver_domain *driver_domain_for_id(u32 id) {
+    klock_acquire(&driver_supervisor_klock);
+    struct driver_domain *result = driver_domain_for_id_locked(id);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static int driver_domain_quarantine_locked(u32 id) {
+    struct driver_domain *d = driver_domain_for_id_locked(id);
     if (!d || d->state == DRIVER_DOMAIN_QUARANTINED) return -1;
     int pid = d->pid;
     int rc = 0;
     if (d->state == DRIVER_DOMAIN_RUNNING || d->state == DRIVER_DOMAIN_STOPPING)
         rc = teardown(d);
-    if (pid > 0 && terminate_backend && terminate_backend(pid)) rc = -1;
+    if (terminate_task(pid)) rc = -1;
     d->state = DRIVER_DOMAIN_QUARANTINED;
     if (d->terminal_reason == DRIVER_TERMINAL_NONE) {
         d->terminal_reason = DRIVER_TERMINAL_QUARANTINE;
@@ -1125,7 +1360,15 @@ int driver_domain_quarantine(u32 id) {
     return rc;
 }
 
-struct driver_domain *driver_domain_for_device(struct kernel_object *device) {
+int driver_domain_quarantine(u32 id) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_quarantine_locked(id);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static struct driver_domain *driver_domain_for_device_locked(
+    struct kernel_object *device) {
     if (!device) return 0;
     for (u32 index = 0; index < DRIVER_DOMAIN_MAX; index++)
         if (domains[index].active && domains[index].device == device &&
@@ -1134,7 +1377,14 @@ struct driver_domain *driver_domain_for_device(struct kernel_object *device) {
     return 0;
 }
 
-struct driver_domain *driver_domain_for_pid(int pid) {
+struct driver_domain *driver_domain_for_device(struct kernel_object *device) {
+    klock_acquire(&driver_supervisor_klock);
+    struct driver_domain *result = driver_domain_for_device_locked(device);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static struct driver_domain *driver_domain_for_pid_locked(int pid) {
     if (!pid) return 0;
     for (u32 index = 0; index < DRIVER_DOMAIN_MAX; index++)
         if (domains[index].active && domains[index].pid == pid &&
@@ -1143,10 +1393,41 @@ struct driver_domain *driver_domain_for_pid(int pid) {
     return 0;
 }
 
-int driver_domain_firmware_allowed(const struct driver_domain *domain,
-                                   const char *name) {
+struct driver_domain *driver_domain_for_pid(int pid) {
+    klock_acquire(&driver_supervisor_klock);
+    struct driver_domain *result = driver_domain_for_pid_locked(pid);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+static int driver_domain_firmware_allowed_locked(
+    const struct driver_domain *domain, const char *name) {
     if (!domain || !domain->active || !name) return 0;
     for (u32 index = 0; index < domain->firmware_count; index++)
         if (abi_names_equal(domain->firmware[index], name)) return 1;
     return 0;
+}
+
+int driver_domain_firmware_allowed(const struct driver_domain *domain,
+                                   const char *name) {
+    klock_acquire(&driver_supervisor_klock);
+    int result = driver_domain_firmware_allowed_locked(domain, name);
+    klock_release(&driver_supervisor_klock);
+    return result;
+}
+
+u32 driver_domain_state(const struct driver_domain *domain) {
+    if (!domain) return 0;
+    klock_acquire(&driver_supervisor_klock);
+    u32 state = domain->state;
+    klock_release(&driver_supervisor_klock);
+    return state;
+}
+
+int driver_domain_pid(const struct driver_domain *domain) {
+    if (!domain) return -1;
+    klock_acquire(&driver_supervisor_klock);
+    int pid = domain->pid;
+    klock_release(&driver_supervisor_klock);
+    return pid;
 }

@@ -344,7 +344,8 @@ static int dependencies_ready(u32 slot) {
         for (u32 binding = 0; binding < DRIVER_MANAGER_BINDING_MAX; binding++)
             if (bindings[binding].active &&
                 bindings[binding].manifest_slot == (u32)dependency_slot &&
-                bindings[binding].domain->state == DRIVER_DOMAIN_RUNNING)
+                driver_domain_state(bindings[binding].domain) ==
+                    DRIVER_DOMAIN_RUNNING)
                 running = 1;
         if (!running) return 0;
     }
@@ -462,8 +463,9 @@ void driver_manager_task_exiting(int pid, int code) {
     if (!pid || code) return;
     for (u32 index = 0; index < DRIVER_MANAGER_BINDING_MAX; index++)
         if (bindings[index].active &&
-            bindings[index].domain->state == DRIVER_DOMAIN_RUNNING &&
-            bindings[index].domain->pid == pid)
+            driver_domain_state(bindings[index].domain) ==
+                DRIVER_DOMAIN_RUNNING &&
+            driver_domain_pid(bindings[index].domain) == pid)
             bindings[index].enabled = 0;
 }
 
@@ -472,9 +474,11 @@ void driver_manager_tick(void) {
         struct manager_binding *binding = &bindings[index];
         if (!binding->active || !binding->enabled) continue;
         int ready = dependencies_ready(binding->manifest_slot);
-        if (!ready && binding->domain->state == DRIVER_DOMAIN_RUNNING) {
+        if (!ready &&
+            driver_domain_state(binding->domain) == DRIVER_DOMAIN_RUNNING) {
             if (driver_domain_stop(binding->domain)) binding->enabled = 0;
-        } else if (ready && binding->domain->state == DRIVER_DOMAIN_STOPPED) {
+        } else if (ready && driver_domain_state(binding->domain) ==
+                                DRIVER_DOMAIN_STOPPED) {
             if (driver_domain_start(binding->domain)) binding->enabled = 0;
         }
     }
