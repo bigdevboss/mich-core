@@ -1,4 +1,5 @@
 #include "driver.h"
+#include "klock.h"
 #include "resource.h"
 
 struct driver_module {
@@ -23,6 +24,10 @@ struct driver_module {
 static struct driver_module modules[DRIVER_MODULE_MAX];
 static struct driver_instance instances[DRIVER_INSTANCE_MAX];
 static u32 next_instance_id;
+
+static struct klock driver_module_klock = KLOCK_INIT(KLOCK_LEVEL_MODULE);
+
+static int driver_unregister_locked(int module_id);
 
 static int valid_name(const char *name) {
     if (!name || !name[0]) return 0;
@@ -67,7 +72,7 @@ void driver_init(void) {
     next_instance_id = 1;
 }
 
-int driver_register(const struct driver_descriptor *descriptor) {
+static int driver_register_locked(const struct driver_descriptor *descriptor) {
     if (!descriptor || !valid_name(descriptor->name) ||
         descriptor->abi_version != DRIVER_ABI_VERSION || !descriptor->start)
         return -1;
@@ -109,6 +114,13 @@ int driver_register(const struct driver_descriptor *descriptor) {
     return -1;
 }
 
+int driver_register(const struct driver_descriptor *descriptor) {
+    klock_acquire(&driver_module_klock);
+    int result = driver_register_locked(descriptor);
+    klock_release(&driver_module_klock);
+    return result;
+}
+
 static int names_equal(const char *left, const char *right) {
     if (!left || !right) return 0;
     for (u32 index = 0; index < 32; index++) {
@@ -118,12 +130,13 @@ static int names_equal(const char *left, const char *right) {
     return 0;
 }
 
-int driver_register_manifest(const struct driver_manifest *manifest) {
+static int driver_register_manifest_locked(
+    const struct driver_manifest *manifest) {
     if (!manifest || manifest->dependency_count > DRIVER_DEPENDENCY_MAX ||
         manifest->match_count > DRIVER_MATCH_MAX ||
         manifest->restart_policy > DRIVER_RESTART_ON_FAILURE)
         return -1;
-    int module_id = driver_register(&manifest->driver);
+    int module_id = driver_register_locked(&manifest->driver);
     if (module_id < 0) return -1;
     struct driver_module *module = module_at(module_id);
     module->priority = manifest->priority;
@@ -134,7 +147,7 @@ int driver_register_manifest(const struct driver_manifest *manifest) {
     for (u32 index = 0; index < manifest->dependency_count; index++) {
         const char *dependency = manifest->dependencies[index];
         if (!valid_name(dependency) || names_equal(dependency, module->name)) {
-            driver_unregister(module_id);
+            driver_unregister_locked(module_id);
             return -1;
         }
         u32 length = 0;
@@ -149,7 +162,14 @@ int driver_register_manifest(const struct driver_manifest *manifest) {
     return module_id;
 }
 
-int driver_unregister(int module_id) {
+int driver_register_manifest(const struct driver_manifest *manifest) {
+    klock_acquire(&driver_module_klock);
+    int result = driver_register_manifest_locked(manifest);
+    klock_release(&driver_module_klock);
+    return result;
+}
+
+static int driver_unregister_locked(int module_id) {
     struct driver_module *module = module_at(module_id);
     if (!module || module->instances) return -1;
     module->active = 0;
@@ -169,12 +189,17 @@ int driver_unregister(int module_id) {
     return 0;
 }
 
-struct driver_instance *driver_bind(int module_id,
-                                    struct kernel_object *device) {
+int driver_unregister(int module_id) {
+    klock_acquire(&driver_module_klock);
+    int result = driver_unregister_locked(module_id);
+    klock_release(&driver_module_klock);
+    return result;
+}
+
+static struct driver_instance *driver_bind_locked(int module_id,
+                                                 struct kernel_object *device) {
     struct driver_module *module = module_at(module_id);
-    if (!module || !device || !device->active ||
-        (module->probe && module->probe(device)))
-        return 0;
+    if (!module || !device || !device->active) return 0;
     for (u32 index = 0; index < DRIVER_INSTANCE_MAX; index++)
         if (instances[index].active && instances[index].device == device)
             return 0;
@@ -197,8 +222,24 @@ struct driver_instance *driver_bind(int module_id,
     return 0;
 }
 
-int driver_add_resource(struct driver_instance *instance,
-                        struct kernel_object *object, u32 rights) {
+// The probe is module code and may call back into this layer, so it runs with
+// the lock released and the instance is claimed on the way back in.
+struct driver_instance *driver_bind(int module_id,
+                                    struct kernel_object *device) {
+    klock_acquire(&driver_module_klock);
+    struct driver_module *module = module_at(module_id);
+    driver_probe_fn probe = module ? module->probe : 0;
+    klock_release(&driver_module_klock);
+    if (probe && probe(device)) return 0;
+    klock_acquire(&driver_module_klock);
+    struct driver_instance *instance = driver_bind_locked(module_id, device);
+    klock_release(&driver_module_klock);
+    return instance;
+}
+
+static int driver_add_resource_locked(struct driver_instance *instance,
+                                      struct kernel_object *object,
+                                      u32 rights) {
     if (!instance || !instance->active || instance->state != DRIVER_STOPPED ||
         !object || !object->active || !rights || (rights & ~KRIGHT_ALL) ||
         instance->resource_count >= DRIVER_RESOURCE_MAX)
@@ -211,9 +252,17 @@ int driver_add_resource(struct driver_instance *instance,
     return 0;
 }
 
-struct kernel_object *driver_get_resource(struct driver_instance *instance,
-                                          u32 index, u32 required_rights,
-                                          u32 required_type) {
+int driver_add_resource(struct driver_instance *instance,
+                        struct kernel_object *object, u32 rights) {
+    klock_acquire(&driver_module_klock);
+    int result = driver_add_resource_locked(instance, object, rights);
+    klock_release(&driver_module_klock);
+    return result;
+}
+
+static struct kernel_object *driver_get_resource_locked(
+    struct driver_instance *instance, u32 index, u32 required_rights,
+    u32 required_type) {
     if (!instance || !instance->active || index >= instance->resource_count)
         return 0;
     struct driver_resource_ref *resource = &instance->resources[index];
@@ -226,26 +275,70 @@ struct kernel_object *driver_get_resource(struct driver_instance *instance,
     return resource->object;
 }
 
-int driver_start(struct driver_instance *instance) {
+struct kernel_object *driver_get_resource(struct driver_instance *instance,
+                                          u32 index, u32 required_rights,
+                                          u32 required_type) {
+    klock_acquire(&driver_module_klock);
+    struct kernel_object *result = driver_get_resource_locked(instance, index,
+                                                              required_rights,
+                                                              required_type);
+    klock_release(&driver_module_klock);
+    return result;
+}
+
+static int driver_start_claim_locked(struct driver_instance *instance) {
     if (!instance || !instance->active || instance->state != DRIVER_STOPPED)
         return -1;
     struct driver_module *module = module_at((int)instance->module_id);
-    if (!module || !module->active || module->start(instance)) return -1;
-    instance->state = DRIVER_RUNNING;
+    if (!module || !module->active || !module->start) return -1;
+    instance->state = DRIVER_BUSY;
     return 0;
 }
 
-void driver_stop(struct driver_instance *instance) {
-    if (!instance || !instance->active || instance->state != DRIVER_RUNNING)
-        return;
-    struct driver_module *module = module_at((int)instance->module_id);
-    if (module && module->active && module->stop) module->stop(instance);
-    instance->state = DRIVER_STOPPED;
+int driver_start(struct driver_instance *instance) {
+    klock_acquire(&driver_module_klock);
+    int rejected = driver_start_claim_locked(instance);
+    struct driver_module *module =
+        rejected ? 0 : module_at((int)instance->module_id);
+    driver_start_fn start = module ? module->start : 0;
+    klock_release(&driver_module_klock);
+    if (rejected) return -1;
+    int rc = start(instance);
+    klock_acquire(&driver_module_klock);
+    if (instance->active && instance->state == DRIVER_BUSY)
+        instance->state = rc ? DRIVER_STOPPED : DRIVER_RUNNING;
+    klock_release(&driver_module_klock);
+    return rc ? -1 : 0;
 }
 
-void driver_unbind(struct driver_instance *instance) {
-    if (!instance || !instance->active) return;
-    driver_stop(instance);
+// Takes the stop callback and claims the instance for it. An instance with no
+// callback goes straight to stopped, which is what it did before the callback
+// ran outside the lock.
+static driver_stop_fn driver_stop_claim_locked(
+    struct driver_instance *instance) {
+    if (!instance || !instance->active || instance->state != DRIVER_RUNNING)
+        return 0;
+    struct driver_module *module = module_at((int)instance->module_id);
+    driver_stop_fn stop = module && module->active ? module->stop : 0;
+    instance->state = stop ? DRIVER_BUSY : DRIVER_STOPPED;
+    return stop;
+}
+
+void driver_stop(struct driver_instance *instance) {
+    klock_acquire(&driver_module_klock);
+    driver_stop_fn stop = driver_stop_claim_locked(instance);
+    klock_release(&driver_module_klock);
+    if (!stop) return;
+    stop(instance);
+    klock_acquire(&driver_module_klock);
+    if (instance->active && instance->state == DRIVER_BUSY)
+        instance->state = DRIVER_STOPPED;
+    klock_release(&driver_module_klock);
+}
+
+static void driver_unbind_locked(struct driver_instance *instance) {
+    if (!instance || !instance->active || instance->state == DRIVER_BUSY)
+        return;
     struct driver_module *module = module_at((int)instance->module_id);
     for (u32 index = 0; index < instance->resource_count; index++) {
         object_release(instance->resources[index].object);
@@ -262,6 +355,13 @@ void driver_unbind(struct driver_instance *instance) {
     instance->restart_count = 0;
     instance->private_data = 0;
     instance->active = 0;
+}
+
+void driver_unbind(struct driver_instance *instance) {
+    driver_stop(instance);
+    klock_acquire(&driver_module_klock);
+    driver_unbind_locked(instance);
+    klock_release(&driver_module_klock);
 }
 
 static int dependencies_ready(const struct driver_module *module) {
@@ -302,12 +402,20 @@ static int matches_device(const struct driver_module *module,
 
 int driver_autobind(int module_id, struct kernel_object **devices,
                     u32 device_count) {
+    klock_acquire(&driver_module_klock);
     struct driver_module *module = module_at(module_id);
-    if (!module || !devices || !dependencies_ready(module)) return -1;
+    int ready = module && devices && dependencies_ready(module);
+    klock_release(&driver_module_klock);
+    if (!ready) return -1;
     int started = 0;
     for (u32 index = 0; index < device_count; index++) {
-        if (!matches_device(module, devices[index])) continue;
-        struct driver_instance *instance = driver_bind(module_id, devices[index]);
+        klock_acquire(&driver_module_klock);
+        struct driver_module *current = module_at(module_id);
+        int match = current && matches_device(current, devices[index]);
+        klock_release(&driver_module_klock);
+        if (!match) continue;
+        struct driver_instance *instance =
+            driver_bind(module_id, devices[index]);
         if (!instance) continue;
         if (driver_start(instance)) {
             driver_unbind(instance);
@@ -320,14 +428,17 @@ int driver_autobind(int module_id, struct kernel_object **devices,
 
 int driver_start_all(struct kernel_object **devices, u32 device_count) {
     if (!devices && device_count) return -1;
+    klock_acquire(&driver_module_klock);
     u32 remaining = 0;
     for (u32 index = 0; index < DRIVER_MODULE_MAX; index++) {
         if (!modules[index].active) continue;
         modules[index].autobind_done = 0;
         remaining++;
     }
+    klock_release(&driver_module_klock);
     int total = 0;
     while (remaining) {
+        klock_acquire(&driver_module_klock);
         int selected = -1;
         for (u32 index = 0; index < DRIVER_MODULE_MAX; index++) {
             struct driver_module *module = &modules[index];
@@ -337,10 +448,13 @@ int driver_start_all(struct kernel_object **devices, u32 device_count) {
             if (selected < 0 || module->priority < modules[selected].priority)
                 selected = (int)index;
         }
+        klock_release(&driver_module_klock);
         if (selected < 0) return -1;
         int started = driver_autobind(selected + 1, devices, device_count);
         if (started < 0) return -1;
+        klock_acquire(&driver_module_klock);
         modules[selected].autobind_done = 1;
+        klock_release(&driver_module_klock);
         remaining--;
         total += started;
     }
@@ -348,27 +462,48 @@ int driver_start_all(struct kernel_object **devices, u32 device_count) {
 }
 
 int driver_instance_failed(struct driver_instance *instance) {
-    if (!instance || !instance->active) return -1;
-    struct driver_module *module = module_at((int)instance->module_id);
+    klock_acquire(&driver_module_klock);
+    struct driver_module *module =
+        instance && instance->active ? module_at((int)instance->module_id) : 0;
+    klock_release(&driver_module_klock);
     if (!module) return -1;
     driver_stop(instance);
-    instance->state = DRIVER_FAILED;
-    if (module->restart_policy != DRIVER_RESTART_ON_FAILURE ||
-        instance->restart_count >= module->max_restarts)
+    klock_acquire(&driver_module_klock);
+    module = instance->active ? module_at((int)instance->module_id) : 0;
+    if (!module) {
+        klock_release(&driver_module_klock);
         return -1;
-    instance->state = DRIVER_STOPPED;
-    instance->restart_count++;
-    return driver_start(instance);
+    }
+    instance->state = DRIVER_FAILED;
+    int restart = module->restart_policy == DRIVER_RESTART_ON_FAILURE &&
+                  instance->restart_count < module->max_restarts;
+    if (restart) {
+        instance->state = DRIVER_STOPPED;
+        instance->restart_count++;
+    }
+    klock_release(&driver_module_klock);
+    return restart ? driver_start(instance) : -1;
 }
 
 void driver_device_removed(struct kernel_object *device) {
     if (!device) return;
-    for (u32 index = 0; index < DRIVER_INSTANCE_MAX; index++)
-        if (instances[index].active && instances[index].device == device)
-            driver_unbind(&instances[index]);
+    for (u32 index = 0; index < DRIVER_INSTANCE_MAX; index++) {
+        klock_acquire(&driver_module_klock);
+        int bound = instances[index].active &&
+                    instances[index].device == device;
+        klock_release(&driver_module_klock);
+        if (bound) driver_unbind(&instances[index]);
+    }
+}
+
+static const char *driver_name_locked(int module_id) {
+    struct driver_module *module = module_at(module_id);
+    return module ? module->name : 0;
 }
 
 const char *driver_name(int module_id) {
-    struct driver_module *module = module_at(module_id);
-    return module ? module->name : 0;
+    klock_acquire(&driver_module_klock);
+    const char *result = driver_name_locked(module_id);
+    klock_release(&driver_module_klock);
+    return result;
 }

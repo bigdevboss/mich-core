@@ -14,6 +14,11 @@
 #define DRIVER_STOPPED 0
 #define DRIVER_RUNNING 1
 #define DRIVER_FAILED 2
+// A module callback is in flight on this instance. The callbacks are foreign
+// code that may call back into this layer, so they run with the lock released
+// and the instance is claimed first: start, stop and unbind all fail closed
+// while it is set.
+#define DRIVER_BUSY 3
 
 #define DRIVER_RESTART_NEVER 0
 #define DRIVER_RESTART_ON_FAILURE 1
