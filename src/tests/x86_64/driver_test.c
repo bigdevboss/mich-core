@@ -63,13 +63,13 @@ static int supervisor_test_reset(struct kernel_object *device) {
     return pci->device_id == 0xB201 ? 1 : 0;
 }
 
-static int supervisor_test_revoke(int pid,
+static int supervisor_test_revoke(int pid, u32 domain_id,
     const struct driver_domain_resource *resources, u32 count) {
     if ((pid != test_env->owner->id && pid != test_env->target->id) ||
-        !resources || !count)
+        !domain_id || !resources || !count)
         return -1;
     supervisor_test_revokes++;
-    return test_env->revoke(pid, resources, count);
+    return test_env->revoke(pid, domain_id, resources, count);
 }
 
 static int supervisor_test_terminate(int pid) {

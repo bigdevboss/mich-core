@@ -267,8 +267,10 @@ static int recreate_bridge(struct driver_domain *domain) {
 static int teardown(struct driver_domain *domain) {
     int result = mask_irqs(domain);
     if (quiesce_backend && quiesce_backend(domain->device)) result = -1;
+    // The backend takes the domain id instead of looking the domain up by
+    // pid: it runs inside teardown and must not walk the table again.
     if (revoke_backend && domain->pid > 0 &&
-        revoke_backend(domain->pid, domain->resources,
+        revoke_backend(domain->pid, domain->id, domain->resources,
                        domain->resource_count))
         result = -1;
     struct task *task = task_for_pid(domain->pid);

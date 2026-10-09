@@ -205,7 +205,7 @@ struct driver_domain_status {
 typedef int (*driver_domain_spawn_fn)(const struct driver_domain *domain);
 typedef int (*driver_domain_quiesce_fn)(struct kernel_object *device);
 typedef int (*driver_domain_reset_fn)(struct kernel_object *device);
-typedef int (*driver_domain_revoke_fn)(int pid,
+typedef int (*driver_domain_revoke_fn)(int pid, u32 domain_id,
     const struct driver_domain_resource *resources, u32 count);
 typedef int (*driver_domain_terminate_fn)(int pid);
 typedef int (*driver_domain_release_fn)(struct driver_domain *domain);

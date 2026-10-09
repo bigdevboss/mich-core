@@ -178,7 +178,7 @@ static u32 spawn_image_count;
 static int supervisor64_spawn(const struct driver_domain *domain);
 static int supervisor64_quiesce(struct kernel_object *device);
 static int supervisor64_reset(struct kernel_object *device);
-static int supervisor64_revoke(int pid,
+static int supervisor64_revoke(int pid, u32 domain_id,
     const struct driver_domain_resource *resources, u32 count);
 static int supervisor64_terminate(int pid);
 static int supervisor64_release(struct driver_domain *domain);
@@ -1767,7 +1767,7 @@ static int supervisor64_reset(struct kernel_object *device) {
     return pci64_reset(device);
 }
 
-static int supervisor64_revoke(int pid,
+static int supervisor64_revoke(int pid, u32 domain_id,
     const struct driver_domain_resource *resources, u32 count) {
     u32 slot = PID_SLOT((u32)pid);
     if (slot >= MAX_TASKS || task_pool[slot].id != pid ||
@@ -1777,9 +1777,8 @@ static int supervisor64_revoke(int pid,
     for (u32 index = 0; index < count; index++)
         objects[index] = resources[index].object;
     vm64_revoke_objects(task_contexts[slot].vm_space, objects, count);
-    struct driver_domain *domain = driver_domain_for_pid(pid);
-    if (domain && iommu_present() && iommu_domain_exists(domain->id) &&
-        iommu_domain_suspend(domain->id))
+    if (iommu_present() && iommu_domain_exists(domain_id) &&
+        iommu_domain_suspend(domain_id))
         return -1;
     return 0;
 }
