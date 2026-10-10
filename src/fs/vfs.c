@@ -72,11 +72,11 @@ struct vfs_alias_state {
 };
 
 static struct vfs_alias_state aliases[VFS_ALIAS_MAX];
-// Pairs file-table admission, final close and the two preflights that decide
-// whether a mount or an inode is still reachable from a descriptor. A level
-// rather than a plain spinlock because admission creates an object and the
-// unmount path releases one, both of which take the object lock.
-static struct klock vfs_file_klock = KLOCK_INIT(KLOCK_LEVEL_VFS);
+// One lock for the file, node, alias and mount tables: the paths cross
+// between them, so a second lock at this level would only ever nest on
+// itself. A level rather than a plain spinlock because these paths create
+// and release objects, which take the object lock.
+static struct klock vfs_klock = KLOCK_INIT(KLOCK_LEVEL_VFS);
 // One VFS domain makes EOF selection and append write indivisible.
 static struct spinlock vfs_write_lock = SPINLOCK_INIT;
 static struct kernel_object *root_object;
@@ -172,9 +172,9 @@ static int node_has_open_file_locked(struct kernel_object *node) {
 }
 
 static int node_has_open_file(struct kernel_object *node) {
-    klock_acquire(&vfs_file_klock);
+    klock_acquire(&vfs_klock);
     int open = node_has_open_file_locked(node);
-    klock_release(&vfs_file_klock);
+    klock_release(&vfs_klock);
     return open;
 }
 
@@ -218,7 +218,11 @@ static u32 directory_children(u32 parent) {
 static void node_destroy(struct kernel_object *object) {
     if (!object || !object->value || object->value > VFS_NODE_MAX) return;
     struct vfs_node_state *node = &nodes[object->value - 1];
-    if (!node->active || node->self != object) return;
+    klock_acquire(&vfs_klock);
+    if (!node->active || node->self != object) {
+        klock_release(&vfs_klock);
+        return;
+    }
     node->self = 0;
     node->external_data = 0;
     // Names die with their node: an alias cannot outlive the inode it
@@ -267,28 +271,39 @@ static void node_destroy(struct kernel_object *object) {
     node->active = 0;
     node->generation++;
     if (!node->generation) node->generation = 1;
+    klock_release(&vfs_klock);
 }
 
 static void file_destroy(struct kernel_object *object) {
     if (!object || !object->value || object->value > VFS_FILE_MAX) return;
     struct vfs_file_state *file = &files[object->value - 1];
-    klock_acquire(&vfs_file_klock);
+    klock_acquire(&vfs_klock);
     if (!file->active) {
-        klock_release(&vfs_file_klock);
+        klock_release(&vfs_klock);
         return;
     }
     struct kernel_object *node = file->node;
     file->node = 0;
     file->active = 0;
-    klock_release(&vfs_file_klock);
+    klock_release(&vfs_klock);
     if (node) object_release(node);
 }
 
+// Every object this drops is a node, and a node's destroy takes this lock,
+// so the releases wait for the unlock. The active flag is not part of the
+// claim: unmount clears it first to keep a second caller from releasing the
+// same object twice.
 static void mount_destroy(struct kernel_object *object) {
     if (!object || !object->value || object->value > VFS_MOUNT_MAX) return;
     u32 mount_index = (u32)object->value - 1;
     struct vfs_mount_state *mount = &mounts[mount_index];
-    if (!mount->active || mount->self != object) return;
+    struct kernel_object *pending[VFS_NODE_MAX + 2];
+    u32 pending_count = 0;
+    klock_acquire(&vfs_klock);
+    if (mount->self != object) {
+        klock_release(&vfs_klock);
+        return;
+    }
     mount->self = 0;
     if (mount->filesystem == VFS_FILESYSTEM_ADYTUMFS)
         adytumfs_detach(mount_index);
@@ -299,22 +314,28 @@ static void mount_destroy(struct kernel_object *object) {
                 continue;
             node->linked = 0;
             node->parent = VFS_NODE_MAX;
-            object_release(node->self);
+            if (node->self && pending_count < VFS_NODE_MAX)
+                pending[pending_count++] = node->self;
         }
     }
-    if (mount->root) object_release(mount->root);
-    if (mount->mountpoint) object_release(mount->mountpoint);
+    if (mount->root && pending_count < VFS_NODE_MAX + 1)
+        pending[pending_count++] = mount->root;
+    if (mount->mountpoint && pending_count < VFS_NODE_MAX + 2)
+        pending[pending_count++] = mount->mountpoint;
     mount->root = 0;
     mount->mountpoint = 0;
     mount->filesystem = 0;
     mount->active = 0;
     mount->generation++;
     if (!mount->generation) mount->generation = 1;
+    klock_release(&vfs_klock);
+    for (u32 index = 0; index < pending_count; index++)
+        object_release(pending[index]);
 }
 
 void vfs_init(void) {
-    vfs_file_klock.lock.ticket = 0;
-    vfs_file_klock.lock.served = 0;
+    vfs_klock.lock.ticket = 0;
+    vfs_klock.lock.served = 0;
     vfs_write_lock.ticket = 0;
     vfs_write_lock.served = 0;
     root_object = 0;
@@ -410,14 +431,20 @@ int vfs_unmount(struct kernel_object *directory) {
     struct vfs_mount_state *mount = mount_for_point(directory);
     if (!mount || !mount->self || !mount->active) return -1;
     u32 mount_index = (u32)(mount - mounts);
-    klock_acquire(&vfs_file_klock);
-    if (mount->filesystem == VFS_FILESYSTEM_ADYTUMFS &&
-        mount_has_open_file_locked(mount_index, mount->generation)) {
-        klock_release(&vfs_file_klock);
+    klock_acquire(&vfs_klock);
+    if (!mount->active || !mount->self) {
+        klock_release(&vfs_klock);
         return -1;
     }
-    object_release(mount->self);
-    klock_release(&vfs_file_klock);
+    if (mount->filesystem == VFS_FILESYSTEM_ADYTUMFS &&
+        mount_has_open_file_locked(mount_index, mount->generation)) {
+        klock_release(&vfs_klock);
+        return -1;
+    }
+    struct kernel_object *self = mount->self;
+    mount->active = 0;
+    klock_release(&vfs_klock);
+    object_release(self);
     return 0;
 }
 
@@ -1359,21 +1386,21 @@ int vfs_image(struct kernel_object *object, const u8 **data, u32 *size) {
 }
 
 struct kernel_object *vfs_open(struct kernel_object *object) {
-    klock_acquire(&vfs_file_klock);
+    klock_acquire(&vfs_klock);
     struct vfs_node_state *node = node_for(object);
     // Directories open read-only so getdents can list them; the read and
     // write paths below still require a regular node.
     if (!node || !node_backing_live(node) ||
         (node->type != VFS_NODE_REGULAR &&
          node->type != VFS_NODE_DIRECTORY)) {
-        klock_release(&vfs_file_klock);
+        klock_release(&vfs_klock);
         return 0;
     }
     for (u32 index = 0; index < VFS_FILE_MAX; index++) {
         struct vfs_file_state *file = &files[index];
         if (file->active) continue;
         if (object_retain(object)) {
-            klock_release(&vfs_file_klock);
+            klock_release(&vfs_klock);
             return 0;
         }
         file->node = object;
@@ -1385,10 +1412,10 @@ struct kernel_object *vfs_open(struct kernel_object *object) {
             file->active = 0;
             object_release(object);
         }
-        klock_release(&vfs_file_klock);
+        klock_release(&vfs_klock);
         return opened;
     }
-    klock_release(&vfs_file_klock);
+    klock_release(&vfs_klock);
     return 0;
 }
 
