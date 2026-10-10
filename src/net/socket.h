@@ -81,6 +81,9 @@ typedef u32 (*socket_wake_hook)(u32 index, u32 *poll_owed);
 typedef void (*socket_poll_notify_hook)(void);
 void socket_set_wake_hook(socket_wake_hook hook);
 void socket_set_poll_notify_hook(socket_poll_notify_hook hook);
+// A wake that happens while the net lock is held cannot notify then, so
+// the debt is carried to whichever frame releases the last reference.
+void socket_poll_notify_drain(void);
 
 // A datagram landing on a binding wakes the application waiters parked on
 // sockets bound to it; the udp layer calls this beside its event signal.

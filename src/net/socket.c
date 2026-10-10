@@ -38,6 +38,7 @@ static socket_wake_hook wake_hook;
 // The poll notify runs after net_unlock, the way the fd layer already does it:
 // the scan a notify triggers takes the wait lock, which sits outside this one.
 static socket_poll_notify_hook poll_notify_hook;
+static u32 poll_notify_owed;
 
 void socket_set_wake_hook(socket_wake_hook hook) {
     wake_hook = hook;
@@ -45,6 +46,12 @@ void socket_set_wake_hook(socket_wake_hook hook) {
 
 void socket_set_poll_notify_hook(socket_poll_notify_hook hook) {
     poll_notify_hook = hook;
+}
+
+void socket_poll_notify_drain(void) {
+    if (!poll_notify_owed) return;
+    poll_notify_owed = 0;
+    if (poll_notify_hook) poll_notify_hook();
 }
 
 static u32 wake_index(u32 index, u32 *poll_owed) {
@@ -725,11 +732,13 @@ static void socket_tcp_abort_context_locked(
 
 
 void socket_tcp_abort_context(struct tcp_context *tcp, i32 error) {
+    u32 outer = !net_lock_held();
     u32 poll_owed = 0;
     net_lock();
     socket_tcp_abort_context_locked(tcp, error, &poll_owed);
     net_unlock();
-    if (poll_owed && poll_notify_hook) poll_notify_hook();
+    if (poll_owed) poll_notify_owed = 1;
+    if (outer) socket_poll_notify_drain();
 }
 
 
@@ -756,11 +765,13 @@ static void socket_tcp_notify_locked(
 
 
 void socket_tcp_notify(struct tcp_context *tcp, u64 connection_id) {
+    u32 outer = !net_lock_held();
     u32 poll_owed = 0;
     net_lock();
     socket_tcp_notify_locked(tcp, connection_id, &poll_owed);
     net_unlock();
-    if (poll_owed && poll_notify_hook) poll_notify_hook();
+    if (poll_owed) poll_notify_owed = 1;
+    if (outer) socket_poll_notify_drain();
 }
 
 
@@ -841,9 +852,11 @@ static int socket_send_to_locked(
 int socket_send_to(
     struct kernel_object *object, u32 address, u16 port, const void *payload, 
     u32 length) {
+    u32 outer = !net_lock_held();
     net_lock();
     int result = socket_send_to_locked(object, address, port, payload, length);
     net_unlock();
+    if (outer) socket_poll_notify_drain();
     return result;
 }
 
@@ -995,11 +1008,13 @@ static void socket_udp_notify_locked(struct udp_context *udp, u64 binding_id,
 
 
 void socket_udp_notify(struct udp_context *udp, u64 binding_id) {
+    u32 outer = !net_lock_held();
     u32 poll_owed = 0;
     net_lock();
     socket_udp_notify_locked(udp, binding_id, &poll_owed);
     net_unlock();
-    if (poll_owed && poll_notify_hook) poll_notify_hook();
+    if (poll_owed) poll_notify_owed = 1;
+    if (outer) socket_poll_notify_drain();
 }
 
 

@@ -27,6 +27,10 @@ void net_lock(void) {
     klock_acquire(&net_klock);
 }
 
+int net_lock_held(void) {
+    return net_lock_depth[net_lock_cpu()] != 0;
+}
+
 void net_unlock(void) {
     u32 cpu = net_lock_cpu();
     if (!net_lock_depth[cpu]) return;

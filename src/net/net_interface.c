@@ -1625,9 +1625,11 @@ int net_interface_receive_frame(struct kernel_object *object,
     struct net_interface *interface = net_interface_get(object);
     if (!interface || interface->state != NET_INTERFACE_UP || !frame)
         return -1;
+    u32 outer = !net_lock_held();
     net_lock();
     int result = net_interface_receive_frame_ctx(interface, frame, length, now);
     net_unlock();
+    if (outer) socket_poll_notify_drain();
     return result;
 }
 
@@ -1641,11 +1643,13 @@ void net_interface_receive_buffer(struct kernel_object *object, u64 buffer_id,
     void *buffer = packet_pool_data(interface->pool, buffer_id,
                                     NET_BUFFER_DRIVER_RX);
     if (!buffer) return;
+    u32 outer = !net_lock_held();
     net_lock();
     net_interface_receive_frame_ctx(interface, (const u8 *)buffer + offset,
                                     length, now);
     packet_pool_release(interface->pool, buffer_id, NET_BUFFER_DRIVER_RX);
     net_unlock();
+    if (outer) socket_poll_notify_drain();
 }
 
 u64 net_interface_driver_acquire_rx(struct kernel_object *object,
@@ -1676,6 +1680,7 @@ int net_interface_driver_receive(struct kernel_object *object,
     void *buffer = packet_pool_data(interface->pool, buffer_id,
                                     NET_BUFFER_DRIVER_RX);
     if (!buffer) return -1;
+    u32 outer = !net_lock_held();
     net_lock();
     int result = net_interface_receive_frame_ctx(
         interface, (const u8 *)buffer + offset, length, now);
@@ -1683,6 +1688,7 @@ int net_interface_driver_receive(struct kernel_object *object,
                             NET_BUFFER_DRIVER_RX))
         result = -1;
     net_unlock();
+    if (outer) socket_poll_notify_drain();
     return result;
 }
 
@@ -1764,6 +1770,7 @@ u32 net_interface_driver_receive_batch(struct kernel_object *object,
         !owner_valid(interface, owner))
         return 0;
     u32 processed = 0;
+    u32 outer = !net_lock_held();
     while (processed < count) {
         const struct net_interface_buffer_request *request =
             &requests[processed];
@@ -1791,6 +1798,7 @@ u32 net_interface_driver_receive_batch(struct kernel_object *object,
         if (delivered) break;
         processed++;
     }
+    if (outer) socket_poll_notify_drain();
     return processed;
 }
 
@@ -1832,6 +1840,7 @@ struct kernel_object *net_interface_pool(struct kernel_object *object,
 void net_interface_tick(struct kernel_object *object, u32 now) {
     struct net_interface *interface = net_interface_get(object);
     if (!interface || interface->state == NET_INTERFACE_REVOKED) return;
+    u32 outer = !net_lock_held();
     net_lock();
     interface->now = now;
     pmtu_tick(&interface->pmtu, now);
@@ -1916,6 +1925,7 @@ void net_interface_tick(struct kernel_object *object, u32 now) {
             flush_pending(interface, pending->next_hop, hardware);
     }
     net_unlock();
+    if (outer) socket_poll_notify_drain();
 }
 
 int net_interface_revoke(struct kernel_object *object) {
