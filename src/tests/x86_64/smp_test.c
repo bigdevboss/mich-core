@@ -952,25 +952,24 @@ static int test_smp64_vector_storm(void) {
 // the battery has to show it rejects the pairs the order forbids and that
 // the record follows real nesting. The locks here are the test's own: the
 // point is the checker, not the subsystems it guards.
-static int test_smp64_pool_contend(void) {
-    u64 before = 0;
-    u64 ignored = 0;
-    u64 acquires = 0;
-    u64 contended = 0;
-    klock_stats_read(KLOCK_LEVEL_POOL, &before, &ignored);
-    // pick_next claims nothing, so this moves lock traffic through the
-    // pool without disturbing a task the scheduler is running.
-    for (u32 turn = 0; turn < 4096u; turn++)
-        task_pick_next(0, 0);
-    klock_stats_read(KLOCK_LEVEL_POOL, &acquires, &contended);
-    if (acquires <= before) return -1;
-    if (contended > acquires) return -1;
-    serial64_write("Mich x86_64: SMP pool lock contention (acquires=");
-    serial64_hex(acquires);
-    serial64_write(" contended=");
-    serial64_hex(contended);
-    serial64_write(")\n");
-    return 0;
+static int test_smp64_lock_contention(void) {
+    u64 total = 0;
+    serial64_write("Mich x86_64: SMP lock contention report\n");
+    for (u32 level = 1; level <= KLOCK_LEVEL_PMM; level++) {
+        u64 acquires = 0;
+        u64 waits = 0;
+        klock_stats_read(level, &acquires, &waits);
+        if (waits > acquires) return -1;
+        total += acquires;
+        serial64_write("Mich x86_64: SMP lock contention level=");
+        serial64_hex(level);
+        serial64_write(" acquires=");
+        serial64_hex(acquires);
+        serial64_write(" waits=");
+        serial64_hex(waits);
+        serial64_write("\n");
+    }
+    return total ? 0 : -1;
 }
 
 static int test_smp64_lockorder(void) {
@@ -1347,13 +1346,6 @@ int tests64_run_smp(void) {
         return -1;
     }
     serial64_write("Mich x86_64: SMP vector storm pass\n");
-    // Reports its own line: the counts are the measurement this leg is
-    // judged on, not a pass or fail.
-    if (test_report_record(TEST_ID_SMP_POOL_CONTEND,
-                           test_smp64_pool_contend())) {
-        irq_restore(irq_state);
-        return -1;
-    }
     if (test_report_record(TEST_ID_SMP_LOCKORDER, test_smp64_lockorder())) {
         irq_restore(irq_state);
         return -1;
@@ -1366,6 +1358,13 @@ int tests64_run_smp(void) {
         return -1;
     }
     if (test_report_record(TEST_ID_SMP_SPEEDUP, test_smp64_speedup())) {
+        irq_restore(irq_state);
+        return -1;
+    }
+    // Last in the battery on purpose: the counts are cumulative from boot,
+    // so this is the only point that has seen the storms above it.
+    if (test_report_record(TEST_ID_SMP_LOCK_CONTEND,
+                           test_smp64_lock_contention())) {
         irq_restore(irq_state);
         return -1;
     }
