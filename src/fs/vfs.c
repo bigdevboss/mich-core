@@ -171,13 +171,6 @@ static int node_has_open_file_locked(struct kernel_object *node) {
     return 0;
 }
 
-static int node_has_open_file(struct kernel_object *node) {
-    klock_acquire(&vfs_klock);
-    int open = node_has_open_file_locked(node);
-    klock_release(&vfs_klock);
-    return open;
-}
-
 static u32 child_count(u32 parent) {
     u32 count = 0;
     for (u32 index = 0; index < VFS_NODE_MAX; index++)
@@ -1169,7 +1162,8 @@ int vfs_unlink_path(struct kernel_object *start, const char *path) {
     return result;
 }
 
-int vfs_unlink(struct kernel_object *directory, const char *name) {
+static int vfs_unlink_locked(struct kernel_object *directory, const char *name,
+                             struct kernel_object **dropped) {
     struct vfs_node_state *parent = node_for(directory);
     if (!parent || parent->type != VFS_NODE_DIRECTORY || parent->readonly ||
         !valid_name(name))
@@ -1192,7 +1186,7 @@ int vfs_unlink(struct kernel_object *directory, const char *name) {
         if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS && node->fs_id &&
             adytumfs_unlink(node->mount, node->fs_id, node->fs_generation,
                             nodes[parent_index].fs_id, node->name, !alias &&
-                            node_has_open_file(node->self)))
+                            node_has_open_file_locked(node->self)))
             return -1;
         // Losing the primary name promotes the first alias into the node,
         // so a hard link survives with one name fewer rather than dying.
@@ -1205,7 +1199,7 @@ int vfs_unlink(struct kernel_object *directory, const char *name) {
         }
         node->linked = 0;
         node->parent = VFS_NODE_MAX;
-        object_release(node->self);
+        *dropped = node->self;
         return 0;
     }
     // The name may belong to an alias rather than the node itself; the
@@ -1226,6 +1220,15 @@ int vfs_unlink(struct kernel_object *directory, const char *name) {
         return 0;
     }
     return -1;
+}
+
+int vfs_unlink(struct kernel_object *directory, const char *name) {
+    struct kernel_object *dropped = 0;
+    klock_acquire(&vfs_klock);
+    int result = vfs_unlink_locked(directory, name, &dropped);
+    klock_release(&vfs_klock);
+    if (dropped) object_release(dropped);
+    return result;
 }
 
 int vfs_link(struct kernel_object *node_object,
@@ -1271,8 +1274,11 @@ int vfs_link(struct kernel_object *node_object,
     return -1;
 }
 
-int vfs_rename(struct kernel_object *old_directory, const char *name,
-               struct kernel_object *new_directory, const char *new_name) {
+static int vfs_rename_locked(struct kernel_object *old_directory,
+                             const char *name,
+                             struct kernel_object *new_directory,
+                             const char *new_name,
+                             struct kernel_object **dropped) {
     struct vfs_node_state *old_parent = node_for(old_directory);
     struct vfs_node_state *new_parent = node_for(new_directory);
     if (!old_parent || old_parent->type != VFS_NODE_DIRECTORY ||
@@ -1349,7 +1355,8 @@ int vfs_rename(struct kernel_object *old_directory, const char *name,
     // The replaced name leaves first and uncommitted, so the adytumfs
     // move below can land in the same staging window and commit both
     // edits under one superblock flip.
-    if (target && vfs_unlink(new_directory, new_name)) return -1;
+    if (target && vfs_unlink_locked(new_directory, new_name, dropped))
+        return -1;
     if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS &&
         adytumfs_rename(node->mount, node->fs_id, node->fs_generation,
                         nodes[old_index].fs_id, name,
@@ -1371,6 +1378,19 @@ int vfs_rename(struct kernel_object *old_directory, const char *name,
     for (u32 byte = 0; new_name[byte]; byte++)
         node->name[byte] = new_name[byte];
     return 0;
+}
+
+int vfs_rename(struct kernel_object *old_directory, const char *name,
+               struct kernel_object *new_directory, const char *new_name) {
+    struct kernel_object *dropped = 0;
+    klock_acquire(&vfs_klock);
+    int result = vfs_rename_locked(old_directory, name, new_directory,
+                                   new_name, &dropped);
+    klock_release(&vfs_klock);
+    // The replaced name is already gone when a later step fails, so the
+    // release happens on every path, not only on success.
+    if (dropped) object_release(dropped);
+    return result;
 }
 
 int vfs_image(struct kernel_object *object, const u8 **data, u32 *size) {
@@ -1794,7 +1814,7 @@ int vfs_stat(struct kernel_object *object, struct vfs_node_info *info) {
     return 0;
 }
 
-int vfs_chmod(struct kernel_object *object, u32 mode) {
+static int vfs_chmod_locked(struct kernel_object *object, u32 mode) {
     struct vfs_node_state *node = node_for(object);
     if (!node) {
         struct vfs_file_state *file = file_for(object);
@@ -1812,7 +1832,14 @@ int vfs_chmod(struct kernel_object *object, u32 mode) {
     return 0;
 }
 
-int vfs_chown(struct kernel_object *object, u32 uid, u32 gid) {
+int vfs_chmod(struct kernel_object *object, u32 mode) {
+    klock_acquire(&vfs_klock);
+    int result = vfs_chmod_locked(object, mode);
+    klock_release(&vfs_klock);
+    return result;
+}
+
+static int vfs_chown_locked(struct kernel_object *object, u32 uid, u32 gid) {
     struct vfs_node_state *node = node_for(object);
     if (!node) {
         struct vfs_file_state *file = file_for(object);
@@ -1834,8 +1861,16 @@ int vfs_chown(struct kernel_object *object, u32 uid, u32 gid) {
     return 0;
 }
 
-int vfs_set_times(struct kernel_object *object, u32 flags, u64 atime,
-                  u32 atime_nsec, u64 mtime, u32 mtime_nsec) {
+int vfs_chown(struct kernel_object *object, u32 uid, u32 gid) {
+    klock_acquire(&vfs_klock);
+    int result = vfs_chown_locked(object, uid, gid);
+    klock_release(&vfs_klock);
+    return result;
+}
+
+static int vfs_set_times_locked(struct kernel_object *object, u32 flags,
+                                u64 atime, u32 atime_nsec, u64 mtime,
+                                u32 mtime_nsec) {
     struct vfs_node_state *node = node_for(object);
     if (!node) {
         struct vfs_file_state *file = file_for(object);
@@ -1867,6 +1902,15 @@ int vfs_set_times(struct kernel_object *object, u32 flags, u64 atime,
     node->ctime = rtc64_wall_clock();
     node->ctime_nsec = rtc64_wall_clock_nsec();
     return 0;
+}
+
+int vfs_set_times(struct kernel_object *object, u32 flags, u64 atime,
+                  u32 atime_nsec, u64 mtime, u32 mtime_nsec) {
+    klock_acquire(&vfs_klock);
+    int result = vfs_set_times_locked(object, flags, atime, atime_nsec, mtime,
+                                      mtime_nsec);
+    klock_release(&vfs_klock);
+    return result;
 }
 
 int vfs_read_dir(struct kernel_object *object, u64 *cursor, char *name,
