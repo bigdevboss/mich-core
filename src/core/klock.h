@@ -18,13 +18,14 @@
 #define KLOCK_LEVEL_MODULE 3u
 #define KLOCK_LEVEL_NET 4u
 #define KLOCK_LEVEL_FD 5u
-#define KLOCK_LEVEL_MSI 6u
-#define KLOCK_LEVEL_IOMMU 7u
-#define KLOCK_LEVEL_RESOURCE 8u
-#define KLOCK_LEVEL_OBJECT 9u
-#define KLOCK_LEVEL_PIPE 10u
-#define KLOCK_LEVEL_POOL 11u
-#define KLOCK_LEVEL_PMM 12u
+#define KLOCK_LEVEL_VFS 6u
+#define KLOCK_LEVEL_MSI 7u
+#define KLOCK_LEVEL_IOMMU 8u
+#define KLOCK_LEVEL_RESOURCE 9u
+#define KLOCK_LEVEL_OBJECT 10u
+#define KLOCK_LEVEL_PIPE 11u
+#define KLOCK_LEVEL_POOL 12u
+#define KLOCK_LEVEL_PMM 13u
 
 // The same ceiling as the CPU target, SMP64_MAX in the arch record.
 #define KLOCK_MAX_CPUS 16

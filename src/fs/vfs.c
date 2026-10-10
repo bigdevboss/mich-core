@@ -1,6 +1,7 @@
 #include "vfs.h"
 #include "posix_tty.h"
 #include "spinlock.h"
+#include "klock.h"
 #include "resource.h"
 #include "adytumfs.h"
 #include "entropy.h"
@@ -71,8 +72,11 @@ struct vfs_alias_state {
 };
 
 static struct vfs_alias_state aliases[VFS_ALIAS_MAX];
-// Pairs file-table admission/final close with adytumfs unmount preflight.
-static struct spinlock vfs_file_lock = SPINLOCK_INIT;
+// Pairs file-table admission, final close and the two preflights that decide
+// whether a mount or an inode is still reachable from a descriptor. A level
+// rather than a plain spinlock because admission creates an object and the
+// unmount path releases one, both of which take the object lock.
+static struct klock vfs_file_klock = KLOCK_INIT(KLOCK_LEVEL_VFS);
 // One VFS domain makes EOF selection and append write indivisible.
 static struct spinlock vfs_write_lock = SPINLOCK_INIT;
 static struct kernel_object *root_object;
@@ -146,7 +150,7 @@ static int node_backing_live(const struct vfs_node_state *node) {
     return 1;
 }
 
-static int mount_has_open_file(u32 mount_index, u32 generation) {
+static int mount_has_open_file_locked(u32 mount_index, u32 generation) {
     for (u32 index = 0; index < VFS_FILE_MAX; index++) {
         if (!files[index].active) continue;
         struct vfs_node_state *node = node_for(files[index].node);
@@ -161,10 +165,17 @@ static int mount_has_open_file(u32 mount_index, u32 generation) {
 // A descriptor still holding a node keeps that node's backing alive; the
 // unlink path asks this before deciding between an eager reclaim and the
 // deferred one the final close triggers.
-static int node_has_open_file(struct kernel_object *node) {
+static int node_has_open_file_locked(struct kernel_object *node) {
     for (u32 index = 0; index < VFS_FILE_MAX; index++)
         if (files[index].active && files[index].node == node) return 1;
     return 0;
+}
+
+static int node_has_open_file(struct kernel_object *node) {
+    klock_acquire(&vfs_file_klock);
+    int open = node_has_open_file_locked(node);
+    klock_release(&vfs_file_klock);
+    return open;
 }
 
 static u32 child_count(u32 parent) {
@@ -261,15 +272,15 @@ static void node_destroy(struct kernel_object *object) {
 static void file_destroy(struct kernel_object *object) {
     if (!object || !object->value || object->value > VFS_FILE_MAX) return;
     struct vfs_file_state *file = &files[object->value - 1];
-    spin_lock(&vfs_file_lock);
+    klock_acquire(&vfs_file_klock);
     if (!file->active) {
-        spin_unlock(&vfs_file_lock);
+        klock_release(&vfs_file_klock);
         return;
     }
     struct kernel_object *node = file->node;
     file->node = 0;
     file->active = 0;
-    spin_unlock(&vfs_file_lock);
+    klock_release(&vfs_file_klock);
     if (node) object_release(node);
 }
 
@@ -302,8 +313,8 @@ static void mount_destroy(struct kernel_object *object) {
 }
 
 void vfs_init(void) {
-    vfs_file_lock.ticket = 0;
-    vfs_file_lock.served = 0;
+    vfs_file_klock.lock.ticket = 0;
+    vfs_file_klock.lock.served = 0;
     vfs_write_lock.ticket = 0;
     vfs_write_lock.served = 0;
     root_object = 0;
@@ -399,14 +410,14 @@ int vfs_unmount(struct kernel_object *directory) {
     struct vfs_mount_state *mount = mount_for_point(directory);
     if (!mount || !mount->self || !mount->active) return -1;
     u32 mount_index = (u32)(mount - mounts);
-    spin_lock(&vfs_file_lock);
+    klock_acquire(&vfs_file_klock);
     if (mount->filesystem == VFS_FILESYSTEM_ADYTUMFS &&
-        mount_has_open_file(mount_index, mount->generation)) {
-        spin_unlock(&vfs_file_lock);
+        mount_has_open_file_locked(mount_index, mount->generation)) {
+        klock_release(&vfs_file_klock);
         return -1;
     }
     object_release(mount->self);
-    spin_unlock(&vfs_file_lock);
+    klock_release(&vfs_file_klock);
     return 0;
 }
 
@@ -1348,21 +1359,21 @@ int vfs_image(struct kernel_object *object, const u8 **data, u32 *size) {
 }
 
 struct kernel_object *vfs_open(struct kernel_object *object) {
-    spin_lock(&vfs_file_lock);
+    klock_acquire(&vfs_file_klock);
     struct vfs_node_state *node = node_for(object);
     // Directories open read-only so getdents can list them; the read and
     // write paths below still require a regular node.
     if (!node || !node_backing_live(node) ||
         (node->type != VFS_NODE_REGULAR &&
          node->type != VFS_NODE_DIRECTORY)) {
-        spin_unlock(&vfs_file_lock);
+        klock_release(&vfs_file_klock);
         return 0;
     }
     for (u32 index = 0; index < VFS_FILE_MAX; index++) {
         struct vfs_file_state *file = &files[index];
         if (file->active) continue;
         if (object_retain(object)) {
-            spin_unlock(&vfs_file_lock);
+            klock_release(&vfs_file_klock);
             return 0;
         }
         file->node = object;
@@ -1374,10 +1385,10 @@ struct kernel_object *vfs_open(struct kernel_object *object) {
             file->active = 0;
             object_release(object);
         }
-        spin_unlock(&vfs_file_lock);
+        klock_release(&vfs_file_klock);
         return opened;
     }
-    spin_unlock(&vfs_file_lock);
+    klock_release(&vfs_file_klock);
     return 0;
 }
 

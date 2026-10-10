@@ -962,6 +962,10 @@ static int test_smp64_lockorder(void) {
         return -1;
     if (klock_order_ok(KLOCK_LEVEL_MODULE, KLOCK_LEVEL_NET) != 1) return -1;
     if (klock_order_ok(KLOCK_LEVEL_NET, KLOCK_LEVEL_FD) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_FD, KLOCK_LEVEL_VFS) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_VFS, KLOCK_LEVEL_MSI) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_VFS, KLOCK_LEVEL_RESOURCE) != 1) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_VFS, KLOCK_LEVEL_OBJECT) != 1) return -1;
     if (klock_order_ok(KLOCK_LEVEL_FD, KLOCK_LEVEL_MSI) != 1) return -1;
     if (klock_order_ok(KLOCK_LEVEL_MSI, KLOCK_LEVEL_IOMMU) != 1) return -1;
     if (klock_order_ok(KLOCK_LEVEL_IOMMU, KLOCK_LEVEL_RESOURCE) != 1) return -1;
@@ -978,6 +982,9 @@ static int test_smp64_lockorder(void) {
         return -1;
     if (klock_order_ok(KLOCK_LEVEL_NET, KLOCK_LEVEL_MODULE) != 0) return -1;
     if (klock_order_ok(KLOCK_LEVEL_MSI, KLOCK_LEVEL_FD) != 0) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_VFS, KLOCK_LEVEL_FD) != 0) return -1;
+    if (klock_order_ok(KLOCK_LEVEL_RESOURCE, KLOCK_LEVEL_VFS) != 0)
+        return -1;
     if (klock_order_ok(KLOCK_LEVEL_RESOURCE, KLOCK_LEVEL_MSI) != 0) return -1;
     if (klock_order_ok(KLOCK_LEVEL_PMM, KLOCK_LEVEL_PMM) != 0) return -1;
     if (klock_order_ok(KLOCK_LEVEL_PMM, KLOCK_LEVEL_POOL) != 0) return -1;
