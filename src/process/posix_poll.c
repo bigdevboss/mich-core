@@ -6,6 +6,7 @@
 #include "runtime64.h"
 #include "scheduler.h"
 #include "task.h"
+#include "klock.h"
 #include "vm64.h"
 
 // One timer tick in the milliseconds poll speaks.
@@ -21,6 +22,10 @@ struct posix_poll_wait {
 };
 
 static struct posix_poll_wait waits[MAX_TASKS];
+// The park and the wake that answers it have to be ordered against each
+// other: a descriptor turning ready between the caller's scan and the state
+// change wakes nobody, and the poll then never returns.
+static struct klock posix_poll_wait_klock = KLOCK_INIT(KLOCK_LEVEL_WAIT);
 
 // Syscalls run with interrupts masked on this single CPU, so poll wait
 // state mutates from one context at a time: the syscall that parks, the
@@ -61,8 +66,12 @@ static int poll_write_back(struct task *task, uptr_t request,
 static void poll_complete(u32 slot, int deadline) {
     struct task *task = &task_pool[slot];
     u16 revents[POSIX_POLL_FD_MAX];
+    klock_acquire(&posix_poll_wait_klock);
     u32 ready = poll_scan(task, waits[slot].fds, waits[slot].count, revents);
-    if (!ready && !deadline) return;
+    if (!ready && !deadline) {
+        klock_release(&posix_poll_wait_klock);
+        return;
+    }
     i64 answer = (i64)ready;
     if (poll_write_back(task, waits[slot].request, &waits[slot], revents))
         answer = POSIX_VFS_EIO;
@@ -71,6 +80,20 @@ static void poll_complete(u32 slot, int deadline) {
     task->poll_deadline = 0;
     task_state_set(task, TASK_RUNNING);
     task64_set_result(slot, answer);
+    klock_release(&posix_poll_wait_klock);
+}
+
+static i64 poll_answer_ready(struct task *task, uptr_t request,
+                             const struct posix_poll_request *in,
+                             u16 *revents, u32 ready) {
+    struct posix_poll_wait snapshot;
+    for (u32 index = 0; index < POSIX_POLL_FD_MAX; index++)
+        snapshot.fds[index] = in->fds[index];
+    snapshot.request = request;
+    snapshot.count = in->count;
+    if (poll_write_back(task, request, &snapshot, revents))
+        return POSIX_VFS_EIO;
+    return (i64)ready;
 }
 
 i64 posix_poll(struct task *task, uptr_t request,
@@ -82,19 +105,27 @@ i64 posix_poll(struct task *task, uptr_t request,
     u16 revents[POSIX_POLL_FD_MAX];
     u32 ready = poll_scan(task, in->fds, in->count, revents);
     if (!ready && timeout_ms) {
-        waits[slot].request = request;
-        waits[slot].count = in->count;
-        for (u32 index = 0; index < in->count; index++)
-            waits[slot].fds[index] = in->fds[index];
-        // The deadline rounds up by construction, so the park never wakes
-        // early on a partial tick, the way nanosleep reads its interval.
-        task->poll_deadline = 0;
-        if (timeout_ms > 0) {
-            u64 ticks = ((u64)timeout_ms + POLL_TICK_MS - 1u) / POLL_TICK_MS;
-            if (ticks > 0xFFFFFFFEull) ticks = 0xFFFFFFFEull;
-            task->poll_deadline = timer_ticks + (u32)ticks;
+        klock_acquire(&posix_poll_wait_klock);
+        ready = poll_scan(task, in->fds, in->count, revents);
+        if (!ready) {
+            waits[slot].request = request;
+            waits[slot].count = in->count;
+            for (u32 index = 0; index < in->count; index++)
+                waits[slot].fds[index] = in->fds[index];
+            // The deadline rounds up by construction, so the park never
+            // wakes early on a partial tick, the way nanosleep reads its
+            // interval.
+            task->poll_deadline = 0;
+            if (timeout_ms > 0) {
+                u64 ticks = ((u64)timeout_ms + POLL_TICK_MS - 1u) /
+                    POLL_TICK_MS;
+                if (ticks > 0xFFFFFFFEull) ticks = 0xFFFFFFFEull;
+                task->poll_deadline = timer_ticks + (u32)ticks;
+            }
+            task_state_set(task, TASK_BLOCKED_POLL);
         }
-        task_state_set(task, TASK_BLOCKED_POLL);
+        klock_release(&posix_poll_wait_klock);
+        if (ready) return poll_answer_ready(task, request, in, revents, ready);
         if (scheduler_pick_next(slot) < 0) {
             // Nothing else can run, so the park would freeze the CPU
             // inside the syscall. The pipe and ipc parks answer the same
@@ -107,22 +138,17 @@ i64 posix_poll(struct task *task, uptr_t request,
         }
         return (int)task64_block_switch();
     }
-    struct posix_poll_wait snapshot;
-    for (u32 index = 0; index < POSIX_POLL_FD_MAX; index++)
-        snapshot.fds[index] = in->fds[index];
-    snapshot.request = request;
-    snapshot.count = in->count;
-    if (poll_write_back(task, request, &snapshot, revents))
-        return POSIX_VFS_EIO;
-    return (i64)ready;
+    return poll_answer_ready(task, request, in, revents, ready);
 }
 
 i64 posix_poll_signal(struct task *target) {
     u32 slot = (u32)(target - task_pool);
     if (slot >= (u32)MAX_TASKS || target->state != TASK_BLOCKED_POLL) return 0;
+    klock_acquire(&posix_poll_wait_klock);
     waits[slot].request = 0;
     waits[slot].count = 0;
     target->poll_deadline = 0;
+    klock_release(&posix_poll_wait_klock);
     return POSIX_SIGNAL_EINTR;
 }
 
