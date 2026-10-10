@@ -6,6 +6,7 @@
 #include "runtime64.h"
 #include "scheduler.h"
 #include "task.h"
+#include "klock.h"
 #include "vm64.h"
 
 // A whole line fits in the accumulator; the queue behind it holds what a
@@ -43,6 +44,10 @@ struct tty_wait {
 };
 
 static struct tty_wait tty_waits[MAX_TASKS];
+// Parks and the wake that answers them have to be ordered against each other:
+// input landing between a reader's readiness test and its state change wakes
+// nobody, and the read then never returns.
+static struct klock posix_tty_wait_klock = KLOCK_INIT(KLOCK_LEVEL_WAIT);
 
 static void tty_wake_readers(u32 index);
 
@@ -330,12 +335,16 @@ int posix_tty_write(u32 index, const u8 *data, u32 length, u32 *transferred) {
 static void tty_wake_readers(u32 index) {
     struct posix_tty_state *tty = &ttys[index];
     u8 staging[POSIX_IO_MAX];
+    klock_acquire(&posix_tty_wait_klock);
     for (u32 slot = 0; slot < (u32)task_pool_count; slot++) {
         struct task *reader = &task_pool[slot];
         if (reader->state != TASK_BLOCKED_TTY ||
             tty_waits[slot].index != index + 1u)
             continue;
-        if (!tty_ready(tty)) return;
+        if (!tty_ready(tty)) {
+            klock_release(&posix_tty_wait_klock);
+            return;
+        }
         u32 transferred = 0;
         i64 answer = 0;
         if (posix_tty_read(index, staging, tty_waits[slot].length,
@@ -351,17 +360,39 @@ static void tty_wake_readers(u32 index) {
         task_state_set(reader, TASK_RUNNING);
         task64_set_result(slot, answer);
     }
+    klock_release(&posix_tty_wait_klock);
 }
 
+// Returns 1 when a line arrived while the park was being set up, and the
+// caller reads it instead of blocking.
 int posix_tty_park(struct task *task, u32 index, uptr_t request, u32 length) {
     u32 slot = (u32)(task - task_pool);
-    if (slot >= (u32)MAX_TASKS || !tty_for(index) || !request || !length)
-        return -1;
+    struct posix_tty_state *tty = tty_for(index);
+    if (slot >= (u32)MAX_TASKS || !tty || !request || !length) return -1;
+    klock_acquire(&posix_tty_wait_klock);
+    if (tty_ready(tty)) {
+        klock_release(&posix_tty_wait_klock);
+        return 1;
+    }
     tty_waits[slot].index = index + 1u;
     tty_waits[slot].request = request;
     tty_waits[slot].length = length;
     task_state_set(task, TASK_BLOCKED_TTY);
+    klock_release(&posix_tty_wait_klock);
     return 0;
+}
+
+static i64 tty_read_ready(struct task *task, u32 index, uptr_t request,
+                          u32 length) {
+    u8 staging[POSIX_IO_MAX];
+    u32 transferred = 0;
+    int result = posix_tty_read(index, staging, length, &transferred);
+    if (result) return result;
+    if (vm64_copy_to(task->page_dir, request + POSIX_IO_DATA_OFFSET,
+                     staging, transferred) ||
+        posix_io_patch_result(task, request, transferred))
+        return POSIX_TTY_EIO;
+    return (i64)transferred;
 }
 
 i64 posix_tty_io_read(struct task *task, u32 index, uptr_t request,
@@ -376,21 +407,14 @@ i64 posix_tty_io_read(struct task *task, u32 index, uptr_t request,
     int gate = posix_tty_check_read(task, index);
     if (gate == 1) return task64_self_stop((u32)slot);
     if (gate < 0) return gate;
-    if (tty_ready(tty)) {
-        u8 staging[POSIX_IO_MAX];
-        u32 transferred = 0;
-        int result = posix_tty_read(index, staging, length, &transferred);
-        if (result) return result;
-        if (vm64_copy_to(task->page_dir, request + POSIX_IO_DATA_OFFSET,
-                         staging, transferred) ||
-            posix_io_patch_result(task, request, transferred))
-            return POSIX_TTY_EIO;
-        return (i64)transferred;
-    }
+    if (tty_ready(tty))
+        return tty_read_ready(task, index, request, length);
     // Nothing typed yet, so the read parks and the input path completes it
     // in the caller's own request, because this frame is abandoned on the
     // switch the way a pipe read's is.
-    if (posix_tty_park(task, index, request, length)) return POSIX_TTY_EIO;
+    int parked = posix_tty_park(task, index, request, length);
+    if (parked < 0) return POSIX_TTY_EIO;
+    if (parked) return tty_read_ready(task, index, request, length);
     if (scheduler_pick_next(slot) < 0) {
         tty_clear_wait((u32)slot);
         task_state_set(task, TASK_RUNNING);
