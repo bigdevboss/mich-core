@@ -77,8 +77,6 @@ static struct vfs_alias_state aliases[VFS_ALIAS_MAX];
 // itself. A level rather than a plain spinlock because these paths create
 // and release objects, which take the object lock.
 static struct klock vfs_klock = KLOCK_INIT(KLOCK_LEVEL_VFS);
-// One VFS domain makes EOF selection and append write indivisible.
-static struct spinlock vfs_write_lock = SPINLOCK_INIT;
 static struct kernel_object *root_object;
 static struct kernel_object *root_mount;
 
@@ -329,8 +327,6 @@ static void mount_destroy(struct kernel_object *object) {
 void vfs_init(void) {
     vfs_klock.lock.ticket = 0;
     vfs_klock.lock.served = 0;
-    vfs_write_lock.ticket = 0;
-    vfs_write_lock.served = 0;
     root_object = 0;
     root_mount = 0;
     for (u32 index = 0; index < VFS_NODE_MAX; index++) {
@@ -1563,7 +1559,7 @@ int vfs_read(struct kernel_object *object, u32 offset,
     return 0;
 }
 
-static int write_node(struct vfs_node_state *node, u32 offset,
+static int write_node_locked(struct vfs_node_state *node, u32 offset,
                       const void *buffer, u32 length, u32 *transferred) {
     if (!node || !node_backing_live(node) || node->readonly ||
         node->type != VFS_NODE_REGULAR || node->external_data || !buffer ||
@@ -1653,9 +1649,9 @@ int vfs_write(struct kernel_object *object, u32 offset,
               const void *buffer, u32 length, u32 *transferred) {
     struct vfs_file_state *file = file_for(object);
     struct vfs_node_state *node = file ? node_for(file->node) : 0;
-    spin_lock(&vfs_write_lock);
-    int result = write_node(node, offset, buffer, length, transferred);
-    spin_unlock(&vfs_write_lock);
+    klock_acquire(&vfs_klock);
+    int result = write_node_locked(node, offset, buffer, length, transferred);
+    klock_release(&vfs_klock);
     return result;
 }
 
@@ -1664,15 +1660,15 @@ int vfs_append(struct kernel_object *object, const void *buffer, u32 length,
     struct vfs_file_state *file = file_for(object);
     struct vfs_node_state *node = file ? node_for(file->node) : 0;
     if (!position) return -1;
-    spin_lock(&vfs_write_lock);
+    klock_acquire(&vfs_klock);
     u32 offset = node ? node->size : 0;
-    int result = write_node(node, offset, buffer, length, transferred);
+    int result = write_node_locked(node, offset, buffer, length, transferred);
     if (!result) *position = offset + *transferred;
-    spin_unlock(&vfs_write_lock);
+    klock_release(&vfs_klock);
     return result;
 }
 
-static int truncate_node(struct vfs_node_state *node, u32 size) {
+static int truncate_node_locked(struct vfs_node_state *node, u32 size) {
     if (!node || !node_backing_live(node) || node->readonly ||
         node->type != VFS_NODE_REGULAR || node->external_data ||
         size > VFS_FILE_SIZE_MAX)
@@ -1722,19 +1718,19 @@ int vfs_sync(struct kernel_object *object) {
     struct vfs_node_state *node = file ? node_for(file->node) : 0;
     if (!node || !node_backing_live(node)) return -1;
     if (node->filesystem != VFS_FILESYSTEM_ADYTUMFS) return 0;
-    spin_lock(&vfs_write_lock);
+    klock_acquire(&vfs_klock);
     int result = adytumfs_pages_sync(node->mount, node->fs_id,
                                      node->fs_generation);
-    spin_unlock(&vfs_write_lock);
+    klock_release(&vfs_klock);
     return result;
 }
 
 int vfs_truncate(struct kernel_object *object, u32 size) {
     struct vfs_file_state *file = file_for(object);
     struct vfs_node_state *node = file ? node_for(file->node) : 0;
-    spin_lock(&vfs_write_lock);
-    int result = truncate_node(node, size);
-    spin_unlock(&vfs_write_lock);
+    klock_acquire(&vfs_klock);
+    int result = truncate_node_locked(node, size);
+    klock_release(&vfs_klock);
     return result;
 }
 
@@ -1743,14 +1739,14 @@ int vfs_fsync(struct kernel_object *object) {
     struct vfs_node_state *node = file ? node_for(file->node) : 0;
     if (!node || !node_backing_live(node)) return -1;
     if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) {
-        spin_lock(&vfs_write_lock);
+        klock_acquire(&vfs_klock);
         // pages_sync is the staging path: it moves the dirty pages of this
         // file through the redirect machinery, and the commit it ends with
         // lands the whole open window, so the disk copy is durable up to
         // this call.
         int result = adytumfs_pages_sync(node->mount, node->fs_id,
                                          node->fs_generation);
-        spin_unlock(&vfs_write_lock);
+        klock_release(&vfs_klock);
         return result;
     }
     // The ramfs keeps its bytes in memory only, so a durability call has
@@ -1977,9 +1973,9 @@ struct kernel_object *vfs_file_pages(struct kernel_object *object,
     if (node->filesystem == VFS_FILESYSTEM_ADYTUMFS) {
         // A mapping exposes the whole extent, so every page has to hold disk
         // contents before userspace can reach it.
-        spin_lock(&vfs_write_lock);
+        klock_acquire(&vfs_klock);
         int ready = adytumfs_pages_ready(node, node->size ? node->size : 4096);
-        spin_unlock(&vfs_write_lock);
+        klock_release(&vfs_klock);
         if (ready) return 0;
     }
     if (!node->pages || object_retain(node->pages)) return 0;
