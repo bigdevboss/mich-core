@@ -43,4 +43,8 @@ void klock_release(struct klock *klock);
 int klock_order_ok(u32 held, u32 wanted);
 u32 klock_held_level(void);
 
+// Acquire and wait counts for one level, so a fine-graining step can
+// measure what it removed instead of asserting that it mattered.
+void klock_stats_read(u32 level, u64 *acquires, u64 *contended);
+
 #endif
