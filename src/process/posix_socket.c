@@ -357,7 +357,7 @@ static i64 complete_wait(u32 slot) {
 
 // The net layer hands a socket slot index here on every state change it
 // signals, and each parked waiter on that socket gets one completion try.
-static u32 posix_socket_wake_index(u32 index) {
+static u32 posix_socket_wake_index(u32 index, u32 *poll_owed) {
     u32 matched = 0;
     for (u32 slot = 0; slot < (u32)task_pool_count; slot++) {
         if (task_pool[slot].state != TASK_BLOCKED_SOCKET ||
@@ -368,8 +368,9 @@ static u32 posix_socket_wake_index(u32 index) {
         complete_wait(slot);
     }
     // The poll waiters ride the same change: one scan covers whichever
-    // sockets each of them listed.
-    posix_poll_notify();
+    // sockets each of them listed. The socket layer runs it after dropping
+    // its own lock, because the scan takes the wait lock.
+    *poll_owed = 1;
     return matched;
 }
 
@@ -423,6 +424,7 @@ void posix_socket_init(void) {
         waits[slot].offset = 0;
     }
     socket_set_wake_hook(posix_socket_wake_index);
+    socket_set_poll_notify_hook(posix_poll_notify);
 }
 
 int posix_socket_socket(struct task *task, u32 domain, u32 type,

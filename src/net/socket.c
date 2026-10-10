@@ -35,14 +35,21 @@ static struct socket_udp_context udp_contexts[SOCKET_UDP_CONTEXT_MAX];
 static struct socket_udp_context udpv6_contexts[SOCKET_UDP_CONTEXT_MAX];
 static struct route_table *socket_routes;
 static socket_wake_hook wake_hook;
+// The poll notify runs after net_unlock, the way the fd layer already does it:
+// the scan a notify triggers takes the wait lock, which sits outside this one.
+static socket_poll_notify_hook poll_notify_hook;
 
 void socket_set_wake_hook(socket_wake_hook hook) {
     wake_hook = hook;
 }
 
-static u32 wake_index(u32 index) {
+void socket_set_poll_notify_hook(socket_poll_notify_hook hook) {
+    poll_notify_hook = hook;
+}
+
+static u32 wake_index(u32 index, u32 *poll_owed) {
     if (!wake_hook) return 0;
-    return wake_hook(index);
+    return wake_hook(index, poll_owed);
 }
 
 static struct socket_state *state_for(const struct kernel_object *object) {
@@ -700,7 +707,8 @@ int socket_stream_take_error(struct kernel_object *object, i32 *error) {
 
 
 static void socket_tcp_abort_context_locked(
-    struct tcp_context *tcp, i32 error) {
+    struct tcp_context *tcp, i32 error,
+                                             u32 *poll_owed) {
 
     if (!tcp || !error) return;
     tcp_abort_all(tcp, error);
@@ -710,20 +718,24 @@ static void socket_tcp_abort_context_locked(
             !state->tcp_connection)
             continue;
         if (state->event) event_signal(state->event);
-        if (!wake_index(index)) state->notify_pending = 1;
+        if (!wake_index(index, poll_owed)) state->notify_pending = 1;
+        *poll_owed = 1;
     }
 }
 
 
 void socket_tcp_abort_context(struct tcp_context *tcp, i32 error) {
+    u32 poll_owed = 0;
     net_lock();
-    socket_tcp_abort_context_locked(tcp, error);
+    socket_tcp_abort_context_locked(tcp, error, &poll_owed);
     net_unlock();
+    if (poll_owed && poll_notify_hook) poll_notify_hook();
 }
 
 
 static void socket_tcp_notify_locked(
-    struct tcp_context *tcp, u64 connection_id) {
+    struct tcp_context *tcp, u64 connection_id,
+                                      u32 *poll_owed) {
 
     if (!tcp || !connection_id) return;
     u64 listener_id = 0;
@@ -736,16 +748,19 @@ static void socket_tcp_notify_locked(
         if (state->tcp_connection == connection_id ||
             (state->listening && state->tcp_connection == listener_id)) {
             event_signal(state->event);
-            if (!wake_index(index)) state->notify_pending = 1;
+            if (!wake_index(index, poll_owed)) state->notify_pending = 1;
+        *poll_owed = 1;
         }
     }
 }
 
 
 void socket_tcp_notify(struct tcp_context *tcp, u64 connection_id) {
+    u32 poll_owed = 0;
     net_lock();
-    socket_tcp_notify_locked(tcp, connection_id);
+    socket_tcp_notify_locked(tcp, connection_id, &poll_owed);
     net_unlock();
+    if (poll_owed && poll_notify_hook) poll_notify_hook();
 }
 
 
@@ -964,7 +979,8 @@ u32 socket_active_count(void) {
 }
 
 
-static void socket_udp_notify_locked(struct udp_context *udp, u64 binding_id) {
+static void socket_udp_notify_locked(struct udp_context *udp, u64 binding_id,
+                                      u32 *poll_owed) {
 
     if (!udp || !binding_id) return;
     for (u32 index = 0; index < SOCKET_MAX; index++) {
@@ -972,15 +988,18 @@ static void socket_udp_notify_locked(struct udp_context *udp, u64 binding_id) {
         if (!state->active || state->family != 4 || state->udp != udp ||
             state->binding_id != binding_id)
             continue;
-        wake_index(index);
+        wake_index(index, poll_owed);
+        *poll_owed = 1;
     }
 }
 
 
 void socket_udp_notify(struct udp_context *udp, u64 binding_id) {
+    u32 poll_owed = 0;
     net_lock();
-    socket_udp_notify_locked(udp, binding_id);
+    socket_udp_notify_locked(udp, binding_id, &poll_owed);
     net_unlock();
+    if (poll_owed && poll_notify_hook) poll_notify_hook();
 }
 
 

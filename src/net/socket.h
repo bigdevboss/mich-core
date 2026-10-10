@@ -77,8 +77,10 @@ struct kernel_object *socket_interface_for(u32 address);
 // process knowledge. The index is the socket slot, zero based, and the
 // answer counts the waiters the change reached, so a socket nobody was
 // parked on can keep the fact for the park that is about to arrive.
-typedef u32 (*socket_wake_hook)(u32 index);
+typedef u32 (*socket_wake_hook)(u32 index, u32 *poll_owed);
+typedef void (*socket_poll_notify_hook)(void);
 void socket_set_wake_hook(socket_wake_hook hook);
+void socket_set_poll_notify_hook(socket_poll_notify_hook hook);
 
 // A datagram landing on a binding wakes the application waiters parked on
 // sockets bound to it; the udp layer calls this beside its event signal.
